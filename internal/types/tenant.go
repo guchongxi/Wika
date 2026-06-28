@@ -94,6 +94,8 @@ type Tenant struct {
 	APIKey string `yaml:"api_key"             json:"api_key"`
 	// Status
 	Status string `yaml:"status"              json:"status"              gorm:"default:'active'"`
+	// 空间类型：personal 表示个人空间，team 表示团队空间。
+	SpaceType SpaceType `yaml:"space_type"          json:"space_type"          gorm:"type:varchar(16);not null;default:'team'"`
 	// Retriever engines
 	RetrieverEngines RetrieverEngines `yaml:"retriever_engines"   json:"retriever_engines"   gorm:"type:json"`
 	// Business
@@ -139,6 +141,7 @@ func (t *Tenant) GetEffectiveEngines() []RetrieverEngineParams {
 
 // BeforeCreate is a hook function that is called before creating a tenant
 func (t *Tenant) BeforeCreate(tx *gorm.DB) error {
+	t.EnsureSpaceType()
 	if t.RetrieverEngines.Engines == nil {
 		t.RetrieverEngines.Engines = []RetrieverEngineParams{}
 	}
