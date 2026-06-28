@@ -27,7 +27,16 @@ Wika 是从 [WeKnora](https://github.com/Tencent/WeKnora) fork 的知识闭环�
 
 当前文档已补齐到 P0-P5 均可拆分实施的状态，其中 P5 已拆成 P5a-P5e 子阶段、任务卡、RED 测试包、迁移约束、worker lease、API 状态机、审计事件和验收证据。P5 进入实现前还必须遵守已收口的硬门禁：feature flag fail-closed、worker 显式 lifecycle、审计同事务、schedule slot 幂等、URL 重抓成本上限、版本 baseline、Organization 复用既有组织表且团队 Admin/Owner 始终是数据授权源头。实现仍必须按阶段推进，不能因为后续阶段已有方案就跳过前置安全和数据门禁。
 
-当前仓库已有 P5d Eval Schedule 和 P5e Org Share 的迁移、types、service/store 与部分 API/scope 接入。继续 P5d/P5e 时不要重复建 `000100/000101` 迁移；先按 [tech-plan.md](./tech-plan.md) 的“当前仓库 P5 实现状态”和对应任务卡补 worker lifecycle、expand API/集成回归、API 冒烟、审计证据和剩余前端入口。
+当前仓库已有 P5a-P5e 的迁移、types、service/store 与部分 handler 接入，其中 P5d Eval Schedule 和 P5e Org Share 是当前优先推进面。继续 P5 时不要重复建 `000097-000102` 迁移；先按 [tech-plan.md](./tech-plan.md) 的“当前仓库 P5 实现状态”和对应任务卡补 worker lifecycle、expand API/集成回归、API 冒烟、审计证据和剩余前端入口。
+
+P5 当前可以进入“单卡实现”，但不能把 P5 作为一个整体宣布完成。实施者必须先选定一张任务卡、写出 RED 测试，再进入最小实现。当前优先级：
+
+| 顺序 | 任务卡 | 交付目标 | 禁止混入 |
+|------|--------|----------|----------|
+| 1 | `P5e-6 Expand/direct-id revoke` | `expand_knowledge_result` API/集成回归、revoke 后 search/expand/direct-id 均不命中 | 新建 Organization 主表、放宽 shared `allowed_fields` |
+| 2 | `P5d-4 Worker lifecycle` | eval schedule worker 显式启动/停用、flag off 不 lease、审计和 API 冒烟 | 单实例进程锁、重复实现 P2 EvaluationService |
+| 3 | `P5e-7 Audit/API smoke` | create/accept/revoke 审计事件和 HTTP 冒烟证据 | 审计正文、证据、snippet、文件路径 |
+| 4 | `P5a/P5b/P5c hardening` | 补 feature gate、版本写路径 hook、URL refresh worker lifecycle 和审计缺口 | AI 自动合并、restore 覆盖历史、URL 抓取直接覆盖正文 |
 
 实施入口：
 

@@ -1,6 +1,6 @@
 # Wika 改造需求方案
 
-> 版本: 2.3
+> 版本: 2.4
 > 日期: 2026-06-29
 > 基于: WeKnora v0.6.2 fork
 > 状态: P0-P5 方案可拆分实施，P5 已补齐到可写 RED 测试和进入实现口径
@@ -586,6 +586,29 @@ P5 进入实现前必须满足：
 - 会修改知识正文、标题、标签、状态或有效期的动作都先接入 VersionService；没有版本记录的 apply/restore 不允许上线。
 - worker 型能力必须有 DB lease、失败阈值、审计或结构化日志和停用路径。
 - 前端只消费后端状态和权限结果，不在前端自行判断能否越权操作。
+
+#### P5 实施就绪结论
+
+P5 可以进入实现阶段，但只能按 P5a-P5e 的独立任务卡推进。当前结论不是“P5 已完成”，而是“文档已足够让实现者选一张卡开始写 RED 测试”。多角色审查后的产品约束如下：
+
+| 视角 | 结论 | 对实现的要求 |
+|------|------|--------------|
+| 产品 | P5 用户价值成立，但高级治理必须拆小发布 | 每张卡必须能对应一个维护者可观察的动作，例如查看冲突、恢复版本、确认 URL 更新、停用定时评测、撤销共享 |
+| 架构 | P5 只能做治理层，不重写 P1-P4 主链路 | 修改知识正文必须走现有知识更新和索引链路；共享读取必须走 ScopeResolver；定时任务必须复用 P2 run |
+| 后端 | P5 可实施，但 worker 和 direct-id 是主要风险 | 每个 worker 要有 DB lease、slot 幂等、停用路径；每个 direct-id API 第一行回溯父资源并重新解析 scope |
+| 安全 | 默认关闭和字段裁剪是上线门禁 | feature flag fail-closed；shared scope 不含正文、chunk、证据、文件；审计只存元数据和脱敏摘要 |
+| 现实检验 | 没有 API 冒烟、审计证据和回滚动作不得声明完成 | 每张卡交付时必须提交测试命令、fixture/API 调用、审计事件和关闭开关后的行为 |
+
+P5 当前最小可实施切片：
+
+| 切片 | 用户可见行为 | 最小验收数据 | Done 判定 |
+|------|--------------|--------------|-----------|
+| `P5e-6 Expand/direct-id revoke` | target team 成员搜索到共享知识后，只能展开允许字段；source/target 撤销后同一 ID 不再可读 | active share 1 条、revoked share 1 条、同一 knowledge ID、`allowed_fields=["id","title"]` | search、expand、direct read、download、preview 均重新解析 scope；revoke 后不命中；正文/文件/metadata 不泄露 |
+| `P5d-4 Worker lifecycle` | 团队维护者启用定时评测后，后台能按计划创建 run，关闭后停止 | enabled schedule、disabled schedule、连续失败 schedule、同一 `scheduled_for` 重复触发 | worker 可显式启动/停止；flag off 不 lease；同 slot 最多一个 run；失败三次停用或降频并可审计 |
+| `P5e-7 Audit/API smoke` | 创建、接收、撤销共享都有可追溯记录 | source team Admin、target team Admin、非成员用户、share pending/active/revoked | `wika.org_share.created/accepted/revoked` 存在；审计不含正文、证据、snippet、文件路径；HTTP 冒烟覆盖 200/400/403/404/409 |
+| `P5b-4 Version write hook` | 任何会改变知识正文的治理动作都能在版本列表里追溯 | 旧知识 baseline、Web 更新、旧 API 更新、suggestion apply、URL apply、restore | 首次写入前生成 baseline；后续写入递增版本；restore 生成新版本；无版本记录的 apply 不允许上线 |
+| `P5c-5 URL refresh worker hardening` | URL 重抓只产生待确认更新，人工确认后才应用 | 正常 URL、内网 URL、metadata IP、重定向绕过、超大响应、非文本类型 | SSRF fixture 全阻断；schedule 只生成 job；apply 依赖 P5b Version；flag off 后 worker 不抓取 |
+| `P5a-4 Conflict gate/lifecycle` | 维护者能手动生成冲突候选并处理状态 | contradiction、duplicate、outdated、scope_overlap fixture 各 1 组 | AI 只生成解释和候选；feature flag off 不创建 check、不 lease；终态不可改回 open |
 
 ## 六、安全需求
 

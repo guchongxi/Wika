@@ -1,6 +1,6 @@
 # Wika 技术实现方案
 
-> 版本: 2.3
+> 版本: 2.4
 > 日期: 2026-06-29
 > 基于: WeKnora v0.6.2 fork
 > 对应需求: [requirements.md](./requirements.md)
@@ -2094,8 +2094,22 @@ P5 Implementation Map：
 
 | 子阶段 | 已落地 | 继续实现时的下一张卡 |
 |--------|--------|----------------------|
+| P5a Conflict | `000097_wika_conflicts` migration、`internal/types/wika_governance*.go`、`internal/wika/governance/conflict` service/store、handler/router 测试已存在；已有测试覆盖 audit、candidate 生成、DB lease、候选保存、终态转换 | 下一张卡优先补 feature flag fail-closed、worker 显式 lifecycle、KB scope/direct-id 回溯、API 冒烟和审计失败回滚；不要让 AI 建议直接改知识正文 |
+| P5b Version | `000098_wika_knowledge_versions` migration、`internal/wika/governance/version` store/service/diff/restore、handler 测试已存在；已有测试覆盖版本递增、无变化跳过、diff、restore 新版本、restore flag off 无副作用 | 下一张卡优先补统一写路径 hook：Web、旧 API、`suggest_to_team` apply、URL apply、freshness 处理和 restore；补 baseline 生成、personal/SystemAdmin 字段裁剪和 API 冒烟；不要只在 handler 手动调用 `RecordVersion` |
+| P5c URL Refresh | `000099_wika_url_refresh` migration、safe fetcher、job/schedule service/store、review apply/reject、handler 测试已存在；已有测试覆盖 SSRF、重定向再校验、超大响应、pending_review、apply 生成版本、schedule slot 幂等和 feature flag fail-closed | 下一张卡优先补生产 worker lifecycle、抓取失败对 schedule 的降频/停用审计、真实 diff summary、review/apply API 冒烟；P5b Version hook 未完成前不得打开 apply GA |
 | P5d Eval Schedule | `000100_wika_eval_schedule` migration、`internal/types/wika_eval_schedule.go`、`internal/wika/governance/evalschedule` service/store/`RunDueSchedules`、handler/router/container 已存在；已有测试覆盖 cron 下限、schedule slot 幂等、禁用后不触发、连续失败三次禁用和 API 参数传递 | 下一张卡优先补显式 worker lifecycle、生产启动/停用路径、审计事件和 API 冒烟；不要重复实现 schedule CRUD |
 | P5e Org Share | `000101_wika_org_share` migration、`000102_wika_org_share_allowed_fields_check` 追加约束、`internal/types/wika_org_share.go`、`internal/wika/governance/orgshare` service/store、share handler/router/container、`ScopeResolver shared scope`、SearchService 字段裁剪、direct read/download/preview 裁剪回归已存在；已有测试覆盖 `allowed_fields` 写入白名单、读取侧 fail-closed、pending/active、accept/revoke 权限、shared search、expand service 裁剪、direct read 不泄露正文/文件 | 下一张卡优先补 `expand_knowledge_result` API/集成回归、revoke 后 direct-id 集成测试、API 冒烟与审计证据；不要重复创建 share/scope/search/direct-read 基础实现 |
+
+P5 当前可实施任务队列：
+
+| 优先级 | 任务卡 | 首个 RED 测试建议 | 主要实现文件 | 完成证据 |
+|--------|--------|-------------------|--------------|----------|
+| 1 | `P5e-6 Expand/direct-id revoke` | `POST /api/v1/wika/knowledge/expand` 对 active shared ID 只返回允许字段；revoke 后同一 ID 被过滤 | `internal/handler/wika_knowledge_test.go`、`internal/handler/wika_knowledge.go`、`internal/wika/search`、`internal/wika/scope` | `go test ./internal/wika/scope ./internal/wika/search ./internal/handler -count=1`；search/expand/direct read/revoke HTTP 冒烟 |
+| 2 | `P5d-4 Eval worker lifecycle` | flag off 或 worker stop 后 `RunDueSchedules` 不被调用、不领取 lease | `internal/wika/governance/evalschedule/worker.go`、`internal/container/container.go`、`cmd/server/main.go` 或等价启动点 | worker start/stop 单测、container 组装测试、API 创建 schedule 后手动 run-one 冒烟 |
+| 3 | `P5e-7 Org share audit/smoke` | create/accept/revoke 与 audit 同事务；audit 失败时状态不推进 | `internal/wika/governance/orgshare/service.go`、`internal/handler/wika_org_share.go` | `wika.org_share.created/accepted/revoked` 事件；400/403/404/409 响应体稳定 |
+| 4 | `P5b-4 Version hook inventory` | Web/旧 API/suggestion apply/URL apply/freshness/restore 任一路径缺版本即失败 | `internal/wika/governance/version`、现有知识更新链路适配点 | baseline、新版本、restore 新版本证据；无权 diff 不返回正文 |
+| 5 | `P5c-5 URL refresh worker/audit` | worker 停用后不抓取；连续失败后 schedule 延后或 disable 并审计 | `internal/wika/governance/urlrefresh/worker.go`、`internal/wika/governance/urlrefresh/service.go` | SSRF fixture、schedule slot、失败降频、review/apply API 冒烟 |
+| 6 | `P5a-4 Conflict gate/lifecycle` | flag off 时 create check 和 worker lease 均失败为 disabled | `internal/wika/governance/conflict/service.go`、`worker.go`、handler/container | manual check、candidate、resolve、flag off、audit 证据 |
 
 P5 依赖顺序：
 
@@ -2794,6 +2808,37 @@ DDL 规则：
 | P4 | 图谱读模型分页、实体详情、图谱检索降级、SystemAdmin 字段 allowlist |
 | P5 | 冲突处理、版本恢复、SSRF fixture、定时评测失败降频、Organization 撤销后 resolver 不返回 |
 
+P5 本地实现与验收流程：
+
+1. 选择唯一任务卡，例如 `P5e-6 Expand/direct-id revoke`，先写该卡 RED 测试。
+2. 跑当前卡最小测试包，确认失败原因是生产代码缺能力，不是 fixture 或环境错误。
+3. 最小实现后只扩大到当前卡相关 package；最后再跑本表对应阶段命令和 `git diff --check`。
+4. 需要 API 冒烟时启动本地服务：
+
+```bash
+make dev-start
+make migrate-up
+make dev-app
+make dev-frontend
+```
+
+5. 全量 `go test ./...` 不是 P5 单卡完成的唯一门禁；如果全量测试命中 docreader、外部存储、第三方 token 或历史包问题，必须记录失败包和错误摘要，不能声称全量通过。P5 单卡仍必须保证相关 package 通过。
+6. 涉及 feature flag 的卡，必须在 flag 缺失、关闭、开启三种状态各跑一次关键路径；flag 关闭时写 API 返回 `WIKA_FEATURE_DISABLED` 或稳定 not found，worker 不领取 lease。
+7. 涉及 worker 的卡，必须提供 `RunOnce` 或等价手动触发证据；只看到定时 goroutine 启动日志不能算完成。
+
+P5 MCP 回归口径：
+
+- P5 不新增 MCP tool；P5e 只回归已有 `search_knowledge` 和 `expand_knowledge_result`。
+- MCP 真实调用必须使用用户级 PAT，通过 `WEKNORA_PAT` 走 `Authorization: Bearer`；不得用 `WEKNORA_API_KEY` 作为日常工具 fallback。
+- P5e 冒烟最小路径：
+  1. source team Admin 创建 active share，`allowed_fields=["id","title"]`。
+  2. target team 成员通过 MCP `search_knowledge(query, include_team=true)` 命中 shared 结果。
+  3. 返回结果标记 `source=shared`，不得包含正文、chunk、证据、文件、metadata。
+  4. 同一成员调用 `expand_knowledge_result([id])`，仍只返回 allowed fields。
+  5. source 或 target team Admin revoke share。
+  6. 重复 `search_knowledge`、`expand_knowledge_result`、direct read/download/preview，同一 shared ID 不再返回共享内容。
+- MCP 冒烟只验证消费路径；create/accept/revoke 仍以 HTTP API 或前端队列验收。
+
 P5 每卡证据模板：
 
 | 任务卡 | 测试命令 | fixture / API 冒烟 | 审计证据 |
@@ -2803,3 +2848,4 @@ P5 每卡证据模板：
 | P5c-0/P5c-1/P5c-2/P5c-3/P5c-4 URL refresh | `go test ./internal/types ./internal/wika/governance/urlrefresh ./internal/handler ./internal/router ./internal/container` | migration up/down、SSRF fixture；`GET/POST /knowledge/:id/url-refresh`、`PUT/DELETE /knowledge/:id/url-refresh/schedules/:schedule_id`、`PUT /url-refresh/:refresh_id/review`、flag off | `wika.url_refresh.job_created`、`job_failed`、`reviewed`、`schedule_updated` |
 | P5d-1/P5d-2/P5d-3 Eval schedule | `go test ./internal/types ./internal/wika/governance/evalschedule ./internal/handler ./internal/router ./internal/container` | migration up/down、cron fixture；`POST /eval/schedules`、schedule slot 幂等、disable/flag off 后 worker 不触发 | `wika.eval_schedule.updated`、`run_failed` |
 | P5e-1/P5e-2/P5e-3/P5e-4/P5e-5 Org share | `go test ./internal/types ./internal/wika/governance/orgshare ./internal/wika/scope ./internal/wika/search ./internal/handler ./internal/router ./internal/container` | migration up/down、share/accept/revoke fixture；`search_knowledge` shared scope、download/preview/direct read 裁剪回归；expand service 裁剪已覆盖，API/集成仍需补齐 | `wika.org_share.created`、`wika.org_share.accepted`、`wika.org_share.revoked` |
+| P5e-6/P5e-7 Org share hardening | `go test ./internal/wika/governance/orgshare ./internal/wika/scope ./internal/wika/search ./internal/handler ./internal/router ./internal/container -count=1` | `POST /wika/knowledge/expand` active shared 裁剪、revoke 后 search/expand/direct-id 不命中、MCP search/expand 真实调用 | create/accept/revoke 与状态转换同事务；审计失败不推进状态 |
