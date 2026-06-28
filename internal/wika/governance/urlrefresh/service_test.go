@@ -2,6 +2,8 @@ package urlrefresh
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -348,6 +350,117 @@ func TestServiceRunDueSchedulesCreatesOneJobPerScheduleSlot(t *testing.T) {
 	require.NoError(t, db.Model(&types.WikaURLRefreshJob{}).Where("schedule_id = ?", schedule.ID).Count(&count).Error)
 	if count != 1 {
 		t.Fatalf("expected exactly one scheduled job, got %d", count)
+	}
+}
+
+func TestServiceRunScheduledJobFailureBacksOffAndDisablesWithAudit(t *testing.T) {
+	db := setupURLRefreshStoreTestDB(t)
+	store := NewGormStore(db)
+	now := time.Date(2026, 6, 29, 12, 15, 0, 0, time.UTC)
+	audit := &fakeURLRefreshAudit{}
+	svc := NewService(store, fakeFetcher{err: errors.New("upstream timeout")}, WithAuditLogger(audit), WithFeatureGate(fakeFeatureGate{enabled: true}))
+	schedule, err := svc.CreateOrUpdateSchedule(context.Background(), CreateOrUpdateScheduleInput{
+		ActorID:     "u-owner",
+		TenantID:    90,
+		KBID:        "kb-url",
+		KnowledgeID: "k-url",
+		SourceURL:   "https://example.com/doc",
+		CronExpr:    "0 * * * *",
+		Enabled:     true,
+		Now:         now,
+	})
+	require.NoError(t, err)
+
+	failureTimes := make([]time.Time, 0, 3)
+	nextFailureTime := now.Add(time.Hour)
+	for i := 0; i < 3; i++ {
+		failureTime := nextFailureTime
+		failureTimes = append(failureTimes, failureTime)
+		require.NoError(t, db.Model(&types.WikaURLRefreshSchedule{}).
+			Where("id = ?", schedule.ID).
+			Update("next_run_at", failureTime).Error)
+		jobs, err := svc.RunDueSchedules(context.Background(), failureTime)
+		require.NoError(t, err)
+		require.Len(t, jobs, 1)
+		err = svc.RunJob(context.Background(), RunJobInput{
+			JobID:         jobs[0].ID,
+			WorkerID:      "worker-1",
+			Now:           failureTime,
+			LeaseDuration: time.Minute,
+		})
+		require.Error(t, err)
+		var afterFailure types.WikaURLRefreshSchedule
+		require.NoError(t, db.First(&afterFailure, "id = ?", schedule.ID).Error)
+		nextFailureTime = afterFailure.NextRunAt
+	}
+
+	var updated types.WikaURLRefreshSchedule
+	require.NoError(t, db.First(&updated, "id = ?", schedule.ID).Error)
+	if updated.Enabled || updated.ConsecutiveFailures != 3 || updated.LastFailureCode != "fetch_failed" {
+		t.Fatalf("expected disabled schedule after three failures, got %+v", updated)
+	}
+	if updated.NextRunAt.Before(failureTimes[1].Add(6 * time.Hour)) {
+		t.Fatalf("expected second failure to back off next run at least 6h, got %s", updated.NextRunAt)
+	}
+	if len(audit.entries) != 3 ||
+		audit.entries[0].Action != types.AuditActionWikaURLRefreshScheduleUpdated ||
+		audit.entries[1].Action != types.AuditActionWikaURLRefreshScheduleUpdated ||
+		audit.entries[2].Action != types.AuditActionWikaURLRefreshScheduleDisabled {
+		t.Fatalf("unexpected audit entries: %+v", audit.entries)
+	}
+	if audit.entries[2].TargetID != "1" || audit.entries[2].ActorUserID != "u-owner" {
+		t.Fatalf("unexpected disabled audit entry: %+v", audit.entries[2])
+	}
+	disabledDetails := string(audit.entries[2].Details)
+	if strings.Contains(disabledDetails, "https://example.com/doc") || strings.Contains(disabledDetails, "upstream timeout") {
+		t.Fatalf("schedule audit details should be redacted, got %s", disabledDetails)
+	}
+}
+
+func TestServiceRunScheduledJobSuccessClearsScheduleFailureState(t *testing.T) {
+	db := setupURLRefreshStoreTestDB(t)
+	store := NewGormStore(db)
+	now := time.Date(2026, 6, 29, 12, 15, 0, 0, time.UTC)
+	svc := NewService(store, fakeFetcher{result: &safefetch.FetchResult{
+		Text:        "成功抓取内容",
+		ContentType: "text/plain",
+		FinalURL:    "https://example.com/doc",
+		SizeBytes:   int64(len("成功抓取内容")),
+	}}, WithFeatureGate(fakeFeatureGate{enabled: true}))
+	schedule, err := svc.CreateOrUpdateSchedule(context.Background(), CreateOrUpdateScheduleInput{
+		ActorID:     "u-owner",
+		TenantID:    90,
+		KBID:        "kb-url",
+		KnowledgeID: "k-url",
+		SourceURL:   "https://example.com/doc",
+		CronExpr:    "0 * * * *",
+		Enabled:     true,
+		Now:         now,
+	})
+	require.NoError(t, err)
+	dueAt := now.Add(time.Hour)
+	require.NoError(t, db.Model(&types.WikaURLRefreshSchedule{}).
+		Where("id = ?", schedule.ID).
+		Updates(map[string]any{
+			"next_run_at":          dueAt,
+			"consecutive_failures": 2,
+			"last_failure_code":    "fetch_failed",
+		}).Error)
+
+	jobs, err := svc.RunDueSchedules(context.Background(), dueAt)
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	require.NoError(t, svc.RunJob(context.Background(), RunJobInput{
+		JobID:         jobs[0].ID,
+		WorkerID:      "worker-1",
+		Now:           dueAt,
+		LeaseDuration: time.Minute,
+	}))
+
+	var updated types.WikaURLRefreshSchedule
+	require.NoError(t, db.First(&updated, "id = ?", schedule.ID).Error)
+	if !updated.Enabled || updated.ConsecutiveFailures != 0 || updated.LastFailureCode != "" {
+		t.Fatalf("expected successful scheduled job to clear failure state, got %+v", updated)
 	}
 }
 

@@ -19,6 +19,8 @@ type Store interface {
 	ListDueSchedules(ctx context.Context, now time.Time, limit int) ([]*types.WikaURLRefreshSchedule, error)
 	FindJobByScheduleSlot(ctx context.Context, scheduleID uint64, scheduledFor time.Time) (*types.WikaURLRefreshJob, error)
 	MarkScheduleTriggered(ctx context.Context, scheduleID uint64, jobID uint64, nextRunAt time.Time, now time.Time) error
+	MarkScheduleSucceeded(ctx context.Context, scheduleID uint64, now time.Time) error
+	MarkScheduleFailed(ctx context.Context, input MarkScheduleFailedInput) (*types.WikaURLRefreshSchedule, error)
 	UpdateSchedule(ctx context.Context, input UpdateScheduleInput, nextRunAt time.Time) (*types.WikaURLRefreshSchedule, error)
 	DisableSchedule(ctx context.Context, input DisableScheduleInput) (*types.WikaURLRefreshSchedule, error)
 }
@@ -239,14 +241,68 @@ func (s *GormStore) MarkScheduleTriggered(ctx context.Context, scheduleID uint64
 	return s.db.WithContext(ctx).Model(&types.WikaURLRefreshSchedule{}).
 		Where("id = ?", scheduleID).
 		Updates(map[string]any{
-			"last_job_id":          jobID,
-			"next_run_at":          nextRunAt,
+			"last_job_id":  jobID,
+			"next_run_at":  nextRunAt,
+			"locked_by":    "",
+			"locked_until": nil,
+			"updated_at":   now,
+		}).Error
+}
+
+func (s *GormStore) MarkScheduleSucceeded(ctx context.Context, scheduleID uint64, now time.Time) error {
+	result := s.db.WithContext(ctx).Model(&types.WikaURLRefreshSchedule{}).
+		Where("id = ?", scheduleID).
+		Updates(map[string]any{
 			"consecutive_failures": 0,
 			"last_failure_code":    "",
+			"updated_at":           now,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrScheduleNotFound
+	}
+	return nil
+}
+
+func (s *GormStore) MarkScheduleFailed(ctx context.Context, input MarkScheduleFailedInput) (*types.WikaURLRefreshSchedule, error) {
+	now := input.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	var schedule types.WikaURLRefreshSchedule
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&schedule, "id = ?", input.ScheduleID).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return ErrScheduleNotFound
+			}
+			return err
+		}
+		failures := schedule.ConsecutiveFailures + 1
+		updates := map[string]any{
+			"consecutive_failures": failures,
+			"last_failure_code":    input.FailureCode,
 			"locked_by":            "",
 			"locked_until":         nil,
 			"updated_at":           now,
-		}).Error
+		}
+		if failures >= 3 {
+			updates["enabled"] = false
+		} else {
+			updates["next_run_at"] = now.Add(urlRefreshScheduleFailureBackoff(failures, input.ScheduleID))
+		}
+		if err := tx.Model(&types.WikaURLRefreshSchedule{}).
+			Where("id = ?", input.ScheduleID).
+			Updates(updates).Error; err != nil {
+			return err
+		}
+		return tx.First(&schedule, "id = ?", input.ScheduleID).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &schedule, nil
 }
 
 func (s *GormStore) UpdateSchedule(ctx context.Context, input UpdateScheduleInput, nextRunAt time.Time) (*types.WikaURLRefreshSchedule, error) {

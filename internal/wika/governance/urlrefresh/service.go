@@ -114,20 +114,18 @@ func (s *Service) RunJob(ctx context.Context, input RunJobInput) error {
 	}
 	if s.fetcher == nil {
 		err := fmt.Errorf("url refresh fetcher unavailable")
-		_ = s.store.FailJob(ctx, job.ID, workerID, now, "fetcher_unavailable", err.Error())
-		return err
+		return s.failJobAndSchedule(ctx, job, workerID, now, "fetcher_unavailable", err)
 	}
 	result, err := s.fetcher.Fetch(ctx, job.SourceURL)
 	if err != nil {
-		_ = s.store.FailJob(ctx, job.ID, workerID, now, "fetch_failed", err.Error())
-		return err
+		return s.failJobAndSchedule(ctx, job, workerID, now, "fetch_failed", err)
 	}
 	ssrfCheck, _ := json.Marshal(map[string]any{
 		"content_type": result.ContentType,
 		"final_url":    result.FinalURL,
 		"size_bytes":   result.SizeBytes,
 	})
-	return s.store.MarkPendingReview(ctx, MarkPendingReviewInput{
+	if err := s.store.MarkPendingReview(ctx, MarkPendingReviewInput{
 		JobID:          job.ID,
 		WorkerID:       workerID,
 		Now:            now,
@@ -135,7 +133,15 @@ func (s *Service) RunJob(ctx context.Context, input RunJobInput) error {
 		FetchedContent: result.Text,
 		DiffSummary:    types.JSON([]byte(`{}`)),
 		SSRFCheck:      types.JSON(ssrfCheck),
-	})
+	}); err != nil {
+		return err
+	}
+	if job.ScheduleID != nil {
+		if err := s.store.MarkScheduleSucceeded(ctx, *job.ScheduleID, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) CreateOrUpdateSchedule(ctx context.Context, input CreateOrUpdateScheduleInput) (*types.WikaURLRefreshSchedule, error) {
@@ -368,6 +374,54 @@ func (s *Service) logReviewed(ctx context.Context, actorID string, tenantID uint
 	})
 }
 
+func (s *Service) failJobAndSchedule(ctx context.Context, job *types.WikaURLRefreshJob, workerID string, now time.Time, failureCode string, cause error) error {
+	errMsg := ""
+	if cause != nil {
+		errMsg = cause.Error()
+	}
+	if err := s.store.FailJob(ctx, job.ID, workerID, now, failureCode, errMsg); err != nil {
+		return err
+	}
+	if job.ScheduleID == nil {
+		return cause
+	}
+	schedule, err := s.store.MarkScheduleFailed(ctx, MarkScheduleFailedInput{
+		ScheduleID:  *job.ScheduleID,
+		Now:         now,
+		FailureCode: failureCode,
+	})
+	if err != nil {
+		return err
+	}
+	action := types.AuditActionWikaURLRefreshScheduleUpdated
+	if !schedule.Enabled {
+		action = types.AuditActionWikaURLRefreshScheduleDisabled
+	}
+	if err := s.logScheduleFailure(ctx, action, schedule); err != nil {
+		return err
+	}
+	return cause
+}
+
+func (s *Service) logScheduleFailure(ctx context.Context, action types.AuditAction, schedule *types.WikaURLRefreshSchedule) error {
+	if s.audit == nil || schedule == nil {
+		return nil
+	}
+	details, _ := json.Marshal(map[string]any{
+		"consecutive_failures": schedule.ConsecutiveFailures,
+		"failure_code":         schedule.LastFailureCode,
+		"enabled":              schedule.Enabled,
+	})
+	return s.audit.Log(ctx, &types.AuditLog{
+		TenantID:    schedule.TenantID,
+		ActorUserID: strings.TrimSpace(schedule.CreatedBy),
+		Action:      action,
+		TargetType:  "wika_url_refresh_schedule",
+		TargetID:    strconv.FormatUint(schedule.ID, 10),
+		Details:     types.JSON(details),
+	})
+}
+
 func (s *Service) featureEnabled(ctx context.Context) bool {
 	if s.flags == nil {
 		return false
@@ -410,4 +464,12 @@ func truncateError(msg string) string {
 	}
 	runes := []rune(msg)
 	return string(runes[:512])
+}
+
+func urlRefreshScheduleFailureBackoff(failures int, scheduleID uint64) time.Duration {
+	jitter := time.Duration(scheduleID%300) * time.Second
+	if failures <= 1 {
+		return time.Hour + jitter
+	}
+	return 6*time.Hour + jitter
 }

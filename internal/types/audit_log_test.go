@@ -32,6 +32,8 @@ func TestAuditAction_DotNamespaceConvention(t *testing.T) {
 		AuditActionWikaVersionRecorded,
 		AuditActionWikaVersionRestored,
 		AuditActionWikaURLRefreshReviewed,
+		AuditActionWikaURLRefreshScheduleUpdated,
+		AuditActionWikaURLRefreshScheduleDisabled,
 		AuditActionWikaOrgShareCreated,
 		AuditActionWikaOrgShareAccepted,
 		AuditActionWikaOrgShareRevoked,
@@ -125,6 +127,8 @@ func TestAuditAction_NoCollisionsAcrossNamespaces(t *testing.T) {
 	register("AuditActionWikaVersionRecorded", AuditActionWikaVersionRecorded)
 	register("AuditActionWikaVersionRestored", AuditActionWikaVersionRestored)
 	register("AuditActionWikaURLRefreshReviewed", AuditActionWikaURLRefreshReviewed)
+	register("AuditActionWikaURLRefreshScheduleUpdated", AuditActionWikaURLRefreshScheduleUpdated)
+	register("AuditActionWikaURLRefreshScheduleDisabled", AuditActionWikaURLRefreshScheduleDisabled)
 	register("AuditActionWikaOrgShareCreated", AuditActionWikaOrgShareCreated)
 	register("AuditActionWikaOrgShareAccepted", AuditActionWikaOrgShareAccepted)
 	register("AuditActionWikaOrgShareRevoked", AuditActionWikaOrgShareRevoked)

@@ -231,6 +231,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(wikaconflict.NewService))
 	must(container.Provide(wikaversion.NewService))
 	must(container.Provide(initWikaURLRefreshService))
+	must(container.Provide(initWikaURLRefreshWorker))
 	must(container.Provide(initWikaEvalScheduleService))
 	must(container.Provide(initWikaEvalScheduleWorker))
 	must(container.Provide(wikaorgshare.NewTenantMemberAdminChecker))
@@ -332,6 +333,8 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewHousekeepingService))
 	must(container.Invoke(startHousekeepingService))
 	logger.Debugf(ctx, "[Container] Knowledge housekeeping runner registered")
+	must(container.Invoke(startWikaURLRefreshWorker))
+	logger.Debugf(ctx, "[Container] Wika URL refresh worker registered")
 	must(container.Invoke(startWikaEvalScheduleWorker))
 	logger.Debugf(ctx, "[Container] Wika eval schedule worker registered")
 	must(container.Provide(chatpipeline.NewEventManager))
@@ -502,6 +505,10 @@ func initWikaURLRefreshService(store *wikaurlrefresh.GormStore, audit interfaces
 		wikaurlrefresh.WithVersionRecorder(versions),
 		wikaurlrefresh.WithFeatureGate(settings),
 	)
+}
+
+func initWikaURLRefreshWorker(svc *wikaurlrefresh.Service, settings interfaces.SystemSettingService) *wikaurlrefresh.Worker {
+	return wikaurlrefresh.NewWorker(svc, settings)
 }
 
 func initWikaEvalScheduleService(store *wikaevalschedule.GormStore, runner *wikaeval.Service, settings interfaces.SystemSettingService) *wikaevalschedule.Service {
@@ -1532,6 +1539,17 @@ func startWikaEvalScheduleWorker(worker *wikaevalschedule.Worker, cleaner interf
 	}
 	worker.Start(context.Background())
 	cleaner.RegisterWithName("WikaEvalScheduleWorker", func() error {
+		worker.Stop()
+		return nil
+	})
+}
+
+func startWikaURLRefreshWorker(worker *wikaurlrefresh.Worker, cleaner interfaces.ResourceCleaner) {
+	if worker == nil {
+		return
+	}
+	worker.Start(context.Background())
+	cleaner.RegisterWithName("WikaURLRefreshWorker", func() error {
 		worker.Stop()
 		return nil
 	})

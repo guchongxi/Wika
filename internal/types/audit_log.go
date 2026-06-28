@@ -70,6 +70,12 @@ const (
 	// AuditActionWikaURLRefreshReviewed fires when a maintainer applies
 	// or rejects a fetched URL refresh result. Fetched content 不进入审计日志。
 	AuditActionWikaURLRefreshReviewed AuditAction = "wika.url_refresh.reviewed"
+	// AuditActionWikaURLRefreshScheduleUpdated fires when URL refresh
+	// schedule failure backoff changes. URL 和抓取正文不进入审计日志。
+	AuditActionWikaURLRefreshScheduleUpdated AuditAction = "wika.url_refresh.schedule_updated"
+	// AuditActionWikaURLRefreshScheduleDisabled fires when URL refresh
+	// consecutive failures disable a schedule. URL 和抓取正文不进入审计日志。
+	AuditActionWikaURLRefreshScheduleDisabled AuditAction = "wika.url_refresh.schedule_disabled"
 	// AuditActionWikaOrgShareCreated fires when a source team creates a
 	// Wika Organization share. Details must not contain正文、证据或 snippet。
 	AuditActionWikaOrgShareCreated AuditAction = "wika.org_share.created"

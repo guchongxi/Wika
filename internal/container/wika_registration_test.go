@@ -36,6 +36,8 @@ func TestContainerRegistersWikaSuggestionComponents(t *testing.T) {
 		"handler.NewWikaVersionHandler",
 		"wikaurlrefresh.NewGormStore",
 		"initWikaURLRefreshService",
+		"initWikaURLRefreshWorker",
+		"startWikaURLRefreshWorker",
 		"handler.NewWikaURLRefreshHandler",
 		"wikaevalschedule.NewGormStore",
 		"initWikaEvalScheduleService",

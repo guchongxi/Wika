@@ -105,3 +105,9 @@ type MarkReviewedInput struct {
 	Comment    string
 	ReviewedAt time.Time
 }
+
+type MarkScheduleFailedInput struct {
+	ScheduleID  uint64
+	Now         time.Time
+	FailureCode string
+}
