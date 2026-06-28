@@ -610,6 +610,8 @@ P5 当前最小可实施切片：
 | `P5c-5 URL refresh worker hardening` | URL 重抓只产生待确认更新，人工确认后才应用 | 正常 URL、内网 URL、metadata IP、重定向绕过、超大响应、非文本类型 | SSRF fixture 全阻断；schedule 只生成 job；apply 依赖 P5b Version；flag off 后 worker 不抓取 |
 | `P5a-4 Conflict gate/lifecycle` | 维护者能手动生成冲突候选并处理状态 | contradiction、duplicate、outdated、scope_overlap fixture 各 1 组 | AI 只生成解释和候选；feature flag off 不创建 check、不 lease；终态不可改回 open |
 
+P5e hardening 进入实现时必须同时锁定两类证据：读取侧证据证明 `search_knowledge`、`expand_knowledge_result`、direct read、download、preview 在 active shared scope 下只返回 `allowed_fields`，且 revoke 后同一 ID 全部不命中；治理侧证据证明 create/accept/revoke 都有元数据审计，审计失败时 share 状态不推进。若创建者同时具备 source 和 target 团队 Admin/Owner，`CreateShare` 可以直接生成 `active` share，但必须在 `wika.org_share.created` 中记录 `new_status=active`，不得伪造一次没有真实 accept 调用的 `wika.org_share.accepted`。
+
 ## 六、安全需求
 
 1. 日常 MCP 工具必须使用用户级身份令牌，不得复用租户级 API key 伪装 Admin；P1-P5 先实现 PAT，OAuth 后置。

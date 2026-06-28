@@ -52,6 +52,7 @@ P5 快速开工入口：
 - 每个 P5 子阶段先写 migration/type 约束 RED 测试，再写 store/service 状态机和权限测试，最后补 handler/router/container 测试。
 - P5b Version 是 P5c URL Refresh apply 的前置；P5c 不得绕过 VersionService 直接改正文。
 - P5e 必须先让 ScopeResolver 输出 `shared scope` 和 `allowed_fields`，再接 SearchService、expand、download、preview 和 direct-id 读取；当前 direct read/download/preview 已有后端回归，expand 已有 service 级裁剪回归，仍需补 API/集成和 revoke 场景。
+- 选择 `P5e-6/P5e-7` 时，直接按 [tech-plan.md](./tech-plan.md) 的“P5e-6/P5e-7 当前执行规格”执行；其中已固定真实 HTTP 路由、MCP PAT 配置、最小 fixture、审计事件语义和同事务验收。
 - P5a/P5c/P5d worker 必须先通过 feature flag fail-closed、DB lease、schedule slot 幂等和停用路径测试，不能先上线单实例假设。
 
 P5 实施读法：

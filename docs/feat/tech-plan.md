@@ -2111,6 +2111,28 @@ P5 当前可实施任务队列：
 | 5 | `P5c-5 URL refresh worker/audit` | worker 停用后不抓取；连续失败后 schedule 延后或 disable 并审计 | `internal/wika/governance/urlrefresh/worker.go`、`internal/wika/governance/urlrefresh/service.go` | SSRF fixture、schedule slot、失败降频、review/apply API 冒烟 |
 | 6 | `P5a-4 Conflict gate/lifecycle` | flag off 时 create check 和 worker lease 均失败为 disabled | `internal/wika/governance/conflict/service.go`、`worker.go`、handler/container | manual check、candidate、resolve、flag off、audit 证据 |
 
+P5e-6/P5e-7 当前执行规格：
+
+- 真实路由：`WEKNORA_BASE_URL=http://localhost:8080/api/v1` 时，MCP `expand_knowledge_result` 实际请求 `POST /api/v1/wika/knowledge/expand`，body 为 `{ "ids": ["<search 返回的 shared id>"] }`。文档、测试和冒烟记录统一使用带 `/api/v1` 的完整 HTTP 路径，代码内部 client endpoint 保持 `/wika/knowledge/expand`。
+- 最小 fixture：source team、target team、非成员用户各 1 个；同一 Organization 下 source/target 均已加入 `organization_tenant_members`；source KB 内知识 1 条；同一 source knowledge 分别构造 `active` share 和 `revoked` share；`allowed_fields=["id","title"]`；另有尝试传入 `content/chunk/evidence_text/file/metadata` 的非法字段用例。
+- RED 测试优先级：先补 handler/API 集成测试，证明 active shared expand 只返回 id/title；再补 revoke 后同一 ID 的 search、expand、direct read、download、preview 都不命中；最后补 MCP smoke，证明 `search_knowledge` 返回的 shared ID 能被 `expand_knowledge_result` 裁剪展开。
+- 审计事件语义：`CreateShare` 成功必须写 `wika.org_share.created`，details 包含 `org_id/source_tenant_id/source_kb_id/target_tenant_id/share_id/allowed_fields/old_status/new_status`。如果创建者同时具备 source 和 target 团队 Admin/Owner，share 可直接为 `active`，但只写 `created(new_status=active)`，不伪造 `accepted`。
+- `AcceptShare` 只有真实执行 `pending -> active` 时写 `wika.org_share.accepted`；重复 accept active share 返回稳定终态或 `WIKA_STATE_CONFLICT`，不能重复写 accepted 事件。
+- `RevokeShare` 允许 source 或 target 团队 Admin/Owner 执行，成功写 `wika.org_share.revoked`，details 至少包含 `actor_tenant_id/source_tenant_id/target_tenant_id/old_status/new_status/share_id`，便于 source 和 target 两侧审计检索。若现有 `audit_logs.tenant_id` 只能填一个租户，优先填 actor 当前租户，source/target 放 details。
+- 同事务判定：审计 writer 必须参与当前 DB transaction，或在同一事务内写同库 audit/outbox 表。若外部审计 sink 不支持事务，不能直接把外部调用当作同事务审计；先提交同库 audit/outbox，再异步投递外部 sink。RED 测试必须覆盖 audit writer 返回错误时 create/accept/revoke 状态均不推进。
+- 审计内容禁止：正文、chunk、snippet、证据文本、diff 全文、文件路径、token 明文或 hash。允许记录字段枚举、状态、资源 ID、hash、request_id、脱敏 actor 信息。
+- MCP smoke 配置：只设置 `WEKNORA_PAT`，不要设置 `WEKNORA_API_KEY` 作为日常工具 fallback。
+
+```bash
+export WEKNORA_BASE_URL="http://localhost:8080/api/v1"
+export WEKNORA_PAT="wika_pat_xxx"
+unset WEKNORA_API_KEY
+cd mcp-server
+python -m weknora_mcp_server --transport stdio
+```
+
+MCP smoke 的通过条件是：revoke 前 `search_knowledge(query, include_team=true)` 命中 shared 结果且 compact 结果不含正文；`expand_knowledge_result([id])` 仍只返回 `allowed_fields`；revoke 后同一 query 和同一 id 都不再返回共享内容。
+
 P5 依赖顺序：
 
 ```text
@@ -2848,4 +2870,4 @@ P5 每卡证据模板：
 | P5c-0/P5c-1/P5c-2/P5c-3/P5c-4 URL refresh | `go test ./internal/types ./internal/wika/governance/urlrefresh ./internal/handler ./internal/router ./internal/container` | migration up/down、SSRF fixture；`GET/POST /knowledge/:id/url-refresh`、`PUT/DELETE /knowledge/:id/url-refresh/schedules/:schedule_id`、`PUT /url-refresh/:refresh_id/review`、flag off | `wika.url_refresh.job_created`、`job_failed`、`reviewed`、`schedule_updated` |
 | P5d-1/P5d-2/P5d-3 Eval schedule | `go test ./internal/types ./internal/wika/governance/evalschedule ./internal/handler ./internal/router ./internal/container` | migration up/down、cron fixture；`POST /eval/schedules`、schedule slot 幂等、disable/flag off 后 worker 不触发 | `wika.eval_schedule.updated`、`run_failed` |
 | P5e-1/P5e-2/P5e-3/P5e-4/P5e-5 Org share | `go test ./internal/types ./internal/wika/governance/orgshare ./internal/wika/scope ./internal/wika/search ./internal/handler ./internal/router ./internal/container` | migration up/down、share/accept/revoke fixture；`search_knowledge` shared scope、download/preview/direct read 裁剪回归；expand service 裁剪已覆盖，API/集成仍需补齐 | `wika.org_share.created`、`wika.org_share.accepted`、`wika.org_share.revoked` |
-| P5e-6/P5e-7 Org share hardening | `go test ./internal/wika/governance/orgshare ./internal/wika/scope ./internal/wika/search ./internal/handler ./internal/router ./internal/container -count=1` | `POST /wika/knowledge/expand` active shared 裁剪、revoke 后 search/expand/direct-id 不命中、MCP search/expand 真实调用 | create/accept/revoke 与状态转换同事务；审计失败不推进状态 |
+| P5e-6/P5e-7 Org share hardening | `go test ./internal/wika/governance/orgshare ./internal/wika/scope ./internal/wika/search ./internal/handler ./internal/router ./internal/container -count=1` | `POST /api/v1/wika/knowledge/expand` active shared 裁剪、revoke 后 search/expand/direct-id 不命中、MCP search/expand 真实调用 | create/accept/revoke 与状态转换同事务；审计失败不推进状态 |
