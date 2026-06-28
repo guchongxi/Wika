@@ -273,6 +273,8 @@ func TestRegisterWikaRoutesIncludesURLRefreshGovernance(t *testing.T) {
 		body   string
 	}{
 		{method: http.MethodPost, path: "/api/v1/wika/knowledge/k-1/url-refresh", body: `{"source_url":"https://example.com/doc"}`},
+		{method: http.MethodPut, path: "/api/v1/wika/knowledge/k-1/url-refresh/schedules/21", body: `{"enabled":true,"cron_expr":"0 * * * *"}`},
+		{method: http.MethodDelete, path: "/api/v1/wika/knowledge/k-1/url-refresh/schedules/21", body: `{}`},
 		{method: http.MethodPut, path: "/api/v1/wika/url-refresh/11/review", body: `{"decision":"apply"}`},
 	} {
 		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))

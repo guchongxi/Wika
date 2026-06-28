@@ -340,6 +340,8 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 		urlRefresh := wika.Group("/knowledge/:id/url-refresh", viewerGuards...)
 		{
 			urlRefresh.POST("", urlRefreshHandler.CreateJob)
+			urlRefresh.PUT("/schedules/:schedule_id", urlRefreshHandler.UpdateSchedule)
+			urlRefresh.DELETE("/schedules/:schedule_id", urlRefreshHandler.DisableSchedule)
 		}
 		wika.PUT("/url-refresh/:id/review", append(viewerGuards, urlRefreshHandler.ReviewJob)...)
 	}

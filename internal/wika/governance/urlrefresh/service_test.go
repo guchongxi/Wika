@@ -267,3 +267,146 @@ func TestServiceFeatureFlagFailClosed(t *testing.T) {
 		t.Fatalf("disabled worker should not lease job: %+v", notLeased)
 	}
 }
+
+func TestServiceCreateOrUpdateScheduleRejectsCronBelowMinimum(t *testing.T) {
+	db := setupURLRefreshStoreTestDB(t)
+	store := NewGormStore(db)
+	now := time.Date(2026, 6, 29, 12, 15, 0, 0, time.UTC)
+	svc := NewService(store, fakeFetcher{}, WithFeatureGate(fakeFeatureGate{enabled: true}))
+
+	_, err := svc.CreateOrUpdateSchedule(context.Background(), CreateOrUpdateScheduleInput{
+		ActorID:     "u-owner",
+		TenantID:    90,
+		KBID:        "kb-url",
+		KnowledgeID: "k-url",
+		SourceURL:   "https://example.com/doc",
+		CronExpr:    "*/30 * * * *",
+		Enabled:     true,
+		Now:         now,
+	})
+	if err != ErrInvalidSchedule {
+		t.Fatalf("expected ErrInvalidSchedule, got %v", err)
+	}
+}
+
+func TestServiceCreateOrUpdateScheduleCreatesNextRun(t *testing.T) {
+	db := setupURLRefreshStoreTestDB(t)
+	store := NewGormStore(db)
+	now := time.Date(2026, 6, 29, 12, 15, 0, 0, time.UTC)
+	svc := NewService(store, fakeFetcher{}, WithFeatureGate(fakeFeatureGate{enabled: true}))
+
+	schedule, err := svc.CreateOrUpdateSchedule(context.Background(), CreateOrUpdateScheduleInput{
+		ActorID:     "u-owner",
+		TenantID:    90,
+		KBID:        "kb-url",
+		KnowledgeID: "k-url",
+		SourceURL:   "https://example.com/doc",
+		CronExpr:    "0 * * * *",
+		Enabled:     true,
+		Now:         now,
+	})
+	require.NoError(t, err)
+	if schedule.ID == 0 ||
+		!schedule.Enabled ||
+		schedule.CreatedBy != "u-owner" ||
+		schedule.NextRunAt != time.Date(2026, 6, 29, 13, 0, 0, 0, time.UTC) {
+		t.Fatalf("unexpected schedule: %+v", schedule)
+	}
+}
+
+func TestServiceRunDueSchedulesCreatesOneJobPerScheduleSlot(t *testing.T) {
+	db := setupURLRefreshStoreTestDB(t)
+	store := NewGormStore(db)
+	now := time.Date(2026, 6, 29, 12, 15, 0, 0, time.UTC)
+	svc := NewService(store, fakeFetcher{}, WithFeatureGate(fakeFeatureGate{enabled: true}))
+	schedule, err := svc.CreateOrUpdateSchedule(context.Background(), CreateOrUpdateScheduleInput{
+		ActorID:     "u-owner",
+		TenantID:    90,
+		KBID:        "kb-url",
+		KnowledgeID: "k-url",
+		SourceURL:   "https://example.com/doc",
+		CronExpr:    "0 * * * *",
+		Enabled:     true,
+		Now:         now,
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.Model(&types.WikaURLRefreshSchedule{}).Where("id = ?", schedule.ID).Update("next_run_at", now.Add(-time.Minute)).Error)
+
+	jobs, err := svc.RunDueSchedules(context.Background(), now)
+	require.NoError(t, err)
+	if len(jobs) != 1 || jobs[0].ScheduleID == nil || *jobs[0].ScheduleID != schedule.ID {
+		t.Fatalf("expected one scheduled job, got %+v", jobs)
+	}
+
+	jobs, err = svc.RunDueSchedules(context.Background(), now)
+	require.NoError(t, err)
+	if len(jobs) != 0 {
+		t.Fatalf("expected same due slot to be idempotent after first run, got %+v", jobs)
+	}
+
+	var count int64
+	require.NoError(t, db.Model(&types.WikaURLRefreshJob{}).Where("schedule_id = ?", schedule.ID).Count(&count).Error)
+	if count != 1 {
+		t.Fatalf("expected exactly one scheduled job, got %d", count)
+	}
+}
+
+func TestServiceUpdateScheduleByID(t *testing.T) {
+	db := setupURLRefreshStoreTestDB(t)
+	store := NewGormStore(db)
+	now := time.Date(2026, 6, 29, 12, 15, 0, 0, time.UTC)
+	svc := NewService(store, fakeFetcher{}, WithFeatureGate(fakeFeatureGate{enabled: true}))
+	schedule, err := svc.CreateOrUpdateSchedule(context.Background(), CreateOrUpdateScheduleInput{
+		ActorID:     "u-owner",
+		TenantID:    90,
+		KBID:        "kb-url",
+		KnowledgeID: "k-url",
+		SourceURL:   "https://example.com/doc",
+		CronExpr:    "0 * * * *",
+		Enabled:     true,
+		Now:         now,
+	})
+	require.NoError(t, err)
+
+	updated, err := svc.UpdateSchedule(context.Background(), UpdateScheduleInput{
+		ActorID:    "u-owner",
+		ScheduleID: schedule.ID,
+		CronExpr:   "0 */2 * * *",
+		Enabled:    true,
+		Now:        now,
+	})
+	require.NoError(t, err)
+	if !updated.Enabled ||
+		updated.CronExpr != "0 */2 * * *" ||
+		updated.NextRunAt != time.Date(2026, 6, 29, 14, 0, 0, 0, time.UTC) {
+		t.Fatalf("unexpected updated schedule: %+v", updated)
+	}
+}
+
+func TestServiceDisableSchedule(t *testing.T) {
+	db := setupURLRefreshStoreTestDB(t)
+	store := NewGormStore(db)
+	now := time.Date(2026, 6, 29, 12, 15, 0, 0, time.UTC)
+	svc := NewService(store, fakeFetcher{}, WithFeatureGate(fakeFeatureGate{enabled: true}))
+	schedule, err := svc.CreateOrUpdateSchedule(context.Background(), CreateOrUpdateScheduleInput{
+		ActorID:     "u-owner",
+		TenantID:    90,
+		KBID:        "kb-url",
+		KnowledgeID: "k-url",
+		SourceURL:   "https://example.com/doc",
+		CronExpr:    "0 * * * *",
+		Enabled:     true,
+		Now:         now,
+	})
+	require.NoError(t, err)
+
+	disabled, err := svc.DisableSchedule(context.Background(), DisableScheduleInput{
+		ActorID:    "u-owner",
+		ScheduleID: schedule.ID,
+		Now:        now,
+	})
+	require.NoError(t, err)
+	if disabled.Enabled {
+		t.Fatalf("expected disabled schedule, got %+v", disabled)
+	}
+}

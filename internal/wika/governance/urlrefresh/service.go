@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
+
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/wika/governance/urlrefresh/safefetch"
 	"github.com/Tencent/WeKnora/internal/wika/governance/version"
@@ -47,6 +49,7 @@ type Service struct {
 type ServiceOption func(*Service)
 
 const urlRefreshFeatureFlagKey = "wika.governance.url_refresh.enabled"
+const minScheduleInterval = time.Hour
 
 func WithKnowledgeUpdater(knowledge KnowledgeUpdater) ServiceOption {
 	return func(s *Service) {
@@ -133,6 +136,123 @@ func (s *Service) RunJob(ctx context.Context, input RunJobInput) error {
 		DiffSummary:    types.JSON([]byte(`{}`)),
 		SSRFCheck:      types.JSON(ssrfCheck),
 	})
+}
+
+func (s *Service) CreateOrUpdateSchedule(ctx context.Context, input CreateOrUpdateScheduleInput) (*types.WikaURLRefreshSchedule, error) {
+	if !s.featureEnabled(ctx) {
+		return nil, ErrFeatureDisabled
+	}
+	if s.store == nil {
+		return nil, nil
+	}
+	now := input.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	schedule, nextRunAt, err := parseSchedule(input.CronExpr, now)
+	if err != nil {
+		return nil, err
+	}
+	if interval := schedule.Next(nextRunAt).Sub(nextRunAt); interval < minScheduleInterval {
+		return nil, ErrInvalidSchedule
+	}
+	input.Now = now
+	return s.store.CreateOrUpdateSchedule(ctx, input, nextRunAt)
+}
+
+func (s *Service) RunDueSchedules(ctx context.Context, now time.Time) ([]*types.WikaURLRefreshJob, error) {
+	if !s.featureEnabled(ctx) {
+		return nil, ErrFeatureDisabled
+	}
+	if s.store == nil {
+		return nil, nil
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	schedules, err := s.store.ListDueSchedules(ctx, now, 100)
+	if err != nil {
+		return nil, err
+	}
+	jobs := make([]*types.WikaURLRefreshJob, 0, len(schedules))
+	for _, item := range schedules {
+		if item == nil {
+			continue
+		}
+		scheduledFor := item.NextRunAt
+		existing, err := s.store.FindJobByScheduleSlot(ctx, item.ID, scheduledFor)
+		if err == nil {
+			nextRunAt, nextErr := nextScheduleRun(item.CronExpr, scheduledFor)
+			if nextErr != nil {
+				return nil, nextErr
+			}
+			if err := s.store.MarkScheduleTriggered(ctx, item.ID, existing.ID, nextRunAt, now); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if err != ErrJobNotFound {
+			return nil, err
+		}
+		scheduleID := item.ID
+		job, err := s.store.CreateJob(ctx, CreateJobInput{
+			ActorID:      item.CreatedBy,
+			TenantID:     item.TenantID,
+			KBID:         item.KBID,
+			KnowledgeID:  item.KnowledgeID,
+			SourceURL:    item.SourceURL,
+			ScheduleID:   &scheduleID,
+			ScheduledFor: &scheduledFor,
+			Now:          now,
+		})
+		if err != nil {
+			return nil, err
+		}
+		nextRunAt, err := nextScheduleRun(item.CronExpr, scheduledFor)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.store.MarkScheduleTriggered(ctx, item.ID, job.ID, nextRunAt, now); err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, nil
+}
+
+func (s *Service) UpdateSchedule(ctx context.Context, input UpdateScheduleInput) (*types.WikaURLRefreshSchedule, error) {
+	if !s.featureEnabled(ctx) {
+		return nil, ErrFeatureDisabled
+	}
+	if s.store == nil {
+		return nil, ErrScheduleNotFound
+	}
+	now := input.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	schedule, nextRunAt, err := parseSchedule(input.CronExpr, now)
+	if err != nil {
+		return nil, err
+	}
+	if interval := schedule.Next(nextRunAt).Sub(nextRunAt); interval < minScheduleInterval {
+		return nil, ErrInvalidSchedule
+	}
+	input.Now = now
+	return s.store.UpdateSchedule(ctx, input, nextRunAt)
+}
+
+func (s *Service) DisableSchedule(ctx context.Context, input DisableScheduleInput) (*types.WikaURLRefreshSchedule, error) {
+	if !s.featureEnabled(ctx) {
+		return nil, ErrFeatureDisabled
+	}
+	if s.store == nil {
+		return nil, ErrScheduleNotFound
+	}
+	if input.Now.IsZero() {
+		input.Now = time.Now()
+	}
+	return s.store.DisableSchedule(ctx, input)
 }
 
 func (s *Service) ReviewJob(ctx context.Context, input ReviewJobInput) (*ReviewJobResult, error) {
@@ -258,6 +378,29 @@ func (s *Service) featureEnabled(ctx context.Context) bool {
 func hashFetchedContent(content string) string {
 	sum := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(sum[:])
+}
+
+func parseSchedule(expr string, now time.Time) (cron.Schedule, time.Time, error) {
+	parsed, err := cron.ParseStandard(strings.TrimSpace(expr))
+	if err != nil {
+		return nil, time.Time{}, ErrInvalidSchedule
+	}
+	nextRunAt := parsed.Next(now)
+	if nextRunAt.IsZero() {
+		return nil, time.Time{}, ErrInvalidSchedule
+	}
+	return parsed, nextRunAt, nil
+}
+
+func nextScheduleRun(expr string, after time.Time) (time.Time, error) {
+	parsed, nextRunAt, err := parseSchedule(expr, after)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if parsed.Next(nextRunAt).Sub(nextRunAt) < minScheduleInterval {
+		return time.Time{}, ErrInvalidSchedule
+	}
+	return nextRunAt, nil
 }
 
 func truncateError(msg string) string {

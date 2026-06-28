@@ -15,9 +15,12 @@ import (
 )
 
 type stubWikaURLRefreshService struct {
-	createInput *wikaurlrefresh.CreateJobInput
-	reviewInput *wikaurlrefresh.ReviewJobInput
-	reviewErr   error
+	createInput   *wikaurlrefresh.CreateJobInput
+	scheduleInput *wikaurlrefresh.CreateOrUpdateScheduleInput
+	updateInput   *wikaurlrefresh.UpdateScheduleInput
+	disableInput  *wikaurlrefresh.DisableScheduleInput
+	reviewInput   *wikaurlrefresh.ReviewJobInput
+	reviewErr     error
 }
 
 func (s *stubWikaURLRefreshService) CreateJob(_ context.Context, input wikaurlrefresh.CreateJobInput) (*types.WikaURLRefreshJob, error) {
@@ -37,6 +40,21 @@ func (s *stubWikaURLRefreshService) ReviewJob(_ context.Context, input wikaurlre
 	return &wikaurlrefresh.ReviewJobResult{JobID: input.JobID, Status: status, VersionID: 700}, nil
 }
 
+func (s *stubWikaURLRefreshService) CreateOrUpdateSchedule(_ context.Context, input wikaurlrefresh.CreateOrUpdateScheduleInput) (*types.WikaURLRefreshSchedule, error) {
+	s.scheduleInput = &input
+	return &types.WikaURLRefreshSchedule{ID: 21, TenantID: input.TenantID, KBID: input.KBID, KnowledgeID: input.KnowledgeID, SourceURL: input.SourceURL, Enabled: input.Enabled, CronExpr: input.CronExpr, CreatedBy: input.ActorID}, nil
+}
+
+func (s *stubWikaURLRefreshService) UpdateSchedule(_ context.Context, input wikaurlrefresh.UpdateScheduleInput) (*types.WikaURLRefreshSchedule, error) {
+	s.updateInput = &input
+	return &types.WikaURLRefreshSchedule{ID: input.ScheduleID, Enabled: input.Enabled, CronExpr: input.CronExpr}, nil
+}
+
+func (s *stubWikaURLRefreshService) DisableSchedule(_ context.Context, input wikaurlrefresh.DisableScheduleInput) (*types.WikaURLRefreshSchedule, error) {
+	s.disableInput = &input
+	return &types.WikaURLRefreshSchedule{ID: input.ScheduleID, Enabled: false}, nil
+}
+
 func newWikaURLRefreshTestRouter(service *stubWikaURLRefreshService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -48,6 +66,8 @@ func newWikaURLRefreshTestRouter(service *stubWikaURLRefreshService) *gin.Engine
 	})
 	h := &WikaURLRefreshHandler{service: service}
 	r.POST("/api/v1/wika/knowledge/:id/url-refresh", h.CreateJob)
+	r.PUT("/api/v1/wika/knowledge/:id/url-refresh/schedules/:schedule_id", h.UpdateSchedule)
+	r.DELETE("/api/v1/wika/knowledge/:id/url-refresh/schedules/:schedule_id", h.DisableSchedule)
 	r.PUT("/api/v1/wika/url-refresh/:id/review", h.ReviewJob)
 	return r
 }
@@ -70,6 +90,71 @@ func TestWikaURLRefreshCreateJobPassesActorTenantKnowledgeAndURL(t *testing.T) {
 		service.createInput.KnowledgeID != "k-url" ||
 		service.createInput.SourceURL != "https://example.com/doc" {
 		t.Fatalf("unexpected create input: %+v", service.createInput)
+	}
+}
+
+func TestWikaURLRefreshCreateSchedulePassesCronAndEnabled(t *testing.T) {
+	service := &stubWikaURLRefreshService{}
+	r := newWikaURLRefreshTestRouter(service)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/knowledge/k-url/url-refresh", bytes.NewBufferString(`{"source_url":"https://example.com/doc","schedule":{"enabled":true,"cron_expr":"0 * * * *"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if service.scheduleInput == nil ||
+		service.scheduleInput.ActorID != "u-reviewer" ||
+		service.scheduleInput.TenantID != 90 ||
+		service.scheduleInput.KnowledgeID != "k-url" ||
+		service.scheduleInput.SourceURL != "https://example.com/doc" ||
+		service.scheduleInput.CronExpr != "0 * * * *" ||
+		!service.scheduleInput.Enabled {
+		t.Fatalf("unexpected schedule input: %+v", service.scheduleInput)
+	}
+	if service.createInput != nil {
+		t.Fatalf("schedule request should not create immediate job: %+v", service.createInput)
+	}
+}
+
+func TestWikaURLRefreshUpdateScheduleParsesIDCronAndEnabled(t *testing.T) {
+	service := &stubWikaURLRefreshService{}
+	r := newWikaURLRefreshTestRouter(service)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/wika/knowledge/k-url/url-refresh/schedules/21", bytes.NewBufferString(`{"enabled":true,"cron_expr":"0 */2 * * *"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if service.updateInput == nil ||
+		service.updateInput.ActorID != "u-reviewer" ||
+		service.updateInput.ScheduleID != 21 ||
+		service.updateInput.CronExpr != "0 */2 * * *" ||
+		!service.updateInput.Enabled {
+		t.Fatalf("unexpected update input: %+v", service.updateInput)
+	}
+}
+
+func TestWikaURLRefreshDisableScheduleParsesID(t *testing.T) {
+	service := &stubWikaURLRefreshService{}
+	r := newWikaURLRefreshTestRouter(service)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/wika/knowledge/k-url/url-refresh/schedules/21", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if service.disableInput == nil ||
+		service.disableInput.ActorID != "u-reviewer" ||
+		service.disableInput.ScheduleID != 21 {
+		t.Fatalf("unexpected disable input: %+v", service.disableInput)
 	}
 }
 

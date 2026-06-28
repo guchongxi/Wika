@@ -21,6 +21,8 @@ var ErrJobNotFound = errors.New("url refresh job not found")
 var ErrInvalidJobState = errors.New("url refresh job state conflict")
 var ErrInvalidReviewDecision = errors.New("invalid url refresh review decision")
 var ErrFeatureDisabled = errors.New("wika url refresh feature disabled")
+var ErrInvalidSchedule = errors.New("invalid url refresh schedule")
+var ErrScheduleNotFound = errors.New("url refresh schedule not found")
 
 const (
 	ReviewDecisionApply  = "apply"
@@ -44,6 +46,31 @@ type RunJobInput struct {
 	WorkerID      string
 	Now           time.Time
 	LeaseDuration time.Duration
+}
+
+type CreateOrUpdateScheduleInput struct {
+	ActorID     string
+	TenantID    uint64
+	KBID        string
+	KnowledgeID string
+	SourceURL   string
+	CronExpr    string
+	Enabled     bool
+	Now         time.Time
+}
+
+type UpdateScheduleInput struct {
+	ActorID    string
+	ScheduleID uint64
+	CronExpr   string
+	Enabled    bool
+	Now        time.Time
+}
+
+type DisableScheduleInput struct {
+	ActorID    string
+	ScheduleID uint64
+	Now        time.Time
 }
 
 type MarkPendingReviewInput struct {
