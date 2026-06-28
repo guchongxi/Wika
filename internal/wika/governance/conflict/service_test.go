@@ -10,10 +10,38 @@ import (
 
 type fakeConflictStore struct {
 	check          *types.WikaConflictCheck
+	createdCheck   *types.WikaConflictCheck
+	listItems      []*types.WikaConflictItem
 	savedCheck     *types.WikaConflictCheck
 	savedItems     []Candidate
+	resolveInput   *ResolveItemInput
+	resolvedItem   *types.WikaConflictItem
 	completedCheck uint64
 	failedCheck    uint64
+}
+
+func (s *fakeConflictStore) CreateCheck(ctx context.Context, check *types.WikaConflictCheck) (*types.WikaConflictCheck, error) {
+	copied := *check
+	copied.ID = 41
+	s.createdCheck = &copied
+	return &copied, nil
+}
+
+func (s *fakeConflictStore) ListItems(ctx context.Context, input ListItemsInput) ([]*types.WikaConflictItem, int64, error) {
+	return s.listItems, int64(len(s.listItems)), nil
+}
+
+func (s *fakeConflictStore) ResolveItem(ctx context.Context, input ResolveItemInput) (*types.WikaConflictItem, error) {
+	s.resolveInput = &input
+	if s.resolvedItem != nil {
+		item := *s.resolvedItem
+		item.Status = input.Status
+		item.ReviewerComment = input.Comment
+		item.ResolvedBy = input.ActorID
+		item.ResolvedAt = &input.Now
+		return &item, nil
+	}
+	return nil, ErrConflictItemNotFound
 }
 
 func (s *fakeConflictStore) AcquireCheck(ctx context.Context, checkID uint64, workerID string, now time.Time, lease time.Duration) (*types.WikaConflictCheck, error) {
@@ -50,6 +78,72 @@ type fakeConflictGenerator struct {
 func (g *fakeConflictGenerator) GenerateCandidates(ctx context.Context, input GenerateInput) ([]Candidate, error) {
 	g.input = input
 	return g.candidates, g.err
+}
+
+type fakeConflictAudit struct {
+	entries []*types.AuditLog
+}
+
+func (a *fakeConflictAudit) Log(ctx context.Context, entry *types.AuditLog) error {
+	a.entries = append(a.entries, entry)
+	return nil
+}
+
+func TestConflictServiceCreateCheckWritesAudit(t *testing.T) {
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	store := &fakeConflictStore{}
+	audit := &fakeConflictAudit{}
+	svc := &Service{store: store, audit: audit}
+
+	got, err := svc.CreateCheck(context.Background(), CreateCheckInput{
+		ActorID:  "u-owner",
+		TenantID: 80,
+		KBID:     "kb-team",
+		Trigger:  TriggerManual,
+		Now:      now,
+	})
+	if err != nil {
+		t.Fatalf("CreateCheck returned error: %v", err)
+	}
+	if got.ID != 41 || store.createdCheck == nil || store.createdCheck.Status != CheckStatusPending || store.createdCheck.CreatedBy != "u-owner" {
+		t.Fatalf("unexpected created check: got=%+v stored=%+v", got, store.createdCheck)
+	}
+	if len(audit.entries) != 1 ||
+		audit.entries[0].Action != types.AuditActionWikaConflictCheckCreated ||
+		audit.entries[0].TenantID != 80 ||
+		audit.entries[0].ActorUserID != "u-owner" ||
+		audit.entries[0].TargetID != "41" {
+		t.Fatalf("unexpected audit entries: %+v", audit.entries)
+	}
+}
+
+func TestConflictServiceResolveItemWritesAudit(t *testing.T) {
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	store := &fakeConflictStore{resolvedItem: &types.WikaConflictItem{ID: 7, TenantID: 80, KBID: "kb-team", Status: ItemStatusOpen}}
+	audit := &fakeConflictAudit{}
+	svc := &Service{store: store, audit: audit}
+
+	got, err := svc.ResolveItem(context.Background(), ResolveItemInput{
+		ActorID:  "u-reviewer",
+		TenantID: 80,
+		ItemID:   7,
+		Status:   ItemStatusResolved,
+		Comment:  "已合并到团队手册",
+		Now:      now,
+	})
+	if err != nil {
+		t.Fatalf("ResolveItem returned error: %v", err)
+	}
+	if got.Status != ItemStatusResolved || got.ResolvedBy != "u-reviewer" || store.resolveInput == nil || store.resolveInput.Comment != "已合并到团队手册" {
+		t.Fatalf("unexpected resolved item: got=%+v input=%+v", got, store.resolveInput)
+	}
+	if len(audit.entries) != 1 ||
+		audit.entries[0].Action != types.AuditActionWikaConflictItemResolved ||
+		audit.entries[0].TenantID != 80 ||
+		audit.entries[0].ActorUserID != "u-reviewer" ||
+		audit.entries[0].TargetID != "7" {
+		t.Fatalf("unexpected audit entries: %+v", audit.entries)
+	}
 }
 
 func TestConflictServiceRunCheckGeneratesCandidatesAndCompletes(t *testing.T) {

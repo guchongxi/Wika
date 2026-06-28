@@ -84,3 +84,43 @@ func TestGormConflictStoreSavesCandidatesAndCompletesCheck(t *testing.T) {
 		t.Fatalf("unexpected completed check: %+v", completed)
 	}
 }
+
+func TestGormConflictStoreResolveItemRejectsTerminalTransition(t *testing.T) {
+	db := setupConflictStoreTestDB(t)
+	require.NoError(t, db.Create(&types.Tenant{ID: 80, Name: "team", SpaceType: types.SpaceTypeTeam}).Error)
+	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb-team", TenantID: 80, Type: types.KnowledgeBaseTypeDocument}).Error)
+	require.NoError(t, db.Create(&types.Knowledge{ID: "k-1", TenantID: 80, KnowledgeBaseID: "kb-team", Title: "A"}).Error)
+	require.NoError(t, db.Create(&types.Knowledge{ID: "k-2", TenantID: 80, KnowledgeBaseID: "kb-team", Title: "B"}).Error)
+	check := &types.WikaConflictCheck{TenantID: 80, KBID: "kb-team", Trigger: TriggerManual, Status: CheckStatusCompleted, CreatedBy: "u-owner"}
+	require.NoError(t, db.Create(check).Error)
+	item := &types.WikaConflictItem{
+		CheckID: check.ID, TenantID: 80, KBID: "kb-team", SourceKnowledgeID: "k-1", TargetKnowledgeID: "k-2",
+		ConflictType: ConflictTypeContradiction, Status: ItemStatusOpen,
+	}
+	require.NoError(t, db.Create(item).Error)
+	store := NewGormStore(db)
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+
+	confirmed, err := store.ResolveItem(context.Background(), ResolveItemInput{
+		ActorID: "u-reviewer", TenantID: 80, ItemID: item.ID, Status: ItemStatusConfirmed, Comment: "确认为冲突", Now: now,
+	})
+	require.NoError(t, err)
+	if confirmed.Status != ItemStatusConfirmed || confirmed.ReviewerComment != "确认为冲突" {
+		t.Fatalf("unexpected confirmed item: %+v", confirmed)
+	}
+
+	resolved, err := store.ResolveItem(context.Background(), ResolveItemInput{
+		ActorID: "u-reviewer", TenantID: 80, ItemID: item.ID, Status: ItemStatusResolved, Comment: "已解决", Now: now,
+	})
+	require.NoError(t, err)
+	if resolved.Status != ItemStatusResolved || resolved.ResolvedBy != "u-reviewer" || resolved.ResolvedAt == nil {
+		t.Fatalf("unexpected resolved item: %+v", resolved)
+	}
+
+	_, err = store.ResolveItem(context.Background(), ResolveItemInput{
+		ActorID: "u-reviewer", TenantID: 80, ItemID: item.ID, Status: ItemStatusDismissed, Comment: "改成误报", Now: now,
+	})
+	if err != ErrConflictItemTerminal {
+		t.Fatalf("expected terminal transition error, got %v", err)
+	}
+}

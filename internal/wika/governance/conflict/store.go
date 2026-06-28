@@ -18,6 +18,77 @@ func NewGormStore(db *gorm.DB) *GormStore {
 	return &GormStore{db: db}
 }
 
+func (s *GormStore) CreateCheck(ctx context.Context, check *types.WikaConflictCheck) (*types.WikaConflictCheck, error) {
+	if err := s.db.WithContext(ctx).Create(check).Error; err != nil {
+		return nil, err
+	}
+	return check, nil
+}
+
+func (s *GormStore) ListItems(ctx context.Context, input ListItemsInput) ([]*types.WikaConflictItem, int64, error) {
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := input.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	query := s.db.WithContext(ctx).Model(&types.WikaConflictItem{}).
+		Where("tenant_id = ? AND kb_id = ?", input.TenantID, input.KBID)
+	if input.Status != "" {
+		query = query.Where("status = ?", input.Status)
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var items []*types.WikaConflictItem
+	if err := query.Order("updated_at DESC, id DESC").Limit(limit).Offset(offset).Find(&items).Error; err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+func (s *GormStore) ResolveItem(ctx context.Context, input ResolveItemInput) (*types.WikaConflictItem, error) {
+	if !isValidItemStatus(input.Status) {
+		return nil, ErrInvalidConflictStatus
+	}
+	var item types.WikaConflictItem
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&item, "id = ? AND tenant_id = ?", input.ItemID, input.TenantID).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return ErrConflictItemNotFound
+			}
+			return err
+		}
+		if !canTransitionItem(item.Status, input.Status) {
+			if item.Status == ItemStatusDismissed || item.Status == ItemStatusResolved {
+				return ErrConflictItemTerminal
+			}
+			return ErrInvalidConflictStatus
+		}
+		updates := map[string]any{
+			"status":           input.Status,
+			"reviewer_comment": input.Comment,
+			"resolved_by":      input.ActorID,
+			"resolved_at":      input.Now,
+		}
+		if err := tx.Model(&types.WikaConflictItem{}).Where("id = ?", item.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		return tx.First(&item, "id = ?", item.ID).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
 func (s *GormStore) AcquireCheck(ctx context.Context, checkID uint64, workerID string, now time.Time, lease time.Duration) (*types.WikaConflictCheck, error) {
 	if lease <= 0 {
 		lease = time.Minute
@@ -45,6 +116,26 @@ func (s *GormStore) AcquireCheck(ctx context.Context, checkID uint64, workerID s
 		return nil, err
 	}
 	return &check, nil
+}
+
+func isValidItemStatus(status string) bool {
+	switch status {
+	case ItemStatusConfirmed, ItemStatusDismissed, ItemStatusResolved:
+		return true
+	default:
+		return false
+	}
+}
+
+func canTransitionItem(from, to string) bool {
+	switch from {
+	case ItemStatusOpen:
+		return to == ItemStatusConfirmed || to == ItemStatusDismissed || to == ItemStatusResolved
+	case ItemStatusConfirmed:
+		return to == ItemStatusResolved
+	default:
+		return false
+	}
 }
 
 func (s *GormStore) SaveConflictItems(ctx context.Context, check *types.WikaConflictCheck, candidates []Candidate) error {

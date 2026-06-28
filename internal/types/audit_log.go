@@ -55,6 +55,12 @@ const (
 	// a Wika freshness item. Details carries action, previous status,
 	// new status and knowledge id;正文和证据不进入审计日志。
 	AuditActionWikaFreshnessItemHandled AuditAction = "wika.freshness.item_handled"
+	// AuditActionWikaConflictCheckCreated fires when a Wika conflict
+	// detection check is created. Details must not contain正文或 snippet。
+	AuditActionWikaConflictCheckCreated AuditAction = "wika.conflict.check_created"
+	// AuditActionWikaConflictItemResolved fires when a maintainer changes
+	// a conflict item status. Evidence正文不进入审计日志。
+	AuditActionWikaConflictItemResolved AuditAction = "wika.conflict.item_resolved"
 
 	// VectorStore lifecycle actions. Emitted by VectorStoreService.
 	// Cover both env-store-derived (__env_*) and DB store create /

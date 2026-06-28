@@ -93,6 +93,7 @@ type RouterParams struct {
 	WikaEvaluationHandler        *handler.WikaEvaluationHandler
 	WikaFreshnessHandler         *handler.WikaFreshnessHandler
 	WikaGraphHandler             *handler.WikaGraphHandler
+	WikaConflictHandler          *handler.WikaConflictHandler
 	WikaTokenService             *wikaauth.TokenService
 }
 
@@ -239,7 +240,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterWeKnoraCloudRoutes(v1, params.WeKnoraCloudHandler, rbacGuards)
 		RegisterWikiPageRoutes(v1, params.WikiPageHandler, rbacGuards)
 		RegisterChunkerDebugRoutes(v1, rbacGuards)
-		RegisterWikaRoutes(v1, params.WikaTokenHandler, params.WikaKnowledgeHandler, params.WikaSuggestionHandler, params.WikaEvaluationHandler, params.WikaFreshnessHandler, params.WikaGraphHandler, rbacGuards)
+		RegisterWikaRoutes(v1, params.WikaTokenHandler, params.WikaKnowledgeHandler, params.WikaSuggestionHandler, params.WikaEvaluationHandler, params.WikaFreshnessHandler, params.WikaGraphHandler, params.WikaConflictHandler, rbacGuards)
 	}
 
 	return r
@@ -257,8 +258,8 @@ func RegisterChunkerDebugRoutes(r *gin.RouterGroup, g *rbacGuards) {
 }
 
 // RegisterWikaRoutes 注册 Wika 产品化接口。
-func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, knowledgeHandler *handler.WikaKnowledgeHandler, suggestionHandler *handler.WikaSuggestionHandler, evaluationHandler *handler.WikaEvaluationHandler, freshnessHandler *handler.WikaFreshnessHandler, graphHandler *handler.WikaGraphHandler, g *rbacGuards) {
-	if tokenHandler == nil && knowledgeHandler == nil && suggestionHandler == nil && evaluationHandler == nil && freshnessHandler == nil && graphHandler == nil {
+func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, knowledgeHandler *handler.WikaKnowledgeHandler, suggestionHandler *handler.WikaSuggestionHandler, evaluationHandler *handler.WikaEvaluationHandler, freshnessHandler *handler.WikaFreshnessHandler, graphHandler *handler.WikaGraphHandler, conflictHandler *handler.WikaConflictHandler, g *rbacGuards) {
+	if tokenHandler == nil && knowledgeHandler == nil && suggestionHandler == nil && evaluationHandler == nil && freshnessHandler == nil && graphHandler == nil && conflictHandler == nil {
 		return
 	}
 	wika := r.Group("/wika")
@@ -316,6 +317,14 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 			graph.GET("/entities/:entity_id", graphHandler.GetEntity)
 			graph.GET("/edges", graphHandler.ListEdges)
 		}
+	}
+	if conflictHandler != nil {
+		conflicts := wika.Group("/kb/:id/conflicts", viewerGuards...)
+		{
+			conflicts.GET("", conflictHandler.ListItems)
+			conflicts.POST("/checks", conflictHandler.CreateCheck)
+		}
+		wika.PUT("/conflicts/:id", append(viewerGuards, conflictHandler.ResolveItem)...)
 	}
 }
 
