@@ -2047,15 +2047,15 @@ P5 命名词汇表：
 | P5b-1 Version migration | `(knowledge_id, version_no)` unique | `migrations/versioned/000098*`、`internal/types/wika_version.go` | migration up/down |
 | P5b-2 Version hooks | 手动更新、旧 API 更新、suggestion apply、URL apply、restore 均记录版本 | `internal/wika/governance/version`、知识更新链路适配点 | 写路径 fixture |
 | P5b-3 Version API | restore 生成新版本，不覆盖历史 | `internal/handler/wika_governance_version.go` | diff/restore/scope 测试 |
-| P5c-0 URL refresh migration | job 状态 check、schedule 启用唯一、lease 字段存在 | `migrations/versioned/000098*`、`internal/types/wika_url_refresh.go` | migration up/down |
+| P5c-0 URL refresh migration | job 状态 check、schedule 启用唯一、lease 字段存在 | `migrations/versioned/000099*`、`internal/types/wika_url_refresh.go` | migration up/down |
 | P5c-1 Safe fetcher | 内网、metadata、重定向、DNS rebinding、超大响应均阻断 | `internal/wika/governance/urlrefresh/safefetch` | SSRF fixture |
 | P5c-2 URL refresh job | 正常 URL 进入 pending_review，不改知识 | `internal/wika/governance/urlrefresh` | job 状态机、worker lease |
 | P5c-3 URL review/apply | apply 生成新版本；reject 不改知识 | `internal/handler/wika_governance_urlrefresh.go`、`VersionService` | API 冒烟、审计 |
 | P5c-4 URL schedule | 连续失败后 disable 或延后 next_run_at | `wika_url_refresh_schedules`、worker 注册 | cron/失败计数测试 |
-| P5d-1 Eval schedule migration | 同一 `kb_id + dataset_id` 只能一个 enabled schedule | `migrations/versioned/000099*` | migration up/down |
+| P5d-1 Eval schedule migration | 同一 `kb_id + dataset_id` 只能一个 enabled schedule | `migrations/versioned/000100*` | migration up/down |
 | P5d-2 Eval scheduler worker | 多实例不会重复创建 run | `internal/wika/governance/evalschedule` | DB lock、失败降频 |
 | P5d-3 Eval schedule API | cron 非法 400，disabled 不触发 | `internal/handler/wika_eval_schedule.go` | handler/API 测试 |
-| P5e-1 Org model migration | org/member/share 约束和 revoke 状态 | `migrations/versioned/000099*`、`internal/types/wika_org_share.go` | migration up/down |
+| P5e-1 Org model migration | org/member/share 约束和 revoke 状态 | `migrations/versioned/000101*`、`internal/types/wika_org_share.go` | migration up/down |
 | P5e-2 Org/member API | personal tenant 禁止加入 Organization | `internal/handler/wika_org.go` | 角色和接收方确认测试 |
 | P5e-3 Share authorization | allowed_fields 只能服务端白名单 | `internal/wika/governance/orgshare` | share/create/revoke 测试 |
 | P5e-4 Shared scope search | revoke 后 ScopeResolver 不再返回 shared scope | `internal/wika/scope`、`internal/wika/search` | `search_knowledge` shared scope 回归 |
@@ -2248,8 +2248,10 @@ ListSharedScopes(ctx, actor, tenantID)
 | 000095 | freshness checks / items |
 | 000096 | graph entities / graph edges 读模型 |
 | 000097 | conflict checks / conflict items |
-| 000098 | knowledge versions / url refresh jobs / url refresh schedules |
-| 000099 | eval schedules / organizations / org members / org shares |
+| 000098 | knowledge versions |
+| 000099 | url refresh jobs / url refresh schedules |
+| 000100 | eval schedules |
+| 000101 | organizations / org members / org shares |
 
 当前上游迁移已到 `000063`，`000090+` 仍留有缓冲。
 
@@ -2261,7 +2263,7 @@ P5 migration 必测约束：
 - `wika_eval_schedules(kb_id, dataset_id)` 启用状态唯一。
 - `wika_org_members(org_id, tenant_id)` 唯一。
 - `wika_org_shares` active 状态下同一 `source_kb_id + target_tenant_id` 唯一。
-- down migration 必须按 share/member/org、schedule/job、version、conflict 的依赖顺序回滚。
+- down migration 必须按 org share/member/org、eval schedule、url refresh schedule/job、version、conflict 的依赖顺序回滚。
 
 ## 十三、冲突风险
 
@@ -2323,7 +2325,7 @@ P5 migration 必测约束：
 | P1b | Web/MCP push、search compact/expand、幂等、access flush 或批量 upsert 证据 |
 | P1c | AI 三态 fixture、自动应用关闭/开启两组测试、人工覆盖、重复 apply 幂等 |
 | P2 | 导入导出、dry-run、正式 run、趋势、case 明细、越权导出阻断 |
-| P3 | scanner 构造 4 类问题、处理动作审计、检索热路径无主表写入 |
+| P3 | scanner 构造 5 类问题、处理动作审计、检索热路径无主表写入 |
 | P4 | 图谱读模型分页、实体详情、图谱检索降级、SystemAdmin 字段 allowlist |
 | P5 | 冲突处理、版本恢复、SSRF fixture、定时评测失败降频、Organization 撤销后 resolver 不返回 |
 
