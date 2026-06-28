@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -75,6 +76,21 @@ func (s *fakeKnowledgeSearcher) GetKnowledgeByIDOnly(ctx context.Context, id str
 	return nil, nil
 }
 
+type fakeGraphSearcher struct {
+	scopes []ReadableScope
+	query  string
+	limit  int
+	resp   []GraphContribution
+	err    error
+}
+
+func (s *fakeGraphSearcher) SearchGraph(ctx context.Context, scopes []ReadableScope, query string, limit int) ([]GraphContribution, error) {
+	s.scopes = scopes
+	s.query = query
+	s.limit = limit
+	return s.resp, s.err
+}
+
 func TestSearchKnowledgeUsesReadableScopesAndReturnsCompactResults(t *testing.T) {
 	updatedAt := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 	store := &fakeSearchStore{
@@ -128,6 +144,70 @@ func TestSearchKnowledgeUsesReadableScopesAndReturnsCompactResults(t *testing.T)
 	}
 	if len(store.accessRecords) != 2 || store.accessRecords[0].KnowledgeID != "k-personal" {
 		t.Fatalf("expected access records for returned results, got %+v", store.accessRecords)
+	}
+}
+
+func TestSearchKnowledgeFallsBackWhenGraphSearchFails(t *testing.T) {
+	store := &fakeSearchStore{
+		scopes: []ReadableScope{
+			{TenantID: 70, KBID: "kb-personal", Source: SourcePersonal},
+			{TenantID: 80, KBID: "kb-team", Source: SourceTeam},
+		},
+	}
+	searcher := &fakeKnowledgeSearcher{
+		resp: []*types.Knowledge{{ID: "k-team", TenantID: 80, KnowledgeBaseID: "kb-team", Title: "团队运行手册", Description: "指标排查"}},
+	}
+	graph := &fakeGraphSearcher{err: errors.New("graph unavailable")}
+	svc := &Service{store: store, knowledge: searcher, graph: graph}
+
+	got, err := svc.SearchKnowledge(context.Background(), SearchInput{
+		UserID:      "u-test",
+		Query:       "排查",
+		Limit:       5,
+		IncludeTeam: true,
+	})
+	if err != nil {
+		t.Fatalf("SearchKnowledge returned error: %v", err)
+	}
+	if !got.GraphDegraded {
+		t.Fatalf("expected graph degraded flag, got %+v", got)
+	}
+	if len(got.Results) != 1 || got.Results[0].KnowledgeID != "k-team" {
+		t.Fatalf("expected main search result despite graph failure, got %+v", got.Results)
+	}
+	if len(graph.scopes) != 2 || graph.query != "排查" || graph.limit != 5 {
+		t.Fatalf("unexpected graph search input: scopes=%+v query=%q limit=%d", graph.scopes, graph.query, graph.limit)
+	}
+}
+
+func TestSearchKnowledgeReturnsGraphContribution(t *testing.T) {
+	store := &fakeSearchStore{
+		scopes: []ReadableScope{{TenantID: 80, KBID: "kb-team", Source: SourceTeam}},
+	}
+	searcher := &fakeKnowledgeSearcher{
+		resp: []*types.Knowledge{{ID: "k-team", TenantID: 80, KnowledgeBaseID: "kb-team", Title: "团队运行手册", Description: "指标排查"}},
+	}
+	graph := &fakeGraphSearcher{resp: []GraphContribution{
+		{KBID: "kb-team", EntityID: 12, EntityName: "索引延迟", EntityType: "concept", SourceKnowledgeIDs: []string{"k-team"}},
+	}}
+	svc := &Service{store: store, knowledge: searcher, graph: graph}
+
+	got, err := svc.SearchKnowledge(context.Background(), SearchInput{
+		UserID:      "u-test",
+		Query:       "索引延迟",
+		Limit:       5,
+		IncludeTeam: true,
+	})
+	if err != nil {
+		t.Fatalf("SearchKnowledge returned error: %v", err)
+	}
+	if got.GraphDegraded {
+		t.Fatalf("did not expect graph degraded flag: %+v", got)
+	}
+	if len(got.GraphContribution) != 1 ||
+		got.GraphContribution[0].EntityName != "索引延迟" ||
+		got.GraphContribution[0].SourceKnowledgeIDs[0] != "k-team" {
+		t.Fatalf("unexpected graph contribution: %+v", got.GraphContribution)
 	}
 }
 

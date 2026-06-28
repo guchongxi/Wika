@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	wikagraph "github.com/Tencent/WeKnora/internal/wika/graph"
 )
 
 // Store 隔离 search 所需的 scope、状态和访问聚合写入。
@@ -24,15 +25,21 @@ type KnowledgeSearcher interface {
 	GetKnowledgeByIDOnly(ctx context.Context, id string) (*types.Knowledge, error)
 }
 
+// GraphSearcher 是 P4 图谱增强检索的 best-effort 适配接口。
+type GraphSearcher interface {
+	SearchGraph(ctx context.Context, scopes []ReadableScope, query string, limit int) ([]GraphContribution, error)
+}
+
 // Service 编排权限感知的 Wika compact 搜索。
 type Service struct {
 	store     Store
 	knowledge KnowledgeSearcher
+	graph     GraphSearcher
 }
 
 // NewService 创建 Wika search 服务。
-func NewService(store *GormStore, knowledge interfaces.KnowledgeService) *Service {
-	return &Service{store: store, knowledge: knowledge}
+func NewService(store *GormStore, knowledge interfaces.KnowledgeService, graphService *wikagraph.Service) *Service {
+	return &Service{store: store, knowledge: knowledge, graph: NewGraphSearchAdapter(graphService)}
 }
 
 // SearchKnowledge 执行 scope-aware 知识检索并返回 compact 结果。
@@ -56,6 +63,8 @@ func (s *Service) SearchKnowledge(ctx context.Context, input SearchInput) (*Sear
 	if len(readableScopes) == 0 {
 		return &SearchResult{Results: []ResultItem{}}, nil
 	}
+
+	graphContribution, graphDegraded := s.searchGraphBestEffort(ctx, readableScopes, query, limit)
 
 	searchScopes := make([]types.KnowledgeSearchScope, 0, len(readableScopes))
 	sourceByScope := make(map[string]SourceSpace, len(readableScopes))
@@ -97,7 +106,7 @@ func (s *Service) SearchKnowledge(ctx context.Context, input SearchInput) (*Sear
 	if len(accessRecords) > 0 {
 		_ = s.store.RecordAccess(ctx, accessRecords)
 	}
-	return &SearchResult{Results: results, Truncated: hasMore}, nil
+	return &SearchResult{Results: results, Truncated: hasMore, GraphContribution: graphContribution, GraphDegraded: graphDegraded}, nil
 }
 
 // ListMyKnowledge 列出当前用户个人默认知识库里的知识。
@@ -276,4 +285,15 @@ func compactSnippet(knowledge *types.Knowledge) string {
 		return string(runes[:240])
 	}
 	return text
+}
+
+func (s *Service) searchGraphBestEffort(ctx context.Context, scopes []ReadableScope, query string, limit int) ([]GraphContribution, bool) {
+	if s.graph == nil {
+		return nil, false
+	}
+	contribution, err := s.graph.SearchGraph(ctx, scopes, query, limit)
+	if err != nil {
+		return nil, true
+	}
+	return contribution, false
 }

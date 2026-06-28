@@ -49,6 +49,17 @@ type AccessRecord struct {
 	AccessedAt  time.Time
 }
 
+// GraphContribution 描述图谱召回对本次搜索的解释性贡献。
+type GraphContribution struct {
+	TenantID           uint64   `json:"tenant_id"`
+	KBID               string   `json:"kb_id"`
+	EntityID           uint64   `json:"entity_id"`
+	EntityName         string   `json:"entity_name"`
+	EntityType         string   `json:"entity_type"`
+	SourceKnowledgeIDs []string `json:"source_knowledge_ids"`
+	Score              float64  `json:"score"`
+}
+
 // ResultItem 是默认 compact 检索结果。
 type ResultItem struct {
 	KnowledgeID     string      `json:"knowledge_id"`
@@ -75,8 +86,10 @@ type ExpandedItem struct {
 
 // SearchResult 是 search_knowledge 响应。
 type SearchResult struct {
-	Results   []ResultItem `json:"results"`
-	Truncated bool         `json:"truncated"`
+	Results           []ResultItem        `json:"results"`
+	Truncated         bool                `json:"truncated"`
+	GraphContribution []GraphContribution `json:"graph_contribution,omitempty"`
+	GraphDegraded     bool                `json:"graph_degraded"`
 }
 
 // MineResult 是 get_my_knowledge 的响应。
