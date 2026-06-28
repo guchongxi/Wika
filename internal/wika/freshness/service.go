@@ -2,29 +2,44 @@ package freshness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
 )
 
-var ErrFreshnessStoreNotConfigured = errors.New("freshness store not configured")
+var (
+	ErrFreshnessStoreNotConfigured = errors.New("freshness store not configured")
+	ErrFreshnessItemNotFound       = errors.New("freshness item not found")
+	ErrInvalidFreshnessAction      = errors.New("invalid freshness action")
+)
 
 // Store 隔离保鲜扫描需要的数据访问。
 type Store interface {
 	ListKnowledgeStates(ctx context.Context, tenantID uint64, kbID string) ([]*types.WikaKnowledgeState, error)
 	LastAccess(ctx context.Context, knowledgeID string) (*types.KnowledgeAccessDaily, error)
 	SaveCheck(ctx context.Context, check *types.WikaFreshnessCheck, items []*types.WikaFreshnessCheckItem) (*types.WikaFreshnessCheck, error)
+	ListChecks(ctx context.Context, tenantID uint64, kbID string) ([]*types.WikaFreshnessCheck, error)
+	ListItems(ctx context.Context, tenantID uint64, kbID, status string) ([]*types.WikaFreshnessCheckItem, error)
+	HandleItem(ctx context.Context, update ItemUpdate) (*types.WikaFreshnessCheckItem, error)
+}
+
+type AuditLogger interface {
+	Log(ctx context.Context, entry *types.AuditLog) error
 }
 
 // Service 负责从知识状态和访问聚合生成保鲜问题。
 type Service struct {
 	store Store
+	audit AuditLogger
 }
 
-func NewService(store *GormStore) *Service {
-	return &Service{store: store}
+func NewService(store *GormStore, audit interfaces.AuditLogService) *Service {
+	return &Service{store: store, audit: audit}
 }
 
 // RunCheck 扫描团队 KB 中过期、将过期、低质、低置信和长期未访问知识。
@@ -60,6 +75,41 @@ func (s *Service) RunCheck(ctx context.Context, input RunCheckInput) (*types.Wik
 	}, items)
 }
 
+func (s *Service) ListChecks(ctx context.Context, input ListInput) ([]*types.WikaFreshnessCheck, error) {
+	if s.store == nil {
+		return nil, ErrFreshnessStoreNotConfigured
+	}
+	return s.store.ListChecks(ctx, input.TenantID, strings.TrimSpace(input.KBID))
+}
+
+func (s *Service) ListItems(ctx context.Context, input ListInput) ([]*types.WikaFreshnessCheckItem, error) {
+	if s.store == nil {
+		return nil, ErrFreshnessStoreNotConfigured
+	}
+	return s.store.ListItems(ctx, input.TenantID, strings.TrimSpace(input.KBID), strings.TrimSpace(input.Status))
+}
+
+// HandleItem 处理单条保鲜问题，并写入审计记录。
+func (s *Service) HandleItem(ctx context.Context, input HandleItemInput) (*types.WikaFreshnessCheckItem, error) {
+	if s.store == nil {
+		return nil, ErrFreshnessStoreNotConfigured
+	}
+	now := input.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	update, err := itemUpdateFromInput(input, now)
+	if err != nil {
+		return nil, err
+	}
+	item, err := s.store.HandleItem(ctx, update)
+	if err != nil {
+		return nil, err
+	}
+	s.emitItemHandledAudit(ctx, input, item)
+	return item, nil
+}
+
 func (s *Service) itemsForState(ctx context.Context, tenantID uint64, kbID string, state *types.WikaKnowledgeState, now time.Time) []*types.WikaFreshnessCheckItem {
 	if state == nil || state.KnowledgeID == "" {
 		return nil
@@ -85,6 +135,66 @@ func (s *Service) itemsForState(ctx context.Context, tenantID uint64, kbID strin
 		}
 	}
 	return items
+}
+
+func itemUpdateFromInput(input HandleItemInput, now time.Time) (ItemUpdate, error) {
+	action := strings.TrimSpace(input.Action)
+	update := ItemUpdate{
+		TenantID: input.TenantID,
+		ItemID:   input.ItemID,
+		Action:   action,
+		Note:     strings.TrimSpace(input.Note),
+		ActorID:  strings.TrimSpace(input.ActorID),
+		Now:      now,
+	}
+	switch action {
+	case ActionMarkUpdated:
+		update.Status = ItemStatusResolved
+		update.KnowledgeFreshnessStatus = FreshnessStatusFresh
+		update.KnowledgeReviewStatus = ReviewStatusReviewed
+	case ActionExtendExpiry:
+		if input.ExpiresAt == nil {
+			return ItemUpdate{}, ErrInvalidFreshnessAction
+		}
+		update.Status = ItemStatusResolved
+		update.KnowledgeFreshnessStatus = FreshnessStatusFresh
+		update.KnowledgeReviewStatus = ReviewStatusReviewed
+		update.ExpiresAt = input.ExpiresAt
+	case ActionDeprecate:
+		update.Status = ItemStatusResolved
+		update.KnowledgeFreshnessStatus = FreshnessStatusNeedsReview
+		update.KnowledgeReviewStatus = ReviewStatusDeprecated
+	case ActionIgnore:
+		update.Status = ItemStatusIgnored
+	case ActionResuggestToTeam:
+		update.Status = ItemStatusResolved
+		update.KnowledgeFreshnessStatus = FreshnessStatusNeedsReview
+	default:
+		return ItemUpdate{}, ErrInvalidFreshnessAction
+	}
+	return update, nil
+}
+
+func (s *Service) emitItemHandledAudit(ctx context.Context, input HandleItemInput, item *types.WikaFreshnessCheckItem) {
+	if s.audit == nil || item == nil {
+		return
+	}
+	details, _ := json.Marshal(map[string]any{
+		"action":          item.ResolutionAction,
+		"previous_status": item.PreviousStatus,
+		"status":          item.Status,
+		"knowledge_id":    item.KnowledgeID,
+		"note":            item.ResolutionNote,
+	})
+	_ = s.audit.Log(ctx, &types.AuditLog{
+		TenantID:    input.TenantID,
+		ActorUserID: strings.TrimSpace(input.ActorID),
+		Action:      types.AuditActionWikaFreshnessItemHandled,
+		TargetType:  "freshness",
+		TargetID:    strconv.FormatUint(input.ItemID, 10),
+		Outcome:     types.AuditOutcomeSuccess,
+		Details:     types.JSON(details),
+	})
 }
 
 func newItem(tenantID uint64, kbID, knowledgeID, issueType, severity, action string) *types.WikaFreshnessCheckItem {

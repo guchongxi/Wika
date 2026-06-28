@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS freshness_check_items (
     suggested_action VARCHAR(64) NOT NULL,
     status VARCHAR(24) NOT NULL DEFAULT 'open'
         CHECK (status IN ('open', 'resolved', 'ignored')),
+    resolution_action VARCHAR(32)
+        CHECK (resolution_action IS NULL OR resolution_action IN ('mark_updated', 'extend_expiry', 'deprecate', 'ignore', 'resuggest_to_team')),
+    resolution_note TEXT,
+    previous_status VARCHAR(24)
+        CHECK (previous_status IS NULL OR previous_status IN ('open', 'resolved', 'ignored')),
+    resolved_by VARCHAR(64) REFERENCES users(id) ON DELETE SET NULL,
+    resolved_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

@@ -9,10 +9,12 @@ import (
 )
 
 type fakeFreshnessStore struct {
-	states map[string]*types.WikaKnowledgeState
-	access map[string]*types.KnowledgeAccessDaily
-	check  *types.WikaFreshnessCheck
-	items  []*types.WikaFreshnessCheckItem
+	states       map[string]*types.WikaKnowledgeState
+	access       map[string]*types.KnowledgeAccessDaily
+	check        *types.WikaFreshnessCheck
+	items        []*types.WikaFreshnessCheckItem
+	handleUpdate *ItemUpdate
+	handledItem  *types.WikaFreshnessCheckItem
 }
 
 func (s *fakeFreshnessStore) ListKnowledgeStates(ctx context.Context, tenantID uint64, kbID string) ([]*types.WikaKnowledgeState, error) {
@@ -33,6 +35,35 @@ func (s *fakeFreshnessStore) SaveCheck(ctx context.Context, check *types.WikaFre
 	s.check = &copied
 	s.items = items
 	return &copied, nil
+}
+
+func (s *fakeFreshnessStore) ListChecks(ctx context.Context, tenantID uint64, kbID string) ([]*types.WikaFreshnessCheck, error) {
+	return []*types.WikaFreshnessCheck{s.check}, nil
+}
+
+func (s *fakeFreshnessStore) ListItems(ctx context.Context, tenantID uint64, kbID, status string) ([]*types.WikaFreshnessCheckItem, error) {
+	return s.items, nil
+}
+
+func (s *fakeFreshnessStore) HandleItem(ctx context.Context, update ItemUpdate) (*types.WikaFreshnessCheckItem, error) {
+	s.handleUpdate = &update
+	item := *s.handledItem
+	item.PreviousStatus = ItemStatusOpen
+	item.Status = update.Status
+	item.ResolutionAction = update.Action
+	item.ResolutionNote = update.Note
+	item.ResolvedBy = update.ActorID
+	item.ResolvedAt = &update.Now
+	return &item, nil
+}
+
+type fakeFreshnessAudit struct {
+	entries []*types.AuditLog
+}
+
+func (a *fakeFreshnessAudit) Log(ctx context.Context, entry *types.AuditLog) error {
+	a.entries = append(a.entries, entry)
+	return nil
 }
 
 func TestRunCheckCreatesFreshnessItemsForAllMVPConditions(t *testing.T) {
@@ -74,5 +105,53 @@ func TestRunCheckCreatesFreshnessItemsForAllMVPConditions(t *testing.T) {
 		if !seen[issueType] {
 			t.Fatalf("expected issue %s in items: %+v", issueType, store.items)
 		}
+	}
+}
+
+func TestHandleItemMarksUpdatedAndWritesAudit(t *testing.T) {
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	store := &fakeFreshnessStore{
+		handledItem: &types.WikaFreshnessCheckItem{
+			ID:          7,
+			TenantID:    80,
+			KBID:        "kb-team",
+			KnowledgeID: "k-expired",
+			IssueType:   IssueExpired,
+			Status:      ItemStatusOpen,
+		},
+	}
+	audit := &fakeFreshnessAudit{}
+	svc := &Service{store: store, audit: audit}
+
+	got, err := svc.HandleItem(context.Background(), HandleItemInput{
+		ActorID:  "u-reviewer",
+		TenantID: 80,
+		ItemID:   7,
+		Action:   ActionMarkUpdated,
+		Note:     "已补充最新证据",
+		Now:      now,
+	})
+	if err != nil {
+		t.Fatalf("HandleItem returned error: %v", err)
+	}
+	if got.Status != ItemStatusResolved || got.PreviousStatus != ItemStatusOpen || got.ResolutionAction != ActionMarkUpdated {
+		t.Fatalf("unexpected handled item: %+v", got)
+	}
+	if store.handleUpdate == nil ||
+		store.handleUpdate.KnowledgeFreshnessStatus != FreshnessStatusFresh ||
+		store.handleUpdate.ActorID != "u-reviewer" ||
+		store.handleUpdate.Note != "已补充最新证据" {
+		t.Fatalf("unexpected handle update: %+v", store.handleUpdate)
+	}
+	if len(audit.entries) != 1 {
+		t.Fatalf("expected one audit entry, got %d", len(audit.entries))
+	}
+	entry := audit.entries[0]
+	if entry.Action != types.AuditActionWikaFreshnessItemHandled ||
+		entry.TenantID != 80 ||
+		entry.ActorUserID != "u-reviewer" ||
+		entry.TargetType != "freshness" ||
+		entry.TargetID != "7" {
+		t.Fatalf("unexpected audit entry: %+v", entry)
 	}
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // GormStore 使用 GORM 持久化保鲜扫描结果。
@@ -65,6 +66,77 @@ func (s *GormStore) SaveCheck(ctx context.Context, check *types.WikaFreshnessChe
 		return nil, err
 	}
 	return check, nil
+}
+
+func (s *GormStore) ListChecks(ctx context.Context, tenantID uint64, kbID string) ([]*types.WikaFreshnessCheck, error) {
+	var checks []*types.WikaFreshnessCheck
+	err := s.db.WithContext(ctx).
+		Where("tenant_id = ? AND kb_id = ?", tenantID, kbID).
+		Order("checked_at DESC, id DESC").
+		Find(&checks).Error
+	return checks, err
+}
+
+func (s *GormStore) ListItems(ctx context.Context, tenantID uint64, kbID, status string) ([]*types.WikaFreshnessCheckItem, error) {
+	var items []*types.WikaFreshnessCheckItem
+	query := s.db.WithContext(ctx).
+		Where("tenant_id = ? AND kb_id = ?", tenantID, kbID).
+		Order("created_at DESC, id DESC")
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	if err := query.Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *GormStore) HandleItem(ctx context.Context, update ItemUpdate) (*types.WikaFreshnessCheckItem, error) {
+	var item types.WikaFreshnessCheckItem
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&item, "id = ? AND tenant_id = ?", update.ItemID, update.TenantID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrFreshnessItemNotFound
+			}
+			return err
+		}
+		previousStatus := item.Status
+		itemUpdates := map[string]any{
+			"status":            update.Status,
+			"resolution_action": update.Action,
+			"resolution_note":   update.Note,
+			"previous_status":   previousStatus,
+			"resolved_by":       update.ActorID,
+			"resolved_at":       update.Now,
+		}
+		if err := tx.Model(&types.WikaFreshnessCheckItem{}).
+			Where("id = ?", item.ID).
+			Updates(itemUpdates).Error; err != nil {
+			return err
+		}
+		stateUpdates := map[string]any{}
+		if update.KnowledgeFreshnessStatus != "" {
+			stateUpdates["freshness_status"] = update.KnowledgeFreshnessStatus
+		}
+		if update.KnowledgeReviewStatus != "" {
+			stateUpdates["review_status"] = update.KnowledgeReviewStatus
+		}
+		if update.ExpiresAt != nil {
+			stateUpdates["expires_at"] = update.ExpiresAt
+		}
+		if len(stateUpdates) > 0 {
+			if err := tx.Model(&types.WikaKnowledgeState{}).
+				Where("knowledge_id = ? AND tenant_id = ?", item.KnowledgeID, update.TenantID).
+				Updates(stateUpdates).Error; err != nil {
+				return err
+			}
+		}
+		return tx.First(&item, "id = ?", item.ID).Error
+	}); err != nil {
+		return nil, err
+	}
+	return &item, nil
 }
 
 func stateStatusForIssue(issueType string) string {

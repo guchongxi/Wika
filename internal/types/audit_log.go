@@ -51,6 +51,11 @@ const (
 	// an overdue pending row to expired. Actor is empty (system).
 	AuditActionInvitationExpired AuditAction = "rbac.invitation_expired"
 
+	// AuditActionWikaFreshnessItemHandled fires when a maintainer handles
+	// a Wika freshness item. Details carries action, previous status,
+	// new status and knowledge id;正文和证据不进入审计日志。
+	AuditActionWikaFreshnessItemHandled AuditAction = "wika.freshness.item_handled"
+
 	// VectorStore lifecycle actions. Emitted by VectorStoreService.
 	// Cover both env-store-derived (__env_*) and DB store create /
 	// update / delete paths. Details payload identifies the store_id

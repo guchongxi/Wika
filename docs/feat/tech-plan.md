@@ -485,6 +485,11 @@ freshness_check_items
   severity                    # low | medium | high
   suggested_action
   status                      # open | resolved | ignored
+  resolution_action           # mark_updated | extend_expiry | deprecate | ignore | resuggest_to_team
+  resolution_note
+  previous_status
+  resolved_by
+  resolved_at
   created_at
   updated_at
 ```

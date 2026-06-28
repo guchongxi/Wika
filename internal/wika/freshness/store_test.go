@@ -62,3 +62,40 @@ func TestGormFreshnessStoreSavesCheckItems(t *testing.T) {
 		t.Fatalf("expected 1 item, got %d", count)
 	}
 }
+
+func TestGormFreshnessStoreHandlesItemAndUpdatesKnowledgeState(t *testing.T) {
+	db := setupFreshnessStoreTestDB(t)
+	require.NoError(t, db.Create(&types.Tenant{ID: 80, Name: "team", SpaceType: types.SpaceTypeTeam}).Error)
+	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb-team", TenantID: 80, Type: types.KnowledgeBaseTypeDocument}).Error)
+	require.NoError(t, db.Create(&types.Knowledge{ID: "k-1", TenantID: 80, KnowledgeBaseID: "kb-team", Title: "知识"}).Error)
+	require.NoError(t, db.Create(&types.WikaKnowledgeState{KnowledgeID: "k-1", TenantID: 80, KBID: "kb-team", QualityScore: 30, FreshnessStatus: "expired", ReviewStatus: "needs_review"}).Error)
+	check := &types.WikaFreshnessCheck{TenantID: 80, KBID: "kb-team", Trigger: CheckTriggerManual, Status: CheckStatusCompleted, CheckedAt: time.Now()}
+	require.NoError(t, db.Create(check).Error)
+	item := &types.WikaFreshnessCheckItem{CheckID: check.ID, TenantID: 80, KBID: "kb-team", KnowledgeID: "k-1", IssueType: IssueExpired, Severity: SeverityHigh, SuggestedAction: "renew_or_deprecate", Status: ItemStatusOpen}
+	require.NoError(t, db.Create(item).Error)
+	store := NewGormStore(db)
+
+	handled, err := store.HandleItem(context.Background(), ItemUpdate{
+		TenantID:                 80,
+		ItemID:                   item.ID,
+		Action:                   ActionMarkUpdated,
+		Note:                     "已更新",
+		ActorID:                  "u-reviewer",
+		Status:                   ItemStatusResolved,
+		KnowledgeFreshnessStatus: FreshnessStatusFresh,
+		Now:                      time.Now(),
+	})
+	require.NoError(t, err)
+	if handled.Status != ItemStatusResolved ||
+		handled.PreviousStatus != ItemStatusOpen ||
+		handled.ResolutionAction != ActionMarkUpdated ||
+		handled.ResolvedBy != "u-reviewer" ||
+		handled.ResolvedAt == nil {
+		t.Fatalf("unexpected handled item: %+v", handled)
+	}
+	var state types.WikaKnowledgeState
+	require.NoError(t, db.First(&state, "knowledge_id = ?", "k-1").Error)
+	if state.FreshnessStatus != FreshnessStatusFresh {
+		t.Fatalf("expected freshness status fresh, got %s", state.FreshnessStatus)
+	}
+}

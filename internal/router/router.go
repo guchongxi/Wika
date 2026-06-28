@@ -302,7 +302,10 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 		freshness := wika.Group("/kb/:id/freshness", viewerGuards...)
 		{
 			freshness.POST("/checks", freshnessHandler.RunCheck)
+			freshness.GET("/checks", freshnessHandler.ListChecks)
+			freshness.GET("/items", freshnessHandler.ListItems)
 		}
+		wika.PUT("/freshness/items/:id", append(viewerGuards, freshnessHandler.HandleItem)...)
 	}
 }
 
