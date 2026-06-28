@@ -2203,6 +2203,58 @@ P5 统一错误码：
 
 响应中不得包含 SQL、内部表名、堆栈、抓取正文、证据原文、token hash 或被安全策略命中的原文。
 
+P5 API 契约清单：
+
+| 子阶段 | API | 请求 | 成功响应 | 状态/副作用 |
+|--------|-----|------|----------|-------------|
+| P5a Conflict | `POST /api/v1/wika/kb/:id/conflicts/checks` | `{ "trigger": "manual" }`；空值按 `manual` | `WikaConflictCheck` | 创建 `pending` check；flag off 返回 `WIKA_FEATURE_DISABLED`；不得直接生成知识变更 |
+| P5a Conflict | `GET /api/v1/wika/kb/:id/conflicts?status=&limit=&offset=` | query 只允许服务端白名单状态；limit 默认 20 | `{ "items": [...], "total": 0 }` | evidence 返回前按 actor scope 裁剪 |
+| P5a Conflict | `PUT /api/v1/wika/conflicts/:id` | `{ "status": "confirmed|dismissed|resolved", "comment": "..." }` | `WikaConflictItem` | 只更新 item 状态和审计；终态再次修改返回 `WIKA_STATE_CONFLICT` 或已有终态 |
+| P5b Version | `GET /api/v1/wika/knowledge/:id/versions?limit=&offset=` | query limit 默认 50 | `{ "versions": [...] }` | personal 越权返回 404；SystemAdmin personal 只返回元数据 |
+| P5b Version | `GET /api/v1/wika/knowledge/:id/versions/:version_id/diff?to_version_id=` | `to_version_id` 必填 | `DiffResult` | 无权 diff 不返回正文、snippet、old/new content |
+| P5b Version | `POST /api/v1/wika/knowledge/:id/versions/:version_id/restore` | `{ "reason": "..." }` | `RestoreResult` | 走知识更新和索引链路，生成新版本；不覆盖历史 |
+| P5c URL Refresh | `GET /api/v1/wika/knowledge/:id/url-refresh` | query 可带 status/limit/cursor | `{ "jobs": [...], "schedules": [...] }` | 供知识详情和待确认队列使用；抓取正文默认不返回全文，只返回 hash/摘要/diff 摘要 |
+| P5c URL Refresh | `POST /api/v1/wika/knowledge/:id/url-refresh` | `{ "source_url": "...", "schedule": { "enabled": true, "cron_expr": "0 * * * *" } }` | `{ "job_id": 1, "schedule_id": 1, "status": "pending" }` | 创建手动 job 或 schedule；重复未终态 job 返回已有 job 或稳定 409；不抓取、不改正文 |
+| P5c URL Refresh | `PUT /api/v1/wika/knowledge/:id/url-refresh/schedules/:schedule_id` | `{ "cron_expr": "...", "enabled": false }` | `WikaURLRefreshSchedule` | 更新 schedule，不创建 job；低于最小间隔返回 `WIKA_VALIDATION_ERROR` |
+| P5c URL Refresh | `DELETE /api/v1/wika/knowledge/:id/url-refresh/schedules/:schedule_id` | 无 body | `WikaURLRefreshSchedule` | 逻辑停用，不硬删除；停用后 worker 不再生成新 job |
+| P5c URL Refresh | `PUT /api/v1/wika/url-refresh/:refresh_id/review` | `{ "decision": "apply|reject", "comment": "..." }` | `{ "refresh_id": 1, "status": "applied|rejected", "result_version_id": 1 }` | 只允许 `pending_review`；apply 调用知识更新链路和 VersionService；reject 不改知识 |
+| P5d Eval Schedule | `GET /api/v1/wika/kb/:id/eval/schedules` | query 可带 enabled/status | `{ "schedules": [...], "total": 0 }` | 只列当前 actor 可管理 KB 的计划 |
+| P5d Eval Schedule | `POST /api/v1/wika/kb/:id/eval/schedules` | `{ "dataset_id": 1, "cron_expr": "0 * * * *", "enabled": true }` | `WikaEvalSchedule` | 同一 `kb_id + dataset_id` 只能一个 enabled schedule |
+| P5d Eval Schedule | `PUT /api/v1/wika/kb/:id/eval/schedules/:schedule_id` | `{ "cron_expr": "...", "enabled": false }` | `WikaEvalSchedule` | 更新 next_run、enabled、失败计数策略；disabled 不触发 run |
+| P5d Eval Schedule | `DELETE /api/v1/wika/kb/:id/eval/schedules/:schedule_id` | 无 body | `WikaEvalSchedule` | 逻辑停用，不删除历史 run |
+| P5e Org Share | `POST /api/v1/wika/orgs` | 复用既有 Organization 创建 payload | Organization DTO | 门面调用既有 OrganizationService，不新建平行主表 |
+| P5e Org Share | `POST /api/v1/wika/orgs/:org_id/members` | `{ "tenant_id": 1, "role": "admin|editor|viewer" }` | org member DTO | personal tenant 禁止加入 |
+| P5e Org Share | `POST /api/v1/wika/orgs/:org_id/shares` | `{ "source_kb_id": "...", "target_tenant_id": 1, "allowed_fields": ["id","title"] }` | `WikaOrgShare` | source team Admin/Owner 才能创建；target 未授权时进入 `pending` |
+| P5e Org Share | `PUT /api/v1/wika/orgs/:org_id/shares/:share_id/accept` | 可选 `{ "comment": "..." }` | `WikaOrgShare` | target team Admin/Owner 才能 accept；active 后进入 ScopeResolver |
+| P5e Org Share | `DELETE /api/v1/wika/orgs/:org_id/shares/:share_id` | 可选 `{ "comment": "..." }` | `WikaOrgShare` | revoke 后 shared scope、search、expand、download、preview、direct-id 均不命中 |
+
+P5 状态机和审计：
+
+| 对象 | 允许状态 | 关键转换 | 审计事件 |
+|------|----------|----------|----------|
+| `wika_conflict_checks` | `pending`、`running`、`completed`、`failed` | `pending -> running -> completed/failed`；失败未达阈值可回到待领取 | `wika.conflict.check_created`、`wika.conflict.check_failed` |
+| `wika_conflict_items` | `open`、`confirmed`、`dismissed`、`resolved` | `open -> confirmed/dismissed`；`confirmed -> resolved/dismissed`；终态不可再改 | `wika.conflict.item_confirmed`、`wika.conflict.item_dismissed`、`wika.conflict.item_resolved` |
+| `wika_knowledge_versions` | immutable snapshot | 只新增，不 update/delete；restore 也是新增版本 | `wika.version.recorded`、`wika.version.restored` |
+| `wika_url_refresh_jobs` | `pending`、`running`、`pending_review`、`applied`、`rejected`、`failed` | `pending -> running -> pending_review/failed`；`pending_review -> applied/rejected` | `wika.url_refresh.job_created`、`wika.url_refresh.job_failed`、`wika.url_refresh.reviewed` |
+| `wika_url_refresh_schedules` | `enabled=true/false` + failure counters | due schedule 只创建 job；连续失败后延后或 disable | `wika.url_refresh.schedule_updated`、`wika.url_refresh.schedule_disabled` |
+| `wika_eval_schedules` | `enabled=true/false` + failure counters | due schedule 只创建 P2 run；连续失败后延后或 disable | `wika.eval_schedule.updated`、`wika.eval_schedule.run_failed` |
+| `wika_org_shares` | `pending`、`active`、`revoked` | `pending -> active/revoked`；`active -> revoked`；revoked 不可恢复，只能新建 | `wika.org_share.created`、`wika.org_share.accepted`、`wika.org_share.revoked` |
+
+P5 handler 错误映射：
+
+| service error / 条件 | HTTP | code |
+|----------------------|------|------|
+| feature flag off、缺失、读取失败 | 404 | `WIKA_FEATURE_DISABLED` |
+| 请求体、枚举、cron、allowed_fields 非法 | 400 | `WIKA_VALIDATION_ERROR` |
+| 未登录、PAT 过期或撤销 | 401 | `WIKA_UNAUTHORIZED` |
+| 团队角色不足且资源存在性可暴露 | 403 | `WIKA_SCOPE_DENIED` |
+| personal/direct-id 越权或资源不存在 | 404 | `WIKA_NOT_FOUND` |
+| 非法状态转换、重复 active schedule/share/open conflict | 409 | `WIKA_STATE_CONFLICT` |
+| SSRF、内容类型、响应大小、安全策略阻断 | 422 | `WIKA_POLICY_BLOCKED` |
+| worker lease、手动重抓限流、配额冲突 | 429 | `WIKA_LEASE_CONFLICT` |
+
+实现时如果先沿用现有 `internal/errors` envelope，也必须在 handler 测试里锁定 HTTP 状态和稳定错误文本；统一 Wika error code wrapper 落地后再把 body 切换成上表 `code`，不能让前端依赖 Go error 字符串。
+
 ### P0-P5 任务卡索引
 
 下表用于把方案直接拆成实现任务。每张任务卡完成前必须先写对应 RED 测试。
@@ -2589,10 +2641,11 @@ P5 migration 必测约束：
 
 P5 迁移落地状态：
 
-- `000097` 和 `000098` 已有实现时，进入 P5a/P5b 继续实现前必须先对齐本文档约束。
+- `000097`、`000098`、`000099` 已有实现时，进入对应 P5a/P5b/P5c 后续任务前必须先对齐本文档约束和测试。
 - `000097` 必须补齐或确认：`failure_code`、`max_attempts`、`next_run_at`、canonical pair 唯一约束；worker runnable 索引不得把终态 `failed` 当作可领取状态。
 - `000098` 的 `status/review_status` 是知识快照字段，可作为 DDL CHECK 例外；写入 hook 必须保证来自当前知识状态枚举或空值。
-- `000099`、`000100`、`000101` 当前视为待建迁移；实现时必须同时补 `internal/types/wika_url_refresh.go`、`internal/types/wika_eval_schedule.go`、`internal/types/wika_org_share.go`。
+- `000099` 必须补齐或确认：`wika_url_refresh_jobs(schedule_id, scheduled_for)` slot 唯一、job 状态 check、schedule enabled 唯一、due schedule 索引、`schedule_id` 引用关系、失败计数和 down migration 不影响已生成知识版本。
+- `000100`、`000101` 当前视为待建迁移；实现时必须同时补 `internal/types/wika_eval_schedule.go`、`internal/types/wika_org_share.go`。
 
 P5 migration 建议索引：
 
@@ -2700,6 +2753,6 @@ P5 每卡证据模板：
 |--------|----------|--------------------|----------|
 | P5a-1/P5a-2/P5a-3 Conflict | `go test ./internal/types ./internal/wika/governance/conflict ./internal/handler ./internal/router ./internal/container` | migration up/down、canonical pair fixture；`POST /wika/kb/:id/conflicts/checks`、`PUT /wika/conflicts/:id`、flag off | `wika.conflict.check_created`、`wika.conflict.item_resolved` |
 | P5b-1/P5b-2/P5b-3 Version | `go test ./internal/types ./internal/wika/governance/version ./internal/handler ./internal/router ./internal/container` | migration up/down、baseline fixture；`GET /wika/knowledge/:id/versions`、`POST /restore`、无权 diff | `wika.version.recorded`、`wika.version.restored` |
-| P5c-0/P5c-1/P5c-2/P5c-3/P5c-4 URL refresh | `go test ./internal/types ./internal/wika/governance/urlrefresh ./internal/handler ./internal/router ./internal/container` | migration up/down、SSRF fixture；`POST /url-refresh`、`PUT/DELETE /url-refresh/schedules/:id`、`PUT /url-refresh/:id/review`、flag off | `wika.url_refresh.job_created`、`job_failed`、`reviewed` |
+| P5c-0/P5c-1/P5c-2/P5c-3/P5c-4 URL refresh | `go test ./internal/types ./internal/wika/governance/urlrefresh ./internal/handler ./internal/router ./internal/container` | migration up/down、SSRF fixture；`GET/POST /knowledge/:id/url-refresh`、`PUT/DELETE /knowledge/:id/url-refresh/schedules/:schedule_id`、`PUT /url-refresh/:refresh_id/review`、flag off | `wika.url_refresh.job_created`、`job_failed`、`reviewed`、`schedule_updated` |
 | P5d-1/P5d-2/P5d-3 Eval schedule | `go test ./internal/types ./internal/wika/governance/evalschedule ./internal/handler ./internal/router ./internal/container` | migration up/down、cron fixture；`POST /eval/schedules`、schedule slot 幂等、disable/flag off 后 worker 不触发 | `wika.eval_schedule.updated`、`run_failed` |
 | P5e-1/P5e-2/P5e-3/P5e-4 Org share | `go test ./internal/types ./internal/wika/governance/orgshare ./internal/wika/scope ./internal/wika/search ./internal/handler ./internal/router ./internal/container` | migration up/down、share/accept/revoke fixture；`search_knowledge` shared scope、expand/download/preview/direct read 裁剪回归 | `wika.org_share.created`、`wika.org_share.accepted`、`wika.org_share.revoked` |

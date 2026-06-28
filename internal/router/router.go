@@ -95,6 +95,7 @@ type RouterParams struct {
 	WikaGraphHandler             *handler.WikaGraphHandler
 	WikaConflictHandler          *handler.WikaConflictHandler
 	WikaVersionHandler           *handler.WikaVersionHandler
+	WikaURLRefreshHandler        *handler.WikaURLRefreshHandler
 	WikaTokenService             *wikaauth.TokenService
 }
 
@@ -241,7 +242,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterWeKnoraCloudRoutes(v1, params.WeKnoraCloudHandler, rbacGuards)
 		RegisterWikiPageRoutes(v1, params.WikiPageHandler, rbacGuards)
 		RegisterChunkerDebugRoutes(v1, rbacGuards)
-		RegisterWikaRoutes(v1, params.WikaTokenHandler, params.WikaKnowledgeHandler, params.WikaSuggestionHandler, params.WikaEvaluationHandler, params.WikaFreshnessHandler, params.WikaGraphHandler, params.WikaConflictHandler, params.WikaVersionHandler, rbacGuards)
+		RegisterWikaRoutes(v1, params.WikaTokenHandler, params.WikaKnowledgeHandler, params.WikaSuggestionHandler, params.WikaEvaluationHandler, params.WikaFreshnessHandler, params.WikaGraphHandler, params.WikaConflictHandler, params.WikaVersionHandler, params.WikaURLRefreshHandler, rbacGuards)
 	}
 
 	return r
@@ -259,8 +260,8 @@ func RegisterChunkerDebugRoutes(r *gin.RouterGroup, g *rbacGuards) {
 }
 
 // RegisterWikaRoutes 注册 Wika 产品化接口。
-func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, knowledgeHandler *handler.WikaKnowledgeHandler, suggestionHandler *handler.WikaSuggestionHandler, evaluationHandler *handler.WikaEvaluationHandler, freshnessHandler *handler.WikaFreshnessHandler, graphHandler *handler.WikaGraphHandler, conflictHandler *handler.WikaConflictHandler, versionHandler *handler.WikaVersionHandler, g *rbacGuards) {
-	if tokenHandler == nil && knowledgeHandler == nil && suggestionHandler == nil && evaluationHandler == nil && freshnessHandler == nil && graphHandler == nil && conflictHandler == nil && versionHandler == nil {
+func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, knowledgeHandler *handler.WikaKnowledgeHandler, suggestionHandler *handler.WikaSuggestionHandler, evaluationHandler *handler.WikaEvaluationHandler, freshnessHandler *handler.WikaFreshnessHandler, graphHandler *handler.WikaGraphHandler, conflictHandler *handler.WikaConflictHandler, versionHandler *handler.WikaVersionHandler, urlRefreshHandler *handler.WikaURLRefreshHandler, g *rbacGuards) {
+	if tokenHandler == nil && knowledgeHandler == nil && suggestionHandler == nil && evaluationHandler == nil && freshnessHandler == nil && graphHandler == nil && conflictHandler == nil && versionHandler == nil && urlRefreshHandler == nil {
 		return
 	}
 	wika := r.Group("/wika")
@@ -334,6 +335,13 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 			versions.GET("/:version_id/diff", versionHandler.Diff)
 			versions.POST("/:version_id/restore", versionHandler.Restore)
 		}
+	}
+	if urlRefreshHandler != nil {
+		urlRefresh := wika.Group("/knowledge/:id/url-refresh", viewerGuards...)
+		{
+			urlRefresh.POST("", urlRefreshHandler.CreateJob)
+		}
+		wika.PUT("/url-refresh/:id/review", append(viewerGuards, urlRefreshHandler.ReviewJob)...)
 	}
 }
 

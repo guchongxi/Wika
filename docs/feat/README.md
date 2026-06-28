@@ -42,6 +42,23 @@ P5 快速开工入口：
 - P5e 必须先让 ScopeResolver 输出 `shared scope` 和 `allowed_fields`，再接 SearchService、expand、download、preview 和 direct-id 读取。
 - P5a/P5c/P5d worker 必须先通过 feature flag fail-closed、DB lease、schedule slot 幂等和停用路径测试，不能先上线单实例假设。
 
+P5 实施读法：
+
+| 读什么 | 解决什么问题 | 必须拿到的输出 |
+|--------|--------------|----------------|
+| [requirements.md](./requirements.md) 的 P5 子阶段需求、发布矩阵和 Definition of Ready/Done | 明确用户价值、非目标、灰度和验收边界 | 当前 PR 属于 P5a-P5e 哪个子阶段，Alpha/GA 分别验什么 |
+| [tech-plan.md](./tech-plan.md) 的 P5 API 契约、状态机、迁移约束和 RED 测试包 | 明确 handler、service、store、worker、migration 怎么写 | 请求/响应、状态枚举、错误码、审计事件、测试文件和命令 |
+| [tech-plan.md](./tech-plan.md) 的 P5 每卡证据模板 | 明确完成时提交什么证据 | migration up/down、单测命令、API 冒烟、审计事件和回滚动作 |
+
+P5 开工前最小清单：
+
+- 已选择唯一任务卡，例如 `P5c-3 URL review/apply`；同 PR 不混入其他子阶段能力。
+- 已确认 feature flag key、默认关闭行为、flag 读取失败时的 fail-closed 测试。
+- 已准备最小 fixture，并能让首个 RED 测试失败在“生产代码未实现”，不是需求或测试数据不清。
+- 已确认本卡涉及的状态机、审计事件和错误码；安全策略失败不能落成 500。
+- 涉及 worker 或 schedule 的卡，已写 DB lease、slot 幂等、失败降频和 worker lifecycle 测试。
+- 涉及知识正文变更的卡，已接入 VersionService；没有版本记录不得上线 apply/restore。
+
 实施前检查：
 
 - 当前 PR 属于 P1a/P1b/P1c/P2/P3/P4/P5a-P5e 中哪一张任务卡。

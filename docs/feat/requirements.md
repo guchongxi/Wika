@@ -565,6 +565,18 @@ P5 验证数据必须最少包含：
 | 定时评测 | enabled schedule 1 个、disabled schedule 1 个、连续失败 schedule 1 个 |
 | Organization 共享 | source team、target team、非成员用户、share pending/active/revoked 各 1 组 |
 
+#### P5 Definition of Ready / Done
+
+P5 每个子阶段必须单独达到 Ready 才能进入实现，单独达到 Done 才能声明完成。P5a-P5e 不共享完成状态；其中一个子阶段完成不代表 P5 完成。
+
+| 子阶段 | Ready 条件 | Alpha Done | GA Done |
+|--------|------------|------------|---------|
+| P5a Conflict | P1b search 可复用；P3 freshness state 可读取；`duplicate/outdated/scope_overlap/contradiction` fixture 已建；AI 解释不作为自动处理依据 | 手动 check 可创建；worker 只生成候选；队列可列出；人工 `confirmed/dismissed/resolved` 状态流转可审计 | 同一未终态 pair 不重复；两个 worker 只一个成功 lease；flag off 后不再产生新 check/item；证据字段按 scope 裁剪 |
+| P5b Version | 知识更新链路已找到统一 hook；必须版本化的写路径清单已确认；baseline fixture 已建 | 版本列表、相邻 diff、restore 可用；restore 生成新版本且不覆盖历史 | Web、旧 API、`suggest_to_team` apply、URL apply、freshness 处理和 restore 都有版本；SystemAdmin 读 personal 只有元数据 |
+| P5c URL Refresh | P5b Version 已可用；safe fetch SSRF fixture 已建；最小 cron 和手动限流策略已确认 | 手动 job 可创建；抓取成功进入 `pending_review`；apply/reject 可审计；apply 生成版本 | schedule 可创建/停用；同一 slot 幂等；连续失败后延后或 disable；SSRF、DNS rebinding、超大响应、非文本类型全部阻断 |
+| P5d Eval Schedule | P2 EvaluationService 可复用；dataset/run fixture 已建；cron 最小间隔确认 | 单个 schedule 能创建 P2 run；非法 cron 返回稳定 400；disabled 不触发 | 多实例不重复创建 run；同一 `schedule_id + scheduled_for` 幂等；连续失败后降频或停用；失败原因和审计可查 |
+| P5e Org Share | 既有 Organization/member API 可复用；P1a ScopeResolver 和 P1b Search 可扩展；source/target team 角色 fixture 已建 | source team 可创建 share；target team 可 accept；active share 进入 shared scope；pending 不可搜索 | `allowed_fields` 服务端白名单裁剪；expand/download/preview/direct-id 均不越权；revoke 后新搜索和 direct-id 都不命中；org admin 不能替代团队 Admin/Owner |
+
 P5 进入实现前必须满足：
 
 - P1-P4 完成门禁已通过，特别是 ScopeResolver、SearchService、EvaluationService 和 Freshness state 可复用。
