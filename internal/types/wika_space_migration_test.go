@@ -294,3 +294,34 @@ func TestWikaP5EvalScheduleMigrationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestWikaP5OrgShareMigrationContract(t *testing.T) {
+	path := filepath.Join("..", "..", "migrations", "versioned", "000101_wika_org_share.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected Wika P5 org share migration to exist: %v", err)
+	}
+
+	sql := string(raw)
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS wika_org_shares",
+		"org_id VARCHAR(36) NOT NULL REFERENCES organizations(id)",
+		"source_tenant_id BIGINT NOT NULL REFERENCES tenants(id)",
+		"source_kb_id VARCHAR(36) NOT NULL REFERENCES knowledge_bases(id)",
+		"target_tenant_id BIGINT NOT NULL REFERENCES tenants(id)",
+		"mode VARCHAR(24) NOT NULL DEFAULT 'reference'",
+		"allowed_fields JSONB NOT NULL DEFAULT '[]'::jsonb",
+		"status VARCHAR(24) NOT NULL DEFAULT 'pending'",
+		"accepted_by VARCHAR(64)",
+		"revoked_by VARCHAR(64)",
+		"ux_wika_org_shares_open",
+		"WHERE status IN ('pending', 'active')",
+		"idx_wika_org_shares_target_status",
+		"idx_wika_org_shares_source_status",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("expected migration to contain %q", fragment)
+		}
+	}
+}
