@@ -22,6 +22,9 @@ func TestContainerRegistersWikaSuggestionComponents(t *testing.T) {
 		"wikafreshness.NewGormStore",
 		"wikafreshness.NewService",
 		"handler.NewWikaFreshnessHandler",
+		"wikagraph.NewGormStore",
+		"wikagraph.NewService",
+		"handler.NewWikaGraphHandler",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(source, fragment) {

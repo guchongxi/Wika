@@ -24,7 +24,7 @@ func TestRegisterWikaRoutesIncludesSuggestions(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, &handler.WikaSuggestionHandler{}, nil, nil, nil)
+	RegisterWikaRoutes(api, nil, nil, &handler.WikaSuggestionHandler{}, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/suggestions", strings.NewReader(`{"knowledge_id":"k-personal"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -47,7 +47,7 @@ func TestRegisterWikaRoutesIncludesSuggestionReviewAndApply(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, &handler.WikaSuggestionHandler{}, nil, nil, nil)
+	RegisterWikaRoutes(api, nil, nil, &handler.WikaSuggestionHandler{}, nil, nil, nil, nil)
 
 	for _, tc := range []struct {
 		method string
@@ -78,7 +78,7 @@ func TestRegisterWikaRoutesIncludesEvaluationDatasets(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, nil, &handler.WikaEvaluationHandler{}, nil, nil)
+	RegisterWikaRoutes(api, nil, nil, nil, &handler.WikaEvaluationHandler{}, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/kb/kb-team/eval/datasets", strings.NewReader(`{"name":"团队检索黄金 QA"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -101,7 +101,7 @@ func TestRegisterWikaRoutesIncludesEvaluationRuns(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, nil, &handler.WikaEvaluationHandler{}, nil, nil)
+	RegisterWikaRoutes(api, nil, nil, nil, &handler.WikaEvaluationHandler{}, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/kb/kb-team/eval/runs", strings.NewReader(`{"dataset_id":11}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -124,7 +124,7 @@ func TestRegisterWikaRoutesIncludesFreshnessChecks(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, nil, nil, &handler.WikaFreshnessHandler{}, nil)
+	RegisterWikaRoutes(api, nil, nil, nil, nil, &handler.WikaFreshnessHandler{}, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/kb/kb-team/freshness/checks", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -147,7 +147,7 @@ func TestRegisterWikaRoutesIncludesFreshnessItems(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, nil, nil, &handler.WikaFreshnessHandler{}, nil)
+	RegisterWikaRoutes(api, nil, nil, nil, nil, &handler.WikaFreshnessHandler{}, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/wika/freshness/items/7", strings.NewReader(`{"action":"mark_updated"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -156,5 +156,36 @@ func TestRegisterWikaRoutesIncludesFreshnessItems(t *testing.T) {
 
 	if w.Code == http.StatusNotFound {
 		t.Fatalf("expected freshness item route to be registered, got 404")
+	}
+}
+
+func TestRegisterWikaRoutesIncludesGraphReadModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(middleware.ErrorHandler())
+	engine.Use(func(c *gin.Context) {
+		c.Set(types.UserIDContextKey.String(), "u-test")
+		c.Set(types.TenantIDContextKey.String(), uint64(80))
+		c.Next()
+	})
+	api := engine.Group("/api/v1")
+
+	RegisterWikaRoutes(api, nil, nil, nil, nil, nil, &handler.WikaGraphHandler{}, nil)
+
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/api/v1/wika/kb/kb-team/graph/overview"},
+		{method: http.MethodGet, path: "/api/v1/wika/kb/kb-team/graph/entities"},
+		{method: http.MethodGet, path: "/api/v1/wika/kb/kb-team/graph/entities/1"},
+		{method: http.MethodGet, path: "/api/v1/wika/kb/kb-team/graph/edges"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		if w.Code == http.StatusNotFound {
+			t.Fatalf("expected graph route %s %s to be registered, got 404", tc.method, tc.path)
+		}
 	}
 }

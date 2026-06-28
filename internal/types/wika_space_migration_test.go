@@ -164,3 +164,31 @@ func TestWikaP3FreshnessMigrationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestWikaP4GraphMigrationContract(t *testing.T) {
+	path := filepath.Join("..", "..", "migrations", "versioned", "000096_wika_graph.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected Wika P4 graph migration to exist: %v", err)
+	}
+
+	sql := string(raw)
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS wika_graph_entities",
+		"CREATE TABLE IF NOT EXISTS wika_graph_edges",
+		"entity_key VARCHAR(255) NOT NULL",
+		"source_knowledge_ids JSONB NOT NULL DEFAULT '[]'::jsonb",
+		"evidence_knowledge_id VARCHAR(36)",
+		"evidence_text TEXT",
+		"ux_wika_graph_entities_key",
+		"idx_wika_graph_entities_type_name",
+		"idx_wika_graph_edges_source",
+		"idx_wika_graph_edges_target",
+		"idx_wika_graph_edges_evidence_knowledge",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("expected migration to contain %q", fragment)
+		}
+	}
+}

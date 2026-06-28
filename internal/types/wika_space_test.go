@@ -68,3 +68,22 @@ func TestWikaP1bKnowledgeTableNames(t *testing.T) {
 		})
 	}
 }
+
+func TestWikaP4GraphTableNames(t *testing.T) {
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "graph entities", got: (WikaGraphEntity{}).TableName(), want: "wika_graph_entities"},
+		{name: "graph edges", got: (WikaGraphEdge{}).TableName(), want: "wika_graph_edges"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Fatalf("expected table name %q, got %q", tc.want, tc.got)
+			}
+		})
+	}
+}
