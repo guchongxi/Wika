@@ -139,7 +139,7 @@ func (s *Service) Restore(ctx context.Context, input RestoreInput) (*RestoreResu
 	updated, err := s.knowledge.UpdateManualKnowledge(ctx, input.KnowledgeID, &types.ManualKnowledgePayload{
 		Title:   version.Title,
 		Content: version.Content,
-		Status:  version.Status,
+		Status:  restoreManualStatus(version),
 		Channel: types.ChannelWeb,
 	})
 	if err != nil {
@@ -221,6 +221,33 @@ func currentKnowledgeStatus(current *types.Knowledge) string {
 		return ""
 	}
 	return current.EnableStatus
+}
+
+func restoreManualStatus(version *types.WikaKnowledgeVersion) string {
+	if version == nil {
+		return types.ManualKnowledgeStatusPublish
+	}
+	if len(version.Metadata) > 0 {
+		knowledge := &types.Knowledge{Type: types.KnowledgeTypeManual, Metadata: version.Metadata}
+		if meta, err := knowledge.ManualMetadata(); err == nil && meta != nil {
+			if isManualStatus(meta.Status) {
+				return strings.TrimSpace(meta.Status)
+			}
+		}
+	}
+	if isManualStatus(version.Status) {
+		return strings.TrimSpace(version.Status)
+	}
+	return types.ManualKnowledgeStatusPublish
+}
+
+func isManualStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case types.ManualKnowledgeStatusDraft, types.ManualKnowledgeStatusPublish:
+		return true
+	default:
+		return false
+	}
 }
 
 func hashContent(content string) string {

@@ -158,7 +158,7 @@ func TestVersionServiceRestoreUpdatesKnowledgeAndRecordsNewVersion(t *testing.T)
 	if updater.knowledgeID != "k-1" || updater.payload == nil ||
 		updater.payload.Title != "旧标题" ||
 		updater.payload.Content != "旧内容" ||
-		updater.payload.Status != "enabled" {
+		updater.payload.Status != types.ManualKnowledgeStatusPublish {
 		t.Fatalf("restore did not call knowledge updater with version snapshot: id=%s payload=%+v", updater.knowledgeID, updater.payload)
 	}
 	if len(store.records) != 1 ||
@@ -174,6 +174,42 @@ func TestVersionServiceRestoreUpdatesKnowledgeAndRecordsNewVersion(t *testing.T)
 	}
 	if len(audit.entries) == 0 || audit.entries[len(audit.entries)-1].Action != types.AuditActionWikaVersionRestored {
 		t.Fatalf("expected restore audit event, got %+v", audit.entries)
+	}
+}
+
+func TestVersionServiceRestoreUsesManualPublishStatusForEnabledSnapshot(t *testing.T) {
+	metadata, err := types.NewManualKnowledgeMetadata("旧内容", types.ManualKnowledgeStatusPublish, 2).ToJSON()
+	if err != nil {
+		t.Fatalf("failed to prepare manual metadata: %v", err)
+	}
+	store := &fakeVersionStore{versions: map[uint64]*types.WikaKnowledgeVersion{
+		7: {
+			ID:          7,
+			KnowledgeID: "k-1",
+			TenantID:    80,
+			KBID:        "kb-team",
+			VersionNo:   2,
+			Title:       "旧标题",
+			Content:     "旧内容",
+			Status:      "enabled",
+			Metadata:    metadata,
+		},
+	}}
+	updater := &fakeKnowledgeUpdater{}
+	svc := &Service{store: store, knowledge: updater, flags: fakeFeatureGate{enabled: true}}
+
+	_, err = svc.Restore(context.Background(), RestoreInput{
+		ActorID:     "u-admin",
+		TenantID:    80,
+		KnowledgeID: "k-1",
+		VersionID:   7,
+		Reason:      "误操作恢复",
+	})
+	if err != nil {
+		t.Fatalf("Restore returned error: %v", err)
+	}
+	if updater.payload == nil || updater.payload.Status != types.ManualKnowledgeStatusPublish {
+		t.Fatalf("expected restore payload status publish, got %+v", updater.payload)
 	}
 }
 
