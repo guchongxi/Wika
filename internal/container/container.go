@@ -232,6 +232,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(wikaversion.NewService))
 	must(container.Provide(initWikaURLRefreshService))
 	must(container.Provide(initWikaEvalScheduleService))
+	must(container.Provide(initWikaEvalScheduleWorker))
 	must(container.Provide(wikaorgshare.NewTenantMemberAdminChecker))
 	must(container.Provide(initWikaOrgShareService))
 	must(container.Provide(wikagraph.NewService))
@@ -331,6 +332,8 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewHousekeepingService))
 	must(container.Invoke(startHousekeepingService))
 	logger.Debugf(ctx, "[Container] Knowledge housekeeping runner registered")
+	must(container.Invoke(startWikaEvalScheduleWorker))
+	logger.Debugf(ctx, "[Container] Wika eval schedule worker registered")
 	must(container.Provide(chatpipeline.NewEventManager))
 	must(container.Invoke(chatpipeline.NewPluginSearch))
 	must(container.Invoke(chatpipeline.NewPluginRerank))
@@ -507,6 +510,10 @@ func initWikaEvalScheduleService(store *wikaevalschedule.GormStore, runner *wika
 		runner,
 		wikaevalschedule.WithFeatureGate(settings),
 	)
+}
+
+func initWikaEvalScheduleWorker(svc *wikaevalschedule.Service, settings interfaces.SystemSettingService) *wikaevalschedule.Worker {
+	return wikaevalschedule.NewWorker(svc, settings)
 }
 
 func initWikaScopeResolver(store *wikascope.GormStore) *wikascope.Resolver {
@@ -1515,6 +1522,17 @@ func startHousekeepingService(svc *service.HousekeepingService, cleaner interfac
 	}
 	cleaner.RegisterWithName("KnowledgeHousekeeping", func() error {
 		svc.Stop()
+		return nil
+	})
+}
+
+func startWikaEvalScheduleWorker(worker *wikaevalschedule.Worker, cleaner interfaces.ResourceCleaner) {
+	if worker == nil {
+		return
+	}
+	worker.Start(context.Background())
+	cleaner.RegisterWithName("WikaEvalScheduleWorker", func() error {
+		worker.Stop()
 		return nil
 	})
 }
