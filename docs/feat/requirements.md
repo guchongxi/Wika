@@ -1,6 +1,6 @@
 # Wika 改造需求方案
 
-> 版本: 2.2
+> 版本: 2.3
 > 日期: 2026-06-29
 > 基于: WeKnora v0.6.2 fork
 > 状态: P0-P5 方案可拆分实施，P5 已补齐到可写 RED 测试和进入实现口径
@@ -473,7 +473,7 @@ P5 按 5 个独立子阶段实施和发布：
 | P5b | 版本 diff 和恢复 | `WIKA-P5-VERSION` | 关键知识写路径已统一到可插 hook 的 service |
 | P5c | 自动 URL 重抓 | `WIKA-P5-URL-REFRESH` | P5b version 已可记录 URL apply 后的新版本 |
 | P5d | 定时评测 | `WIKA-P5-EVAL-SCHEDULE` | P2 evaluation run 已稳定可复用 |
-| P5e | Organization 跨团队共享 | `WIKA-P5-ORG-SHARE` | P1a ScopeResolver 和 P1b search shared scope 已可回归 |
+| P5e | Organization 跨团队共享 | `WIKA-P5-ORG-SHARE` | P1a ScopeResolver 和 P1b Search 可扩展且基础回归通过；`shared scope` 由 P5e 实现并回归 |
 
 P5 总体非目标：
 
@@ -487,7 +487,10 @@ P5 总体非目标：
 - 用户创建、更新或推荐知识时，系统可以生成疑似冲突候选。
 - 冲突候选必须展示冲突类型、相似片段、证据知识和置信度。
 - AI 可以给出解释和建议，但不能自动删除、覆盖或合并知识。
-- 人工可以标记为确认冲突、非冲突、已解决。
+- P5a V1 默认只开放手动 check；`knowledge_updated`、`suggestion_applied` 等自动 trigger 先写入任务和测试契约，但 feature flag 关闭时不得自动排队。
+- 冲突类型最小规则：`duplicate` 依赖内容 hash 或高相似度；`outdated` 依赖来源时间或保鲜状态；`scope_overlap` 依赖同主题覆盖范围重叠；`contradiction` 只能作为 AI/检索辅助候选，必须人工确认。
+- 人工状态包含：`confirmed` 表示已确认存在冲突但尚未处理，`dismissed` 表示非冲突，`resolved` 表示已处理完成；终态只有 `dismissed` 和 `resolved`。
+- 高相似但非冲突 fixture 必须进入 `open` 后可被人工标记为 `dismissed`，不能被 AI 自动确认或解决。
 
 #### 版本 diff 和恢复
 
@@ -495,6 +498,7 @@ P5 总体非目标：
 - 用户可以查看相邻版本 diff。
 - 有权限的维护者可以恢复旧版本；恢复本身生成新版本，不能覆盖历史。
 - 恢复个人敏感内容时仍按当前资源权限校验，SystemAdmin 不获得正文读取权。
+- P5b 不要求 migration 一次性重写全部历史知识；既有知识首次发生版本化写入前必须生成 baseline 版本，再记录本次变更版本。
 
 #### 自动 URL 重抓
 
@@ -502,12 +506,16 @@ P5 总体非目标：
 - 重抓前必须通过 SSRF 防护：禁止内网地址、云元数据地址、非 HTTP(S)、重定向到禁用地址、超大响应和非允许内容类型。
 - 重抓结果默认生成待确认更新，不直接覆盖知识正文。
 - 用户可查看新旧内容 diff、来源响应摘要和抓取错误。
+- 默认最小调度间隔为 1 小时；连续失败第 1 次延后 1 小时，第 2 次延后 6 小时，第 3 次停用 schedule，团队可配置但不能低于系统安全下限。
+- 手动重抓必须限流；重复触发同一知识和同一来源 URL 时返回已有未终态 job 或稳定错误，不能刷出多个待确认更新。
 
 #### 定时评测
 
 - 团队可配置评测计划，按数据集和 KB 定时运行。
 - 计划必须有启停、最近运行、失败原因和下一次运行时间。
 - 连续失败要停止或降频，并提示团队维护者。
+- 默认最小调度间隔为 1 小时；连续失败第 1 次延后 1 小时，第 2 次延后 6 小时，第 3 次停用 schedule，并记录失败码。
+- 定时评测只创建 P2 evaluation run，不复制评测指标逻辑；同一 schedule 的同一触发时间最多创建一个 run。
 
 #### Organization 跨团队共享
 
@@ -515,6 +523,8 @@ P5 总体非目标：
 - 共享方式优先是引用，不默认复制正文。
 - 授权模型必须显式包含共享发起方、接收方、共享范围、可读字段和撤销规则。
 - 撤销共享后，新检索不能再命中；历史审计保留元数据。
+- P5e 复用现有 `organizations` 和 `organization_tenant_members` 作为组织和成员来源，不再新建平行 Organization 主表。
+- 数据授权源头始终是团队 Admin/Owner：source team Admin/Owner 创建共享，target team Admin/Owner 接收共享；Organization admin 只能管理组织关系，不能替代团队授权扩大读取权限。
 
 P5 默认安全边界：
 
@@ -530,15 +540,16 @@ P5 不是一个大功能包，必须按 P5a-P5e 独立打开、独立回滚、�
 
 | 子阶段 | 用户故事 | 主流程 | 终态 | 必须验收 |
 |--------|----------|--------|------|----------|
-| P5a Conflict | 作为团队维护者，我要看到疑似冲突知识并人工判断，避免团队知识互相矛盾 | 创建 check -> worker 生成 item -> 查看证据摘要 -> 确认/驳回/解决 | `confirmed`、`dismissed`、`resolved` | AI 只给解释；任何状态流转都不改知识正文；同一未终态冲突不重复出现 |
+| P5a Conflict | 作为团队维护者，我要看到疑似冲突知识并人工判断，避免团队知识互相矛盾 | 创建 check -> worker 生成 item -> 查看证据摘要 -> 确认冲突或驳回 -> 处理后标记解决 | `dismissed`、`resolved`；`confirmed` 是处理中间态 | AI 只给解释；任何状态流转都不改知识正文；同一未终态冲突不重复出现 |
 | P5b Version | 作为团队维护者，我要知道知识被谁改过，并能恢复旧版本 | 写路径记录版本 -> 查看版本列表 -> 查看 diff -> restore | 新 `version_no` | restore 必须调用现有知识更新和索引链路，并生成新版本；历史版本只读 |
 | P5c URL Refresh | 作为团队维护者，我要安全检查来源 URL 是否更新，再决定是否应用 | 创建 job 或 schedule -> safe fetch -> diff -> 人工 apply/reject | `applied`、`rejected`、`failed` | SSRF fixture 全部阻断；抓取成功默认 `pending_review`；apply 生成版本 |
 | P5d Eval Schedule | 作为团队维护者，我要让稳定数据集定时评测，但失败时不能无限重试 | 创建 schedule -> worker 领取 due schedule -> 创建 run -> 更新 next_run 或 failure | `enabled=false` 或降频后的 enabled | 多实例不重复触发；失败达到阈值后停用或延后；run/case 明细复用 P2 |
-| P5e Org Share | 作为团队维护者，我要授权其他团队引用本团队知识，同时可随时撤销 | 创建 org -> 加入团队 -> 创建 share -> 接收方 accept -> shared scope 搜索 -> revoke | `revoked` | 默认 reference，不复制正文；pending 不进入搜索；allowed_fields 服务端白名单裁剪；revoke 后新搜索不命中 |
+| P5e Org Share | 作为团队维护者，我要授权其他团队引用本团队知识，同时可随时撤销 | 复用现有 org -> 加入团队 -> source team 创建 share -> target team accept -> shared scope 搜索 -> revoke | `revoked` | 默认 reference，不复制正文；pending 不进入搜索；allowed_fields 服务端白名单裁剪；revoke 后新搜索不命中；org admin 不能替代团队 Admin/Owner 扩大读取权限 |
 
 P5 灰度和回滚口径：
 
 - 每个子阶段都有独立 feature flag，默认关闭。
+- feature flag 缺失、读取失败、非法值或缓存超过 TTL 时必须按关闭处理。
 - 关闭 feature flag 后，新 API 写入和 worker 领取停止；已生成记录保持只读或可安全查看。
 - P5 worker 必须可独立停用，不能影响 P1-P4 的入库、搜索、评测和保鲜。
 - P5 API 不允许先暴露空实现；未开启时返回稳定错误，不能误导前端进入半可用状态。

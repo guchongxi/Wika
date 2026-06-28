@@ -25,7 +25,7 @@ Wika 是从 [WeKnora](https://github.com/Tencent/WeKnora) fork 的知识闭环�
 
 ## 当前实施边界
 
-当前文档已补齐到 P0-P5 均可拆分实施的状态，其中 P5 已拆成 P5a-P5e 子阶段、任务卡、RED 测试包、迁移约束、worker lease、API 状态机、审计事件和验收证据。实现仍必须按阶段推进，不能因为后续阶段已有方案就跳过前置安全和数据门禁。
+当前文档已补齐到 P0-P5 均可拆分实施的状态，其中 P5 已拆成 P5a-P5e 子阶段、任务卡、RED 测试包、迁移约束、worker lease、API 状态机、审计事件和验收证据。P5 进入实现前还必须遵守已收口的硬门禁：feature flag fail-closed、worker 显式 lifecycle、审计同事务、schedule slot 幂等、URL 重抓成本上限、版本 baseline、Organization 复用既有组织表且团队 Admin/Owner 始终是数据授权源头。实现仍必须按阶段推进，不能因为后续阶段已有方案就跳过前置安全和数据门禁。
 
 实施入口：
 
@@ -42,6 +42,7 @@ Wika 是从 [WeKnora](https://github.com/Tencent/WeKnora) fork 的知识闭环�
 - MCP 日常工具使用用户级 PAT，不复用租户 API key。
 - P5 能力默认不在 P1-P4 暗中开启。
 - P5 worker 使用 DB lease 和幂等状态机，不能用进程内锁或单实例假设。
+- P5e 不新建平行 Organization 主表；复用既有 `organizations`、`organization_tenant_members`，只新增 Wika share 授权层。
 
 关键前置决策：
 
