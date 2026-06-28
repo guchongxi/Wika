@@ -132,10 +132,10 @@ Wika 分两层验收：
 | P3 | 不做自动 URL 重抓；不自动删除知识 | scanner 命中 5 类 fixture；处理动作 100% 有审计；热路径 0 主表写 | 单 KB 手动扫描通过 | worker 可停用；误报处理路径可用 | scanner 写放大影响搜索或误报率不可接受 | 停用 scanner/worker，保留 items 待人工清理 |
 | P4 | 图谱不替代主搜索；图谱失败不阻断搜索 | 图谱增强开启后 search P95 退化 <= 20%；图谱故障主搜索成功率 100% | 实体详情和搜索降级 fixture 通过 | 图谱贡献率可观测；一键关闭增强有效 | 图谱泄露个人证据或导致搜索 500 | 关闭图谱增强开关，保留图谱读模型 |
 | P5a Conflict | 不自动删除、覆盖、合并知识 | 冲突候选确认/驳回/解决全链路通过；同一未终态候选 0 重复 | 1 组冲突 fixture 通过 | 队列筛选、审计和人工处理可用 | AI 建议直接改变知识正文 | 关闭冲突检测 worker，只保留已生成候选 |
-| P5b Version | 不覆盖历史版本 | restore 100% 生成新版本；版本正文越权 0 泄露 | 两个版本 diff/restore 通过 | 所有知识写路径均记录版本 | restore 覆盖历史或绕过 scope | 禁用 restore API，保留版本列表只读 |
-| P5c URL Refresh | 不直接覆盖正文；不抓取非 HTTP(S) | SSRF fixture 100% 阻断；成功抓取 100% 进入待确认 | safe fetcher fixture 全绿 | 定时/手动 job 可停用，review/apply 有审计 | 内网/metadata/重定向绕过或恶意 HTML 执行 | 停用 URL refresh worker 和 schedule |
-| P5d Eval Schedule | 不复制评测逻辑 | due schedule 触发成功率 >= 99%；连续失败后 100% 降频或停用 | 单 schedule cron 触发 run | 多实例锁验证通过；失败告警可查 | 重复触发 run 或无限失败重试 | 停用 schedule worker，保留手动评测 |
-| P5e Org Share | 不共享个人正文、证据、文件；默认不复制 | revoke 后新 search 0 命中；allowed fields 裁剪 100% 生效 | share/accept/revoke fixture 通过 | 接收团队权限和 shared scope 回归全绿 | 撤销后仍命中或字段越权 | 停用 shared scope，保留审计和 lineage 元数据 |
+| P5b Version | 不覆盖历史版本 | restore 100% 生成新版本；版本正文越权 0 泄露 | 两个版本 diff/restore 通过 | 所有知识写路径均记录版本 | restore 覆盖历史或绕过 scope | 禁用 restore/API apply，版本列表只读；版本记录 hook 默认继续运行，除非 hook 自身导致写失败 |
+| P5c URL Refresh | 不直接覆盖正文；不抓取非 HTTP(S) | SSRF fixture 100% 阻断；成功抓取 100% 进入待确认 | safe fetcher fixture 全绿 | 定时/手动 job 可停用，review/apply 有审计 | 内网/metadata/重定向绕过或恶意 HTML 执行 | 停用 URL refresh worker 和 schedule；已有 `pending_review` 只读保留，可 reject，不可 apply |
+| P5d Eval Schedule | 不复制评测逻辑 | due schedule 触发成功率 >= 99%；连续失败后 100% 降频或停用 | 单 schedule cron 触发 run | 多实例锁验证通过；失败告警可查 | 重复触发 run 或无限失败重试 | 停用 schedule worker，保留手动评测；已有 enabled schedule 显示为系统暂停，不自动创建 run |
+| P5e Org Share | 不共享个人正文、证据、文件；默认不复制 | revoke 后新 search 0 命中；allowed fields 裁剪 100% 生效；撤销传播 <= 60s | share/accept/revoke fixture 通过 | 接收团队权限和 shared scope 回归全绿 | 撤销后仍命中或字段越权 | 停用 shared scope，保留审计和 lineage 元数据；旧 shared ID 再 expand/direct read 返回无结果 |
 
 ## 五、功能需求
 
@@ -546,6 +546,16 @@ P5 不是一个大功能包，必须按 P5a-P5e 独立打开、独立回滚、�
 | P5d Eval Schedule | 作为团队维护者，我要让稳定数据集定时评测，但失败时不能无限重试 | 创建 schedule -> worker 领取 due schedule -> 创建 run -> 更新 next_run 或 failure | `enabled=false` 或降频后的 enabled | 多实例不重复触发；失败达到阈值后停用或延后；run/case 明细复用 P2 |
 | P5e Org Share | 作为团队维护者，我要授权其他团队引用本团队知识，同时可随时撤销 | 复用现有 org -> 加入团队 -> source team 创建 share -> target team accept -> shared scope 搜索 -> revoke | `revoked` | 默认 reference，不复制正文；pending 不进入搜索；allowed_fields 服务端白名单裁剪；revoke 后新搜索不命中；org admin 不能替代团队 Admin/Owner 扩大读取权限 |
 
+P5 产品价值与成功指标：
+
+| 子阶段 | 用户可观察动作 | 产品成功指标 | 事件/埋点 |
+|--------|----------------|--------------|-----------|
+| P5a Conflict | 维护者打开冲突队列，确认、驳回或标记解决候选 | open 队列积压 < 50；候选处理 P50 < 2 天；误报 dismiss 率可按类型查看；同一未终态 pair 0 重复 | `conflict_check_created`、`conflict_item_status_changed` |
+| P5b Version | 维护者从知识详情查看版本历史、diff，并恢复旧版本 | 必须版本化写路径覆盖率 100%；restore 后搜索索引更新成功率 100%；无权 diff 泄露 0 | `version_list_opened`、`version_diff_opened`、`version_restored` |
+| P5c URL Refresh | 维护者查看待确认 URL 更新，选择 apply 或 reject | 成功抓取进入待确认 100%；待确认处理率可查；apply/reject 平均处理时长可查；失败 schedule 占比可查 | `url_refresh_job_created`、`url_refresh_reviewed`、`url_refresh_schedule_disabled` |
+| P5d Eval Schedule | 维护者启用固定数据集定时评测，查看失败原因和下一次运行 | due run 按时触发成功率 >= 99%；连续失败通知可查；低分趋势被处理数可追踪 | `eval_schedule_saved`、`eval_schedule_run_created`、`eval_schedule_failed` |
+| P5e Org Share | source team 发起 share，target team accept 后搜索命中，任一方 revoke 后不再命中 | active shared 搜索命中字段裁剪 100%；revoke 后 search/expand/direct-id 0 命中；双方审计可查 | `org_share_created`、`org_share_accepted`、`org_share_revoked` |
+
 P5 灰度和回滚口径：
 
 - 每个子阶段都有独立 feature flag，默认关闭。
@@ -554,6 +564,16 @@ P5 灰度和回滚口径：
 - P5 worker 必须可独立停用，不能影响 P1-P4 的入库、搜索、评测和保鲜。
 - P5 API 不允许先暴露空实现；未开启时返回稳定错误，不能误导前端进入半可用状态。
 - P5 前端只展示当前开启的子阶段入口；隐藏入口不是权限控制，后端仍必须执行 scope 和状态机校验。
+- 关闭 worker 型能力后，UI/API 必须展示系统暂停或能力关闭状态；不能把未运行误导为正常 enabled。
+- 关闭共享读取后，历史 shared ID 只能用于审计和 lineage 元数据，不能再 expand、download、preview 或 direct read。
+
+P5 发布层级：
+
+| 层级 | 开放对象 | Flag 策略 | 通过门禁 | 回滚权限和动作 |
+|------|----------|-----------|----------|----------------|
+| Internal Alpha | 开发者和内部测试团队 | 单子阶段 flag 手动开启；worker 可用 `RunOnce` 验证 | RED/GREEN、migration up/down、最小 fixture、flag off 行为 | 开发负责人关闭 flag，停止 worker，保留记录只读 |
+| Pilot Team | 1-2 个明确团队空间 | 只开启该团队相关能力；默认不跨所有团队 | API 冒烟、审计可查、告警可查、回滚演练通过 | 团队 Admin/系统管理员可关闭子阶段 flag；P5c/P5d 停止新 job/run |
+| GA | 符合条件团队逐步放量 | 按子阶段逐步放量，不允许 P5a-P5e 一次性全开 | 真实验证数据、MCP/HTTP 冒烟、告警阈值、runbook 完整 | SystemAdmin 关闭子阶段 flag；执行对应回滚 runbook |
 
 P5 验证数据必须最少包含：
 
@@ -564,6 +584,14 @@ P5 验证数据必须最少包含：
 | URL 重抓 | 正常 HTTP 页面、重定向到内网、metadata IP、超大响应、非文本 content-type |
 | 定时评测 | enabled schedule 1 个、disabled schedule 1 个、连续失败 schedule 1 个 |
 | Organization 共享 | source team、target team、非成员用户、share pending/active/revoked 各 1 组 |
+
+P5 fixture 细化：
+
+- P5a Conflict：至少包含“相同正文重复知识 -> `duplicate`”、“同主题结论相反 -> `contradiction` 待人工确认”、“旧有效期覆盖新有效期 -> `outdated`”、“高相似但适用范围不同 -> 可 dismiss 的非冲突”。
+- P5b Version：至少覆盖标题、正文、标签、状态四类变更；首次写入前 baseline；restore 后产生新版本并触发索引更新。
+- P5c URL Refresh：除 SSRF 阻断外，还要有无变化、只改标题、正文更新、HTML 含 prompt injection、抓取失败五类正常产品样本；成功抓取只进入 `pending_review`。
+- P5d Eval Schedule：enabled、disabled、连续失败三次、同一 `scheduled_for` 重试四类样本；失败原因对团队维护者可见。
+- P5e Org Share：active shared 结果默认可展示 `id/title/source_team/source_kb/updated_at/quality_score/freshness_state`；正文、chunk、证据、文件和 metadata 默认不可见。
 
 #### P5 Definition of Ready / Done
 
@@ -603,14 +631,13 @@ P5 当前最小可实施切片：
 
 | 切片 | 用户可见行为 | 最小验收数据 | Done 判定 |
 |------|--------------|--------------|-----------|
-| `P5e-6 Expand/direct-id revoke` | target team 成员搜索到共享知识后，只能展开允许字段；source/target 撤销后同一 ID 不再可读 | active share 1 条、revoked share 1 条、同一 knowledge ID、`allowed_fields=["id","title"]` | search、expand、direct read、download、preview 均重新解析 scope；revoke 后不命中；正文/文件/metadata 不泄露 |
-| `P5d-4 Worker lifecycle` | 团队维护者启用定时评测后，后台能按计划创建 run，关闭后停止 | enabled schedule、disabled schedule、连续失败 schedule、同一 `scheduled_for` 重复触发 | worker 可显式启动/停止；flag off 不 lease；同 slot 最多一个 run；失败三次停用或降频并可审计 |
-| `P5e-7 Audit/API smoke` | 创建、接收、撤销共享都有可追溯记录 | source team Admin、target team Admin、非成员用户、share pending/active/revoked | `wika.org_share.created/accepted/revoked` 存在；审计不含正文、证据、snippet、文件路径；HTTP 冒烟覆盖 200/400/403/404/409 |
-| `P5b-4 Version write hook` | 任何会改变知识正文的治理动作都能在版本列表里追溯 | 旧知识 baseline、Web 更新、旧 API 更新、suggestion apply、URL apply、restore | 首次写入前生成 baseline；后续写入递增版本；restore 生成新版本；无版本记录的 apply 不允许上线 |
-| `P5c-5 URL refresh worker hardening` | URL 重抓只产生待确认更新，人工确认后才应用 | 正常 URL、内网 URL、metadata IP、重定向绕过、超大响应、非文本类型 | SSRF fixture 全阻断；schedule 只生成 job；apply 依赖 P5b Version；flag off 后 worker 不抓取 |
+| `P5c-5 URL refresh worker/audit` | URL 重抓后台只产生待确认更新，人工确认后才应用 | 正常 URL、内网 URL、metadata IP、重定向绕过、超大响应、非文本类型、连续失败 schedule | worker 可显式启动/停止；SSRF fixture 全阻断；schedule 只生成 job；apply 依赖 P5b Version；flag off 后 worker 不抓取 |
+| `P5b-4 Version write hook inventory` | 任何会改变知识正文的治理动作都能在版本列表里追溯 | 旧知识 baseline、Web 更新、旧 API 更新、suggestion apply、URL apply、freshness、restore | 首次写入前生成 baseline；后续写入递增版本；restore 生成新版本；无版本记录的 apply/restore 不允许上线 |
 | `P5a-4 Conflict gate/lifecycle` | 维护者能手动生成冲突候选并处理状态 | contradiction、duplicate、outdated、scope_overlap fixture 各 1 组 | AI 只生成解释和候选；feature flag off 不创建 check、不 lease；终态不可改回 open |
+| `P5d-5 Eval schedule audit/API smoke` | 团队维护者能看到定时评测失败原因、下一次运行和系统暂停状态 | enabled schedule、disabled schedule、连续失败 schedule、同一 `scheduled_for` 重复触发 | schedule 更新/失败有审计；P2 run 与 schedule 推进具备原子性证据；HTTP 冒烟覆盖 200/400/403/409 |
+| `P5e-8 Org share real smoke/front-end` | target team 成员真实 search/expand 共享知识，revoke 后同一 ID 不再可读 | source team Admin、target team Admin、非成员用户、share pending/active/revoked、`allowed_fields=["id","title"]` | HTTP/MCP 冒烟通过；revoke 后 search/expand/direct-id 0 命中；双方审计可查；需要 UI 时前端只消费后端状态 |
 
-P5e hardening 进入实现时必须同时锁定两类证据：读取侧证据证明 `search_knowledge`、`expand_knowledge_result`、direct read、download、preview 在 active shared scope 下只返回 `allowed_fields`，且 revoke 后同一 ID 全部不命中；治理侧证据证明 create/accept/revoke 都有元数据审计，审计失败时 share 状态不推进。若创建者同时具备 source 和 target 团队 Admin/Owner，`CreateShare` 可以直接生成 `active` share，但必须在 `wika.org_share.created` 中记录 `new_status=active`，不得伪造一次没有真实 accept 调用的 `wika.org_share.accepted`。
+P5e 后续验收必须同时锁定两类证据：读取侧证据证明 `search_knowledge`、`expand_knowledge_result`、direct read、download、preview 在 active shared scope 下只返回 `allowed_fields`，且 revoke 后同一 ID 全部不命中；治理侧证据证明 create/accept/revoke 都有元数据审计，审计失败时 share 状态不推进。若创建者同时具备 source 和 target 团队 Admin/Owner，`CreateShare` 可以直接生成 `active` share，但必须在 `wika.org_share.created` 中记录 `new_status=active`，不得伪造一次没有真实 accept 调用的 `wika.org_share.accepted`。
 
 ## 六、安全需求
 
@@ -637,6 +664,16 @@ SystemAdmin 字段级边界：
 | 图谱实体名称、关系类型、数量统计 | 可读团队图谱元数据；个人图谱仅统计 |
 | token 明文、token_hash、敏感规则命中原文 | 不可读；仅 token_prefix 和脱敏摘要 |
 
+P5 字段级边界：
+
+| 能力 | 可展示字段 | 禁止展示字段 |
+|------|------------|--------------|
+| Version list | version_no、title、content_hash、change_reason、created_by、created_at | 无权正文、old/new content、diff 原文 |
+| Version diff | 有权用户可看 title/tag/status/content diff；SystemAdmin personal 仅元数据 | personal 正文 diff、snippet、AI 修正文原文 |
+| URL refresh review | source_url_hash、final_url_hash、content_hash、diff_summary、failure_code | 抓取正文全文、内网地址明文、恶意 HTML 原文 |
+| Eval schedule | cron hash 或展示值、next_run_at、last_run_id、failure_code、consecutive_failures | expected_answer、case 正文、无权 snippet |
+| Org shared result | id、title、source_team、source_kb、updated_at、quality_score、freshness_state | content、chunk、evidence_text、file、metadata、diff |
+
 ## 七、观测与指标
 
 | 环节 | 指标 |
@@ -649,6 +686,17 @@ SystemAdmin 字段级边界：
 | 保鲜 | 过期知识数、低置信知识数、长期未命中知识数 |
 | 高级治理 | open conflict 数、restore 次数、URL refresh 失败率、due schedule 延迟、active/revoked share 数 |
 | 成本 | LLM token、embedding 次数、rerank 次数、图谱抽取次数 |
+
+P5 worker 告警指标：
+
+| 指标 | 标签 | 告警阈值 | 动作 |
+|------|------|----------|------|
+| `wika_worker_due_lag_seconds` | stage、worker、tenant_id | P5c/P5d due lag > 10 分钟持续 15 分钟 | 检查 flag、worker 进程、DB lease、队列积压 |
+| `wika_worker_lease_conflict_total` | stage、worker | 5 分钟内异常升高 | 检查多实例竞争和 lease duration |
+| `wika_worker_disabled_total` | stage、reason | flag off 后仍出现 job/run 创建为 Critical | 立即停 worker，检查 fail-closed 测试 |
+| `wika_url_refresh_failure_total` | failure_code、tenant_id | 同一 failure_code 1 小时内 > 20 或失败率 > 30% | 降低 schedule 频率，检查 fetcher/网络/SSRF 规则 |
+| `wika_eval_schedule_failed_total` | failure_code、tenant_id | 连续失败 schedule > 0 且未 disable | 检查 P2 EvaluationService 和 dataset 可用性 |
+| `wika_org_share_revoked_hit_total` | source_tenant_id、target_tenant_id | 任意值 > 0 为 Critical | 关闭 shared scope，检查 resolver/cache |
 
 ## 八、阶段验收标准
 

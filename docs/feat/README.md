@@ -25,18 +25,35 @@ Wika 是从 [WeKnora](https://github.com/Tencent/WeKnora) fork 的知识闭环�
 
 ## 当前实施边界
 
-当前文档已补齐到 P0-P5 均可拆分实施的状态，其中 P5 已拆成 P5a-P5e 子阶段、任务卡、RED 测试包、迁移约束、worker lease、API 状态机、审计事件和验收证据。P5 进入实现前还必须遵守已收口的硬门禁：feature flag fail-closed、worker 显式 lifecycle、审计同事务、schedule slot 幂等、URL 重抓成本上限、版本 baseline、Organization 复用既有组织表且团队 Admin/Owner 始终是数据授权源头。实现仍必须按阶段推进，不能因为后续阶段已有方案就跳过前置安全和数据门禁。
+当前文档已补齐到 P0-P5 均可拆分实施的状态，其中 P5 已拆成 P5a-P5e 子阶段、任务卡、RED 测试包、迁移约束、worker lease、API 状态机、审计事件、灰度回滚和验收证据。P5 进入实现前还必须遵守已收口的硬门禁：feature flag fail-closed、worker 显式 lifecycle、审计同事务、schedule slot 幂等、URL 重抓成本上限、版本 baseline、Organization 复用既有组织表且团队 Admin/Owner 始终是数据授权源头。实现仍必须按阶段推进，不能因为后续阶段已有方案就跳过前置安全和数据门禁。
 
-当前仓库已有 P5a-P5e 的迁移、types、service/store 与部分 handler 接入，其中 P5d Eval Schedule 和 P5e Org Share 是当前优先推进面。继续 P5 时不要重复建 `000097-000102` 迁移；先按 [tech-plan.md](./tech-plan.md) 的“当前仓库 P5 实现状态”和对应任务卡补 worker lifecycle、expand API/集成回归、API 冒烟、审计证据和剩余前端入口。
+当前仓库已有 P5a-P5e 的迁移、types、service/store 与部分 handler 接入，且 P5e expand/direct-id/audit 回归、P5d eval schedule worker lifecycle 已落地。继续 P5 时不要重复建 `000097-000102` 迁移；先按 [tech-plan.md](./tech-plan.md) 的“当前仓库 P5 实现状态”和对应任务卡补 URL refresh worker、Version 真实写路径 hook、Conflict gate/lifecycle、Eval schedule 审计/API 冒烟和真实阶段验证数据。当前 hardening 卡默认不交付前端；只有任务卡明确写“前端入口”时才改 `frontend/src/views/wika/**`。
 
 P5 当前可以进入“单卡实现”，但不能把 P5 作为一个整体宣布完成。实施者必须先选定一张任务卡、写出 RED 测试，再进入最小实现。当前优先级：
 
 | 顺序 | 任务卡 | 交付目标 | 禁止混入 |
 |------|--------|----------|----------|
-| 1 | `P5e-6 Expand/direct-id revoke` | `expand_knowledge_result` API/集成回归、revoke 后 search/expand/direct-id 均不命中 | 新建 Organization 主表、放宽 shared `allowed_fields` |
-| 2 | `P5d-4 Worker lifecycle` | eval schedule worker 显式启动/停用、flag off 不 lease、审计和 API 冒烟 | 单实例进程锁、重复实现 P2 EvaluationService |
-| 3 | `P5e-7 Audit/API smoke` | create/accept/revoke 审计事件和 HTTP 冒烟证据 | 审计正文、证据、snippet、文件路径 |
-| 4 | `P5a/P5b/P5c hardening` | 补 feature gate、版本写路径 hook、URL refresh worker lifecycle 和审计缺口 | AI 自动合并、restore 覆盖历史、URL 抓取直接覆盖正文 |
+| 1 | `P5c-5 URL refresh worker/audit` | 生产 worker lifecycle、container 注册、flag off 不抓取、连续失败后 schedule 延后或停用并审计 | 绕过 SSRF、抓取后直接覆盖正文、绕过 P5b Version |
+| 2 | `P5b-4 Version write hook inventory` | Web、旧 API、`suggest_to_team` apply、URL apply、freshness、restore 写路径全部进入版本链路 | 只在 handler 手动调用 `RecordVersion`、restore 覆盖历史 |
+| 3 | `P5a-4 Conflict gate/lifecycle` | feature flag fail-closed、worker lifecycle、终态不可回滚、审计失败不推进状态 | AI 自动合并、自动删除或直接改知识正文 |
+| 4 | `P5d-5 Eval schedule audit/API smoke` | 已有 worker 基础上补审计事件、HTTP 冒烟、失败告警和真实 schedule fixture | 重写 P2 EvaluationService、无限失败重试 |
+| 5 | `P5 real-stage verification data` | 为 P5a-P5e 各准备 1 组真实 DB/API/MCP 验证数据，证明可观测、可回滚 | 只用单测结果宣布 P5 完成 |
+
+P5 当前开工卡片：
+
+| 当前卡 | 本卡范围 | 首个 RED | 最小命令 | 冒烟与交付证据 |
+|--------|----------|----------|----------|----------------|
+| `P5c-5 URL refresh worker/audit` | 新增 `urlrefresh.Worker`、container 启停、失败 backoff/disable 审计；不改 apply 语义 | `internal/wika/governance/urlrefresh/worker_test.go::TestWorkerCreatesDueJobsAndRunsThemUntilStopped`：enabled flag 下先 `RunDueSchedules` 再逐个 `RunJob`，Stop 后不再调用 | `go test ./internal/wika/governance/urlrefresh ./internal/container -run 'TestWorker|URLRefresh' -count=1` | flag off 不调用 due/job；`RunOnce` 或等价手动触发；`wika.url_refresh.job_failed/schedule_disabled` 不含正文/URL 明文 |
+| `P5b-4 Version write hook inventory` | 先盘点真实写路径并接统一 hook；不新增版本页面 | `internal/wika/governance/version/service_test.go` 或写路径适配测试：任一必须版本化路径缺版本即失败 | `go test ./internal/wika/governance/version ./internal/handler -count=1` | baseline、新版本、restore 新版本；无权 diff 不返回正文；hook 防递归 |
+| `P5a-4 Conflict gate/lifecycle` | 补 feature gate、worker lifecycle、状态和审计回滚；不做自动 trigger GA | `internal/wika/governance/conflict/worker_test.go`：flag off 不 lease，终态 item 不再推进 | `go test ./internal/wika/governance/conflict ./internal/handler ./internal/container -count=1` | manual check、candidate、resolve、flag off、audit fail rollback |
+| `P5d-5 Eval schedule audit/API smoke` | 在已落地 worker 上补审计、API 冒烟、失败提示；不复制评测指标 | `internal/wika/governance/evalschedule/service_test.go`：schedule 更新/失败写审计且 audit 失败不推进状态 | `go test ./internal/wika/governance/evalschedule ./internal/handler ./internal/container -count=1` | `/api/v1/wika/kb/:id/eval/schedules` 200/400/403/409；due lag、failure disable 可查 |
+
+P5 开工前证据清单：
+
+- P1-P4 门禁如果没有真实环境证据，可以先做 P5 单卡 package 级实现，但不得声明 P5 子阶段 GA。
+- 进入 P5 worker 或共享读取相关卡前，至少要能提供 ScopeResolver、SearchService、EvaluationService、Freshness state 对应 package 回归命令。
+- 涉及 MCP 消费路径时，使用 `WEKNORA_PAT`，不使用 `WEKNORA_API_KEY` fallback。
+- 每张卡收尾必须把 RED 失败摘要、GREEN 命令、API/MCP 冒烟、审计事件、flag off 行为和回滚动作写进交付说明。
 
 实施入口：
 
@@ -51,8 +68,8 @@ P5 快速开工入口：
 - 开工前先读 [tech-plan.md](./tech-plan.md) 的“P5 每卡 TDD 执行模板”“P5 子阶段最小切片边界”和“P5 通用实现契约”，确认当前 PR 只覆盖一张任务卡。
 - 每个 P5 子阶段先写 migration/type 约束 RED 测试，再写 store/service 状态机和权限测试，最后补 handler/router/container 测试。
 - P5b Version 是 P5c URL Refresh apply 的前置；P5c 不得绕过 VersionService 直接改正文。
-- P5e 必须先让 ScopeResolver 输出 `shared scope` 和 `allowed_fields`，再接 SearchService、expand、download、preview 和 direct-id 读取；当前 direct read/download/preview 已有后端回归，expand 已有 service 级裁剪回归，仍需补 API/集成和 revoke 场景。
-- 选择 `P5e-6/P5e-7` 时，直接按 [tech-plan.md](./tech-plan.md) 的“P5e-6/P5e-7 当前执行规格”执行；其中已固定真实 HTTP 路由、MCP PAT 配置、最小 fixture、审计事件语义和同事务验收。
+- P5e 必须先让 ScopeResolver 输出 `shared scope` 和 `allowed_fields`，再接 SearchService、expand、download、preview 和 direct-id 读取；当前这些基础读取回归已落地，后续 P5e 只补真实 HTTP/MCP 冒烟、revoke 传播 SLA 和必要前端队列入口。
+- 选择 P5e 后续验收卡时，直接按 [tech-plan.md](./tech-plan.md) 的“P5e 后续验收规格”执行；其中已固定真实 HTTP 路由、MCP PAT 配置、最小 fixture、审计事件语义和同事务验收。
 - P5a/P5c/P5d worker 必须先通过 feature flag fail-closed、DB lease、schedule slot 幂等和停用路径测试，不能先上线单实例假设。
 
 P5 实施读法：
