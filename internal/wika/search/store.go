@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -64,6 +65,33 @@ func (s *GormStore) ListReadableScopes(ctx context.Context, userID string, inclu
 		}
 		scopes = append(scopes, ReadableScope{TenantID: row.TenantID, KBID: row.KBID, Source: SourceTeam})
 	}
+	var shareRows []struct {
+		TenantID      uint64
+		KBID          string
+		AllowedFields types.JSON
+	}
+	err = s.db.WithContext(ctx).
+		Table("wika_org_shares AS ws").
+		Select("ws.source_tenant_id AS tenant_id, ws.source_kb_id AS kb_id, ws.allowed_fields AS allowed_fields").
+		Joins("JOIN tenant_members AS tm ON tm.tenant_id = ws.target_tenant_id AND tm.user_id = ? AND tm.status = ?", userID, types.TenantMemberStatusActive).
+		Joins("JOIN tenants AS source_tenant ON source_tenant.id = ws.source_tenant_id AND source_tenant.space_type = ?", types.SpaceTypeTeam).
+		Joins("JOIN knowledge_bases AS kb ON kb.id = ws.source_kb_id AND kb.tenant_id = ws.source_tenant_id AND kb.type = ?", types.KnowledgeBaseTypeDocument).
+		Where("ws.status = ?", types.WikaOrgShareStatusActive).
+		Scan(&shareRows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range shareRows {
+		if row.TenantID == 0 || row.KBID == "" {
+			continue
+		}
+		scopes = append(scopes, ReadableScope{
+			TenantID:      row.TenantID,
+			KBID:          row.KBID,
+			Source:        SourceShared,
+			AllowedFields: decodeAllowedFields(row.AllowedFields),
+		})
+	}
 	return scopes, nil
 }
 
@@ -113,4 +141,15 @@ func (s *GormStore) RecordAccess(ctx context.Context, records []AccessRecord) er
 			"last_accessed_at": gorm.Expr("CASE WHEN knowledge_access_daily.last_accessed_at > EXCLUDED.last_accessed_at THEN knowledge_access_daily.last_accessed_at ELSE EXCLUDED.last_accessed_at END"),
 		}),
 	}).Create(&items).Error
+}
+
+func decodeAllowedFields(raw types.JSON) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var fields []string
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil
+	}
+	return fields
 }

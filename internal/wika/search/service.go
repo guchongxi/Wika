@@ -67,10 +67,10 @@ func (s *Service) SearchKnowledge(ctx context.Context, input SearchInput) (*Sear
 	graphContribution, graphDegraded := s.searchGraphBestEffort(ctx, readableScopes, query, limit)
 
 	searchScopes := make([]types.KnowledgeSearchScope, 0, len(readableScopes))
-	sourceByScope := make(map[string]SourceSpace, len(readableScopes))
+	scopeByKey := make(map[string]ReadableScope, len(readableScopes))
 	for _, scope := range readableScopes {
 		searchScopes = append(searchScopes, types.KnowledgeSearchScope{TenantID: scope.TenantID, KBID: scope.KBID})
-		sourceByScope[scopeKey(scope.TenantID, scope.KBID)] = scope.Source
+		scopeByKey[scopeKey(scope.TenantID, scope.KBID)] = scope
 	}
 
 	knowledges, hasMore, err := s.knowledge.SearchKnowledgeForScopes(ctx, searchScopes, query, 0, limit, nil)
@@ -95,7 +95,7 @@ func (s *Service) SearchKnowledge(ctx context.Context, input SearchInput) (*Sear
 		if knowledge == nil {
 			continue
 		}
-		results = append(results, buildResultItem(knowledge, sourceByScope[scopeKey(knowledge.TenantID, knowledge.KnowledgeBaseID)], states[knowledge.ID]))
+		results = append(results, buildResultItem(knowledge, scopeByKey[scopeKey(knowledge.TenantID, knowledge.KnowledgeBaseID)], states[knowledge.ID]))
 		accessRecords = append(accessRecords, AccessRecord{
 			TenantID:    knowledge.TenantID,
 			KBID:        knowledge.KnowledgeBaseID,
@@ -156,7 +156,7 @@ func (s *Service) ListMyKnowledge(ctx context.Context, input MineInput) (*MineRe
 	results := make([]ResultItem, 0, len(knowledges))
 	for _, knowledge := range knowledges {
 		if knowledge != nil {
-			results = append(results, buildResultItem(knowledge, SourcePersonal, states[knowledge.ID]))
+			results = append(results, buildResultItem(knowledge, *personal, states[knowledge.ID]))
 		}
 	}
 	total := int64(len(results))
@@ -175,9 +175,9 @@ func (s *Service) ExpandKnowledge(ctx context.Context, input ExpandInput) (*Expa
 	if err != nil {
 		return nil, err
 	}
-	allowed := make(map[string]SourceSpace, len(scopes))
+	allowed := make(map[string]ReadableScope, len(scopes))
 	for _, scope := range scopes {
-		allowed[scopeKey(scope.TenantID, scope.KBID)] = scope.Source
+		allowed[scopeKey(scope.TenantID, scope.KBID)] = scope
 	}
 
 	knowledges := make([]*types.Knowledge, 0, len(input.IDs))
@@ -206,51 +206,85 @@ func (s *Service) ExpandKnowledge(ctx context.Context, input ExpandInput) (*Expa
 	}
 	results := make([]ExpandedItem, 0, len(knowledges))
 	for _, knowledge := range knowledges {
-		source := allowed[scopeKey(knowledge.TenantID, knowledge.KnowledgeBaseID)]
-		results = append(results, buildExpandedItem(knowledge, source, states[knowledge.ID]))
+		scope := allowed[scopeKey(knowledge.TenantID, knowledge.KnowledgeBaseID)]
+		results = append(results, buildExpandedItem(knowledge, scope, states[knowledge.ID]))
 	}
 	return &ExpandResult{Results: results}, nil
 }
 
-func buildResultItem(knowledge *types.Knowledge, source SourceSpace, state *types.WikaKnowledgeState) ResultItem {
+func buildResultItem(knowledge *types.Knowledge, scope ReadableScope, state *types.WikaKnowledgeState) ResultItem {
 	result := ResultItem{
-		KnowledgeID:     knowledge.ID,
-		Title:           knowledge.Title,
-		Snippet:         compactSnippet(knowledge),
-		SourceSpace:     source,
-		FreshnessStatus: "fresh",
-		UpdatedAt:       knowledge.UpdatedAt,
+		KnowledgeID: knowledge.ID,
+		SourceSpace: scope.Source,
+	}
+	if scopeAllowsField(scope, "title") {
+		result.Title = knowledge.Title
+	}
+	if scopeAllowsField(scope, "freshness_status") {
+		result.FreshnessStatus = "fresh"
+	}
+	if scopeAllowsField(scope, "updated_at") {
+		result.UpdatedAt = knowledge.UpdatedAt
+	}
+	if scopeAllowsField(scope, "snippet") || scopeAllowsField(scope, "content") {
+		result.Snippet = compactSnippet(knowledge)
 	}
 	if state != nil {
-		result.QualityScore = state.QualityScore
-		if state.FreshnessStatus != "" {
+		if scopeAllowsField(scope, "quality_score") {
+			result.QualityScore = state.QualityScore
+		}
+		if scopeAllowsField(scope, "freshness_status") && state.FreshnessStatus != "" {
 			result.FreshnessStatus = state.FreshnessStatus
 		}
 	}
 	return result
 }
 
-func buildExpandedItem(knowledge *types.Knowledge, source SourceSpace, state *types.WikaKnowledgeState) ExpandedItem {
+func buildExpandedItem(knowledge *types.Knowledge, scope ReadableScope, state *types.WikaKnowledgeState) ExpandedItem {
 	content := strings.TrimSpace(knowledge.Description)
 	if meta, err := knowledge.ManualMetadata(); err == nil && meta != nil && strings.TrimSpace(meta.Content) != "" {
 		content = strings.TrimSpace(meta.Content)
 	}
 	item := ExpandedItem{
-		KnowledgeID:     knowledge.ID,
-		Title:           knowledge.Title,
-		Content:         content,
-		Source:          knowledge.Source,
-		SourceSpace:     source,
-		FreshnessStatus: "fresh",
-		UpdatedAt:       knowledge.UpdatedAt,
+		KnowledgeID: knowledge.ID,
+		SourceSpace: scope.Source,
+	}
+	if scopeAllowsField(scope, "title") {
+		item.Title = knowledge.Title
+	}
+	if scopeAllowsField(scope, "source") {
+		item.Source = knowledge.Source
+	}
+	if scopeAllowsField(scope, "freshness_status") {
+		item.FreshnessStatus = "fresh"
+	}
+	if scopeAllowsField(scope, "updated_at") {
+		item.UpdatedAt = knowledge.UpdatedAt
+	}
+	if scopeAllowsField(scope, "content") {
+		item.Content = content
 	}
 	if state != nil {
-		item.QualityScore = state.QualityScore
-		if state.FreshnessStatus != "" {
+		if scopeAllowsField(scope, "quality_score") {
+			item.QualityScore = state.QualityScore
+		}
+		if scopeAllowsField(scope, "freshness_status") && state.FreshnessStatus != "" {
 			item.FreshnessStatus = state.FreshnessStatus
 		}
 	}
 	return item
+}
+
+func scopeAllowsField(scope ReadableScope, field string) bool {
+	if scope.Source != SourceShared {
+		return true
+	}
+	for _, allowed := range scope.AllowedFields {
+		if allowed == field {
+			return true
+		}
+	}
+	return false
 }
 
 func pageResultKnowledges(pageResult *types.PageResult) []*types.Knowledge {

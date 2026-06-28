@@ -232,6 +232,43 @@ func TestSearchKnowledgeCanExcludeTeamScopes(t *testing.T) {
 	}
 }
 
+func TestSearchKnowledgeRedactsSharedSnippetWhenContentIsNotAllowed(t *testing.T) {
+	store := &fakeSearchStore{scopes: []ReadableScope{
+		{TenantID: 80, KBID: "kb-shared", Source: SourceShared, AllowedFields: []string{"id", "title"}},
+	}}
+	searcher := &fakeKnowledgeSearcher{
+		resp: []*types.Knowledge{{
+			ID:              "k-shared",
+			TenantID:        80,
+			KnowledgeBaseID: "kb-shared",
+			Title:           "共享标题",
+			Description:     "不允许返回的共享正文摘要",
+		}},
+	}
+	svc := &Service{store: store, knowledge: searcher}
+
+	got, err := svc.SearchKnowledge(context.Background(), SearchInput{
+		UserID:      "u-target",
+		Query:       "共享",
+		IncludeTeam: true,
+	})
+	if err != nil {
+		t.Fatalf("SearchKnowledge returned error: %v", err)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("expected shared result, got %+v", got.Results)
+	}
+	if got.Results[0].SourceSpace != SourceShared {
+		t.Fatalf("expected shared source, got %+v", got.Results[0])
+	}
+	if got.Results[0].Snippet != "" {
+		t.Fatalf("shared result must redact snippet when content is not allowed, got %q", got.Results[0].Snippet)
+	}
+	if got.Results[0].FreshnessStatus != "" || !got.Results[0].UpdatedAt.IsZero() {
+		t.Fatalf("shared result must redact fields outside allowed_fields, got %+v", got.Results[0])
+	}
+}
+
 func TestListMyKnowledgeUsesPersonalDefaultScope(t *testing.T) {
 	updatedAt := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 	store := &fakeSearchStore{
@@ -321,5 +358,45 @@ func TestExpandKnowledgeResultsRechecksReadableScopes(t *testing.T) {
 		item.SourceSpace != SourcePersonal ||
 		item.QualityScore != 91 {
 		t.Fatalf("unexpected expanded item: %+v", item)
+	}
+}
+
+func TestExpandKnowledgeRedactsSharedContentWhenContentIsNotAllowed(t *testing.T) {
+	store := &fakeSearchStore{
+		scopes: []ReadableScope{
+			{TenantID: 80, KBID: "kb-shared", Source: SourceShared, AllowedFields: []string{"id", "title"}},
+		},
+	}
+	shared := &types.Knowledge{
+		ID:              "k-shared",
+		TenantID:        80,
+		KnowledgeBaseID: "kb-shared",
+		Title:           "共享标题",
+		Description:     "共享摘要",
+	}
+	if err := shared.SetManualMetadata(types.NewManualKnowledgeMetadata("不允许返回的共享正文", types.ManualKnowledgeStatusPublish, 1)); err != nil {
+		t.Fatalf("set manual metadata: %v", err)
+	}
+	searcher := &fakeKnowledgeSearcher{byID: map[string]*types.Knowledge{"k-shared": shared}}
+	svc := &Service{store: store, knowledge: searcher}
+
+	got, err := svc.ExpandKnowledge(context.Background(), ExpandInput{
+		UserID: "u-target",
+		IDs:    []string{"k-shared"},
+	})
+	if err != nil {
+		t.Fatalf("ExpandKnowledge returned error: %v", err)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("expected one shared result, got %+v", got.Results)
+	}
+	if got.Results[0].SourceSpace != SourceShared {
+		t.Fatalf("expected shared source, got %+v", got.Results[0])
+	}
+	if got.Results[0].Content != "" {
+		t.Fatalf("shared result must redact content when content is not allowed, got %q", got.Results[0].Content)
+	}
+	if got.Results[0].FreshnessStatus != "" || !got.Results[0].UpdatedAt.IsZero() {
+		t.Fatalf("shared expanded result must redact fields outside allowed_fields, got %+v", got.Results[0])
 	}
 }

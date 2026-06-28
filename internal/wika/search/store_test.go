@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -16,15 +17,77 @@ func setupSearchStoreTestDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
+		&types.UserPersonalSpace{},
+		&types.WikaSpaceDefault{},
 		&types.Tenant{},
+		&types.TenantMember{},
 		&types.KnowledgeBase{},
 		&types.Knowledge{},
+		&types.Organization{},
+		&types.OrganizationTenantMember{},
+		&types.WikaOrgShare{},
 		&types.KnowledgeAccessDaily{},
 	))
 	require.NoError(t, db.Create(&types.Tenant{ID: 80, Name: "team", SpaceType: types.SpaceTypeTeam}).Error)
 	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb-team", TenantID: 80, Type: types.KnowledgeBaseTypeDocument}).Error)
 	require.NoError(t, db.Create(&types.Knowledge{ID: "k-1", TenantID: 80, KnowledgeBaseID: "kb-team", Title: "知识"}).Error)
 	return db
+}
+
+func TestGormSearchStoreListReadableScopesIncludesActiveOrgShares(t *testing.T) {
+	db := setupSearchStoreTestDB(t)
+	require.NoError(t, db.Create(&types.Tenant{ID: 90, Name: "target", SpaceType: types.SpaceTypeTeam}).Error)
+	require.NoError(t, db.Create(&types.TenantMember{UserID: "u-target", TenantID: 90, Role: types.TenantRoleViewer, Status: types.TenantMemberStatusActive}).Error)
+	require.NoError(t, db.Create(&types.Organization{ID: "org-1", Name: "org"}).Error)
+	require.NoError(t, db.Create(&types.OrganizationTenantMember{ID: "otm-source", OrganizationID: "org-1", TenantID: 80, Role: types.OrgRoleAdmin}).Error)
+	require.NoError(t, db.Create(&types.OrganizationTenantMember{ID: "otm-target", OrganizationID: "org-1", TenantID: 90, Role: types.OrgRoleViewer}).Error)
+	allowedFields, err := json.Marshal([]string{"id", "title"})
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&types.WikaOrgShare{
+		OrgID:          "org-1",
+		SourceTenantID: 80,
+		SourceKBID:     "kb-team",
+		TargetTenantID: 90,
+		Mode:           types.WikaOrgShareModeReference,
+		AllowedFields:  types.JSON(allowedFields),
+		Status:         types.WikaOrgShareStatusActive,
+		CreatedBy:      "u-source",
+	}).Error)
+	require.NoError(t, db.Create(&types.WikaOrgShare{
+		OrgID:          "org-1",
+		SourceTenantID: 80,
+		SourceKBID:     "kb-team",
+		TargetTenantID: 90,
+		Mode:           types.WikaOrgShareModeReference,
+		AllowedFields:  types.JSON(allowedFields),
+		Status:         types.WikaOrgShareStatusRevoked,
+		CreatedBy:      "u-source",
+	}).Error)
+
+	scopes, err := NewGormStore(db).ListReadableScopes(context.Background(), "u-target", true)
+	require.NoError(t, err)
+
+	var shared []ReadableScope
+	for _, scope := range scopes {
+		if scope.Source == SourceShared {
+			shared = append(shared, scope)
+		}
+	}
+	if len(shared) != 1 {
+		t.Fatalf("expected one active shared scope, got %+v", scopes)
+	}
+	if shared[0].TenantID != 80 || shared[0].KBID != "kb-team" {
+		t.Fatalf("unexpected shared scope: %+v", shared[0])
+	}
+	require.Equal(t, []string{"id", "title"}, shared[0].AllowedFields)
+
+	scopes, err = NewGormStore(db).ListReadableScopes(context.Background(), "u-target", false)
+	require.NoError(t, err)
+	for _, scope := range scopes {
+		if scope.Source == SourceShared {
+			t.Fatalf("shared scope must follow includeTeam=false, got %+v", scopes)
+		}
+	}
 }
 
 func TestGormSearchStoreRecordAccessUpsertsDailyRollup(t *testing.T) {

@@ -12,9 +12,10 @@ const (
 
 // ReadableScope 表示用户可检索的知识库范围。
 type ReadableScope struct {
-	TenantID uint64
-	KBID     string
-	Source   SourceSpace
+	TenantID      uint64
+	KBID          string
+	Source        SourceSpace
+	AllowedFields []string
 }
 
 // SearchInput 是 AI 友好的 Wika 知识检索输入。
