@@ -236,16 +236,20 @@ func TestRegisterWikaRoutesIncludesVersionGovernance(t *testing.T) {
 	RegisterWikaRoutes(api, nil, nil, nil, nil, nil, nil, nil, &handler.WikaVersionHandler{}, nil)
 
 	for _, tc := range []struct {
-		path string
+		method string
+		path   string
+		body   string
 	}{
-		{path: "/api/v1/wika/knowledge/k-1/versions"},
-		{path: "/api/v1/wika/knowledge/k-1/versions/1/diff?to_version_id=2"},
+		{method: http.MethodGet, path: "/api/v1/wika/knowledge/k-1/versions"},
+		{method: http.MethodGet, path: "/api/v1/wika/knowledge/k-1/versions/1/diff?to_version_id=2"},
+		{method: http.MethodPost, path: "/api/v1/wika/knowledge/k-1/versions/1/restore", body: `{"reason":"误操作恢复"}`},
 	} {
-		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		engine.ServeHTTP(w, req)
 		if w.Code == http.StatusNotFound {
-			t.Fatalf("expected %s to be registered, got 404", tc.path)
+			t.Fatalf("expected %s %s to be registered, got 404", tc.method, tc.path)
 		}
 	}
 }

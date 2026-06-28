@@ -58,3 +58,19 @@ type DiffResult struct {
 	ContentChanged bool `json:"content_changed"`
 	TagsChanged    bool `json:"tags_changed"`
 }
+
+type RestoreInput struct {
+	ActorID     string
+	TenantID    uint64
+	KnowledgeID string
+	VersionID   uint64
+	Reason      string
+	SystemAdmin bool
+}
+
+type RestoreResult struct {
+	RestoredFromVersionID uint64 `json:"restored_from_version_id"`
+	NewVersionID          uint64 `json:"new_version_id"`
+	KnowledgeID           string `json:"knowledge_id"`
+	Status                string `json:"status"`
+}

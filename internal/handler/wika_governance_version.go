@@ -17,6 +17,7 @@ import (
 type wikaVersionService interface {
 	ListVersions(ctx context.Context, input wikaversion.ListVersionsInput) ([]*types.WikaKnowledgeVersion, error)
 	Diff(ctx context.Context, input wikaversion.DiffInput) (*wikaversion.DiffResult, error)
+	Restore(ctx context.Context, input wikaversion.RestoreInput) (*wikaversion.RestoreResult, error)
 }
 
 // WikaVersionHandler 暴露 P5 知识版本列表和 diff 接口。
@@ -88,6 +89,46 @@ func (h *WikaVersionHandler) Diff(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, diff)
+}
+
+func (h *WikaVersionHandler) Restore(c *gin.Context) {
+	userID, tenantID, ok := wikaKnowledgeContext(c)
+	if !ok {
+		return
+	}
+	if h.service == nil {
+		c.Error(apperrors.NewInternalServerError("wika version service unavailable"))
+		return
+	}
+	versionID, err := strconv.ParseUint(strings.TrimSpace(c.Param("version_id")), 10, 64)
+	if err != nil || versionID == 0 {
+		c.Error(apperrors.NewBadRequestError("invalid version id"))
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(apperrors.NewBadRequestError("invalid restore request"))
+		return
+	}
+	result, err := h.service.Restore(c.Request.Context(), wikaversion.RestoreInput{
+		ActorID:     userID,
+		TenantID:    tenantID,
+		KnowledgeID: strings.TrimSpace(c.Param("id")),
+		VersionID:   versionID,
+		Reason:      strings.TrimSpace(req.Reason),
+		SystemAdmin: types.IsSystemAdminFromContext(c.Request.Context()),
+	})
+	if err != nil {
+		if stderrors.Is(err, wikaversion.ErrVersionNotFound) {
+			c.Error(apperrors.NewNotFoundError("knowledge version not found"))
+			return
+		}
+		c.Error(apperrors.NewInternalServerError("failed to restore knowledge version"))
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func parseWikaVersionInt(raw string, fallback int) int {

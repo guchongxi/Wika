@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -15,13 +16,18 @@ type auditLogger interface {
 	Log(ctx context.Context, entry *types.AuditLog) error
 }
 
-type Service struct {
-	store Store
-	audit auditLogger
+type knowledgeUpdater interface {
+	UpdateManualKnowledge(ctx context.Context, knowledgeID string, payload *types.ManualKnowledgePayload) (*types.Knowledge, error)
 }
 
-func NewService(store *GormStore, audit interfaces.AuditLogService) *Service {
-	return &Service{store: store, audit: audit}
+type Service struct {
+	store     Store
+	audit     auditLogger
+	knowledge knowledgeUpdater
+}
+
+func NewService(store *GormStore, audit interfaces.AuditLogService, knowledge interfaces.KnowledgeService) *Service {
+	return &Service{store: store, audit: audit, knowledge: knowledge}
 }
 
 func (s *Service) RecordVersion(ctx context.Context, input RecordVersionInput) (*types.WikaKnowledgeVersion, error) {
@@ -86,6 +92,71 @@ func (s *Service) Diff(ctx context.Context, input DiffInput) (*DiffResult, error
 		TitleChanged:   from.Title != to.Title,
 		ContentChanged: from.Content != to.Content,
 		TagsChanged:    string(from.Tags) != string(to.Tags),
+	}, nil
+}
+
+func (s *Service) Restore(ctx context.Context, input RestoreInput) (*RestoreResult, error) {
+	if s.store == nil {
+		return nil, ErrVersionNotFound
+	}
+	if s.knowledge == nil {
+		return nil, errors.New("knowledge updater unavailable")
+	}
+	version, err := s.store.GetVersion(ctx, GetVersionInput{
+		ActorID:     input.ActorID,
+		TenantID:    input.TenantID,
+		KnowledgeID: input.KnowledgeID,
+		VersionID:   input.VersionID,
+		SystemAdmin: input.SystemAdmin,
+	})
+	if err != nil {
+		return nil, err
+	}
+	updated, err := s.knowledge.UpdateManualKnowledge(ctx, input.KnowledgeID, &types.ManualKnowledgePayload{
+		Title:   version.Title,
+		Content: version.Content,
+		Status:  version.Status,
+		Channel: types.ChannelWeb,
+	})
+	if err != nil {
+		return nil, err
+	}
+	recorded, err := s.RecordVersion(ctx, RecordVersionInput{
+		KnowledgeID:  input.KnowledgeID,
+		TenantID:     version.TenantID,
+		KBID:         version.KBID,
+		Title:        version.Title,
+		Content:      version.Content,
+		Tags:         version.Tags,
+		Status:       version.Status,
+		ReviewStatus: version.ReviewStatus,
+		Metadata:     version.Metadata,
+		ChangeReason: "restore",
+		ActorID:      input.ActorID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if s.audit != nil && recorded != nil {
+		if err := s.audit.Log(ctx, &types.AuditLog{
+			TenantID:    version.TenantID,
+			ActorUserID: strings.TrimSpace(input.ActorID),
+			Action:      types.AuditActionWikaVersionRestored,
+			TargetType:  "knowledge",
+			TargetID:    input.KnowledgeID,
+		}); err != nil {
+			return nil, err
+		}
+	}
+	status := version.Status
+	if updated != nil && strings.TrimSpace(updated.EnableStatus) != "" {
+		status = updated.EnableStatus
+	}
+	return &RestoreResult{
+		RestoredFromVersionID: version.ID,
+		NewVersionID:          recorded.ID,
+		KnowledgeID:           input.KnowledgeID,
+		Status:                status,
 	}, nil
 }
 

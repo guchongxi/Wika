@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -14,8 +15,9 @@ import (
 )
 
 type stubWikaVersionService struct {
-	listInput wikaversion.ListVersionsInput
-	diffInput wikaversion.DiffInput
+	listInput    wikaversion.ListVersionsInput
+	diffInput    wikaversion.DiffInput
+	restoreInput wikaversion.RestoreInput
 }
 
 func (s *stubWikaVersionService) ListVersions(_ context.Context, input wikaversion.ListVersionsInput) ([]*types.WikaKnowledgeVersion, error) {
@@ -26,6 +28,11 @@ func (s *stubWikaVersionService) ListVersions(_ context.Context, input wikaversi
 func (s *stubWikaVersionService) Diff(_ context.Context, input wikaversion.DiffInput) (*wikaversion.DiffResult, error) {
 	s.diffInput = input
 	return &wikaversion.DiffResult{FromVersionNo: 1, ToVersionNo: 2, TitleChanged: true, ContentChanged: true}, nil
+}
+
+func (s *stubWikaVersionService) Restore(_ context.Context, input wikaversion.RestoreInput) (*wikaversion.RestoreResult, error) {
+	s.restoreInput = input
+	return &wikaversion.RestoreResult{RestoredFromVersionID: input.VersionID, NewVersionID: 9, KnowledgeID: input.KnowledgeID, Status: "restored"}, nil
 }
 
 func newWikaVersionTestRouter(service *stubWikaVersionService) *gin.Engine {
@@ -40,6 +47,7 @@ func newWikaVersionTestRouter(service *stubWikaVersionService) *gin.Engine {
 	h := &WikaVersionHandler{service: service}
 	r.GET("/api/v1/wika/knowledge/:id/versions", h.ListVersions)
 	r.GET("/api/v1/wika/knowledge/:id/versions/:version_id/diff", h.Diff)
+	r.POST("/api/v1/wika/knowledge/:id/versions/:version_id/restore", h.Restore)
 	return r
 }
 
@@ -60,6 +68,27 @@ func TestWikaVersionListPassesActorTenantAndKnowledge(t *testing.T) {
 		service.listInput.Limit != 10 ||
 		service.listInput.Offset != 5 {
 		t.Fatalf("unexpected list input: %+v", service.listInput)
+	}
+}
+
+func TestWikaVersionRestoreParsesReasonAndVersionID(t *testing.T) {
+	service := &stubWikaVersionService{}
+	r := newWikaVersionTestRouter(service)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/knowledge/k-1/versions/7/restore", strings.NewReader(`{"reason":"误操作恢复"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if service.restoreInput.ActorID != "u-reviewer" ||
+		service.restoreInput.TenantID != 80 ||
+		service.restoreInput.KnowledgeID != "k-1" ||
+		service.restoreInput.VersionID != 7 ||
+		service.restoreInput.Reason != "误操作恢复" {
+		t.Fatalf("unexpected restore input: %+v", service.restoreInput)
 	}
 }
 

@@ -332,6 +332,7 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 		{
 			versions.GET("", versionHandler.ListVersions)
 			versions.GET("/:version_id/diff", versionHandler.Diff)
+			versions.POST("/:version_id/restore", versionHandler.Restore)
 		}
 	}
 }
