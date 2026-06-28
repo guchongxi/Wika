@@ -48,6 +48,8 @@ type fakeKnowledgeSearcher struct {
 	listKBID string
 	listPage *types.Pagination
 	listResp *types.PageResult
+
+	byID map[string]*types.Knowledge
 }
 
 func (s *fakeKnowledgeSearcher) SearchKnowledgeForScopes(ctx context.Context, scopes []types.KnowledgeSearchScope, keyword string, offset, limit int, fileTypes []string) ([]*types.Knowledge, bool, error) {
@@ -64,6 +66,13 @@ func (s *fakeKnowledgeSearcher) ListPagedKnowledgeByKnowledgeBaseID(ctx context.
 		return s.listResp, nil
 	}
 	return types.NewPageResult(0, page, []*types.Knowledge{}), nil
+}
+
+func (s *fakeKnowledgeSearcher) GetKnowledgeByIDOnly(ctx context.Context, id string) (*types.Knowledge, error) {
+	if s.byID != nil {
+		return s.byID[id], nil
+	}
+	return nil, nil
 }
 
 func TestSearchKnowledgeUsesReadableScopesAndReturnsCompactResults(t *testing.T) {
@@ -182,5 +191,55 @@ func TestListMyKnowledgeUsesPersonalDefaultScope(t *testing.T) {
 	}
 	if got.Results[0].SourceSpace != SourcePersonal || got.Results[0].QualityScore != 91 {
 		t.Fatalf("unexpected mine item: %+v", got.Results[0])
+	}
+}
+
+func TestExpandKnowledgeResultsRechecksReadableScopes(t *testing.T) {
+	store := &fakeSearchStore{
+		scopes: []ReadableScope{
+			{TenantID: 70, KBID: "kb-personal", Source: SourcePersonal},
+		},
+		states: map[string]*types.WikaKnowledgeState{
+			"k-allowed": {KnowledgeID: "k-allowed", QualityScore: 91, FreshnessStatus: "fresh"},
+		},
+	}
+	allowed := &types.Knowledge{
+		ID:              "k-allowed",
+		TenantID:        70,
+		KnowledgeBaseID: "kb-personal",
+		Title:           "个人知识",
+		Description:     "个人摘要",
+		UpdatedAt:       time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC),
+	}
+	if err := allowed.SetManualMetadata(types.NewManualKnowledgeMetadata("完整正文", types.ManualKnowledgeStatusPublish, 1)); err != nil {
+		t.Fatalf("set manual metadata: %v", err)
+	}
+	searcher := &fakeKnowledgeSearcher{byID: map[string]*types.Knowledge{
+		"k-allowed": allowed,
+		"k-denied": {
+			ID:              "k-denied",
+			TenantID:        80,
+			KnowledgeBaseID: "kb-team",
+			Title:           "不可读知识",
+		},
+	}}
+	svc := &Service{store: store, knowledge: searcher}
+
+	got, err := svc.ExpandKnowledge(context.Background(), ExpandInput{
+		UserID: "u-test",
+		IDs:    []string{"k-allowed", "k-denied"},
+	})
+	if err != nil {
+		t.Fatalf("ExpandKnowledge returned error: %v", err)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("expected only readable result, got %+v", got)
+	}
+	item := got.Results[0]
+	if item.KnowledgeID != "k-allowed" ||
+		item.Content != "完整正文" ||
+		item.SourceSpace != SourcePersonal ||
+		item.QualityScore != 91 {
+		t.Fatalf("unexpected expanded item: %+v", item)
 	}
 }

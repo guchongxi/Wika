@@ -288,6 +288,9 @@ class WeKnoraClient:
         }
         return self._request("POST", "/wika/knowledge/search", json=data)
 
+    def expand_knowledge_result(self, ids: list[str]) -> Dict:
+        return self._request("POST", "/wika/knowledge/expand", json={"ids": ids})
+
     def get_my_knowledge(
         self,
         limit: int = 20,
@@ -728,6 +731,21 @@ async def handle_list_tools() -> list[types.Tool]:
                     },
                 },
                 "required": ["query"],
+            },
+        ),
+        types.Tool(
+            name="expand_knowledge_result",
+            description="Expand compact Wika knowledge search results by knowledge IDs",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Knowledge IDs returned by search_knowledge",
+                    }
+                },
+                "required": ["ids"],
             },
         ),
         types.Tool(
@@ -1232,6 +1250,8 @@ async def handle_call_tool(
                 include_team=args.get("include_team", True),
                 format=args.get("format", "compact"),
             )
+        elif name == "expand_knowledge_result":
+            result = client.expand_knowledge_result(args["ids"])
         elif name == "get_my_knowledge":
             result = client.get_my_knowledge(
                 limit=args.get("limit", 20),

@@ -24,6 +24,7 @@ type wikaIntakeService interface {
 type wikaSearchService interface {
 	SearchKnowledge(ctx context.Context, input wikasearch.SearchInput) (*wikasearch.SearchResult, error)
 	ListMyKnowledge(ctx context.Context, input wikasearch.MineInput) (*wikasearch.MineResult, error)
+	ExpandKnowledge(ctx context.Context, input wikasearch.ExpandInput) (*wikasearch.ExpandResult, error)
 }
 
 // WikaKnowledgeHandler 暴露 Wika 日常知识生产接口。
@@ -53,6 +54,10 @@ type searchWikaKnowledgeRequest struct {
 	Limit       int    `json:"limit"`
 	IncludeTeam *bool  `json:"include_team"`
 	Format      string `json:"format"`
+}
+
+type expandWikaKnowledgeRequest struct {
+	IDs []string `json:"ids"`
 }
 
 // PushKnowledge 接收 Web/MCP 知识草稿并交给统一 intake 链路。
@@ -154,6 +159,41 @@ func (h *WikaKnowledgeHandler) SearchKnowledge(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// ExpandKnowledge 按 ID 展开知识详情，service 会重新做可读 scope 过滤。
+func (h *WikaKnowledgeHandler) ExpandKnowledge(c *gin.Context) {
+	userID, _, ok := wikaKnowledgeContext(c)
+	if !ok {
+		return
+	}
+	if h.search == nil {
+		c.Error(apperrors.NewInternalServerError("wika search service unavailable"))
+		return
+	}
+	var req expandWikaKnowledgeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(apperrors.NewBadRequestError("invalid request body").WithDetails(err.Error()))
+		return
+	}
+	ids := normalizeKnowledgeIDs(req.IDs)
+	if len(ids) == 0 {
+		c.Error(apperrors.NewBadRequestError("ids are required"))
+		return
+	}
+	result, err := h.search.ExpandKnowledge(c.Request.Context(), wikasearch.ExpandInput{
+		UserID: userID,
+		IDs:    ids,
+	})
+	if err != nil {
+		logger.Error(c.Request.Context(), "failed to expand Wika knowledge", err)
+		c.Error(apperrors.NewInternalServerError("failed to expand knowledge"))
+		return
+	}
+	if result == nil {
+		result = &wikasearch.ExpandResult{Results: []wikasearch.ExpandedItem{}}
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 // ListMyKnowledge 列出当前用户个人默认知识库里的知识。
 func (h *WikaKnowledgeHandler) ListMyKnowledge(c *gin.Context) {
 	userID, _, ok := wikaKnowledgeContext(c)
@@ -202,4 +242,24 @@ func wikaKnowledgeContext(c *gin.Context) (string, uint64, bool) {
 		return "", 0, false
 	}
 	return userID, tenantID, true
+}
+
+func normalizeKnowledgeIDs(raw []string) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(raw))
+	seen := map[string]struct{}{}
+	for _, id := range raw {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
 }

@@ -46,6 +46,7 @@ class WikaDailyToolsTest(unittest.TestCase):
             dry_run=True,
         )
         client.search_knowledge("排查", limit=3, include_team=False, format="compact")
+        client.expand_knowledge_result(["k-1", "k-2"])
         client.get_my_knowledge(limit=10, status="fresh", tag="debug")
 
         self.assertEqual(client.calls[0][0], "POST")
@@ -56,11 +57,14 @@ class WikaDailyToolsTest(unittest.TestCase):
         self.assertEqual(client.calls[1][1], "/wika/knowledge/search")
         self.assertEqual(client.calls[1][2]["json"]["query"], "排查")
         self.assertFalse(client.calls[1][2]["json"]["include_team"])
-        self.assertEqual(client.calls[2][0], "GET")
-        self.assertEqual(client.calls[2][1], "/wika/knowledge/mine")
-        self.assertEqual(client.calls[2][2]["params"]["limit"], 10)
-        self.assertEqual(client.calls[2][2]["params"]["status"], "fresh")
-        self.assertEqual(client.calls[2][2]["params"]["tag"], "debug")
+        self.assertEqual(client.calls[2][0], "POST")
+        self.assertEqual(client.calls[2][1], "/wika/knowledge/expand")
+        self.assertEqual(client.calls[2][2]["json"]["ids"], ["k-1", "k-2"])
+        self.assertEqual(client.calls[3][0], "GET")
+        self.assertEqual(client.calls[3][1], "/wika/knowledge/mine")
+        self.assertEqual(client.calls[3][2]["params"]["limit"], 10)
+        self.assertEqual(client.calls[3][2]["params"]["status"], "fresh")
+        self.assertEqual(client.calls[3][2]["params"]["tag"], "debug")
 
 
 if __name__ == "__main__":

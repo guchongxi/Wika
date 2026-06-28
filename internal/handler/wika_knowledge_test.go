@@ -49,10 +49,12 @@ func (s *stubWikaIntakeService) PushKnowledge(_ context.Context, input wikaintak
 }
 
 type stubWikaSearchService struct {
-	input     *wikasearch.SearchInput
-	mineInput *wikasearch.MineInput
-	resp      *wikasearch.SearchResult
-	mineResp  *wikasearch.MineResult
+	input       *wikasearch.SearchInput
+	mineInput   *wikasearch.MineInput
+	expandInput *wikasearch.ExpandInput
+	resp        *wikasearch.SearchResult
+	mineResp    *wikasearch.MineResult
+	expandResp  *wikasearch.ExpandResult
 }
 
 func (s *stubWikaSearchService) SearchKnowledge(_ context.Context, input wikasearch.SearchInput) (*wikasearch.SearchResult, error) {
@@ -85,6 +87,21 @@ func (s *stubWikaSearchService) ListMyKnowledge(_ context.Context, input wikasea
 	}}}, nil
 }
 
+func (s *stubWikaSearchService) ExpandKnowledge(_ context.Context, input wikasearch.ExpandInput) (*wikasearch.ExpandResult, error) {
+	s.expandInput = &input
+	if s.expandResp != nil {
+		return s.expandResp, nil
+	}
+	return &wikasearch.ExpandResult{Results: []wikasearch.ExpandedItem{{
+		KnowledgeID:     "k-1",
+		Title:           "个人知识",
+		Content:         "完整正文",
+		SourceSpace:     wikasearch.SourcePersonal,
+		QualityScore:    91,
+		FreshnessStatus: "fresh",
+	}}}, nil
+}
+
 func newWikaKnowledgeTestRouter(service *stubWikaIntakeService) *gin.Engine {
 	return newWikaKnowledgeSearchTestRouter(service, nil)
 }
@@ -101,6 +118,7 @@ func newWikaKnowledgeSearchTestRouter(intake *stubWikaIntakeService, search *stu
 	h := &WikaKnowledgeHandler{intake: intake, search: search}
 	r.POST("/api/v1/wika/knowledge/push", h.PushKnowledge)
 	r.POST("/api/v1/wika/knowledge/search", h.SearchKnowledge)
+	r.POST("/api/v1/wika/knowledge/expand", h.ExpandKnowledge)
 	r.GET("/api/v1/wika/knowledge/mine", h.ListMyKnowledge)
 	return r
 }
@@ -257,5 +275,40 @@ func TestWikaKnowledgeMinePassesCurrentUserAndFiltersToService(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `"total":1`) ||
 		!strings.Contains(w.Body.String(), `"source_space":"personal"`) {
 		t.Fatalf("unexpected mine response: %s", w.Body.String())
+	}
+}
+
+func TestWikaKnowledgeExpandPassesIDsToService(t *testing.T) {
+	search := &stubWikaSearchService{}
+	r := newWikaKnowledgeSearchTestRouter(nil, search)
+
+	w := doWikaKnowledgeJSON(t, r, http.MethodPost, "/api/v1/wika/knowledge/expand", `{"ids":["k-1","k-2"]}`)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if search.expandInput == nil {
+		t.Fatal("expected ExpandKnowledge to be called")
+	}
+	if search.expandInput.UserID != "u-test" || len(search.expandInput.IDs) != 2 || search.expandInput.IDs[1] != "k-2" {
+		t.Fatalf("unexpected expand input: %+v", search.expandInput)
+	}
+	if !strings.Contains(w.Body.String(), `"content":"完整正文"`) ||
+		!strings.Contains(w.Body.String(), `"source_space":"personal"`) {
+		t.Fatalf("unexpected expand response: %s", w.Body.String())
+	}
+}
+
+func TestWikaKnowledgeExpandRejectsEmptyIDsBeforeService(t *testing.T) {
+	search := &stubWikaSearchService{}
+	r := newWikaKnowledgeSearchTestRouter(nil, search)
+
+	w := doWikaKnowledgeJSON(t, r, http.MethodPost, "/api/v1/wika/knowledge/expand", `{"ids":[]}`)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+	}
+	if search.expandInput != nil {
+		t.Fatalf("empty ids must not call service: %+v", search.expandInput)
 	}
 }

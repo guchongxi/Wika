@@ -275,6 +275,7 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 		{
 			knowledge.POST("/push", knowledgeHandler.PushKnowledge)
 			knowledge.POST("/search", knowledgeHandler.SearchKnowledge)
+			knowledge.POST("/expand", knowledgeHandler.ExpandKnowledge)
 			knowledge.GET("/mine", knowledgeHandler.ListMyKnowledge)
 		}
 	}

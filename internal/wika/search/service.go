@@ -21,6 +21,7 @@ type Store interface {
 type KnowledgeSearcher interface {
 	SearchKnowledgeForScopes(ctx context.Context, scopes []types.KnowledgeSearchScope, keyword string, offset, limit int, fileTypes []string) ([]*types.Knowledge, bool, error)
 	ListPagedKnowledgeByKnowledgeBaseID(ctx context.Context, kbID string, page *types.Pagination, filter types.KnowledgeListFilter) (*types.PageResult, error)
+	GetKnowledgeByIDOnly(ctx context.Context, id string) (*types.Knowledge, error)
 }
 
 // Service 编排权限感知的 Wika compact 搜索。
@@ -156,6 +157,52 @@ func (s *Service) ListMyKnowledge(ctx context.Context, input MineInput) (*MineRe
 	return &MineResult{Results: results, Total: total}, nil
 }
 
+// ExpandKnowledge 按 ID 展开详情，并重新按当前用户可读 scope 过滤。
+func (s *Service) ExpandKnowledge(ctx context.Context, input ExpandInput) (*ExpandResult, error) {
+	if len(input.IDs) == 0 || s.store == nil || s.knowledge == nil {
+		return &ExpandResult{Results: []ExpandedItem{}}, nil
+	}
+	scopes, err := s.store.ListReadableScopes(ctx, input.UserID, true)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]SourceSpace, len(scopes))
+	for _, scope := range scopes {
+		allowed[scopeKey(scope.TenantID, scope.KBID)] = scope.Source
+	}
+
+	knowledges := make([]*types.Knowledge, 0, len(input.IDs))
+	ids := make([]string, 0, len(input.IDs))
+	for _, id := range input.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		knowledge, err := s.knowledge.GetKnowledgeByIDOnly(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if knowledge == nil {
+			continue
+		}
+		if _, ok := allowed[scopeKey(knowledge.TenantID, knowledge.KnowledgeBaseID)]; !ok {
+			continue
+		}
+		knowledges = append(knowledges, knowledge)
+		ids = append(ids, knowledge.ID)
+	}
+	states, err := s.store.GetKnowledgeStates(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]ExpandedItem, 0, len(knowledges))
+	for _, knowledge := range knowledges {
+		source := allowed[scopeKey(knowledge.TenantID, knowledge.KnowledgeBaseID)]
+		results = append(results, buildExpandedItem(knowledge, source, states[knowledge.ID]))
+	}
+	return &ExpandResult{Results: results}, nil
+}
+
 func buildResultItem(knowledge *types.Knowledge, source SourceSpace, state *types.WikaKnowledgeState) ResultItem {
 	result := ResultItem{
 		KnowledgeID:     knowledge.ID,
@@ -172,6 +219,29 @@ func buildResultItem(knowledge *types.Knowledge, source SourceSpace, state *type
 		}
 	}
 	return result
+}
+
+func buildExpandedItem(knowledge *types.Knowledge, source SourceSpace, state *types.WikaKnowledgeState) ExpandedItem {
+	content := strings.TrimSpace(knowledge.Description)
+	if meta, err := knowledge.ManualMetadata(); err == nil && meta != nil && strings.TrimSpace(meta.Content) != "" {
+		content = strings.TrimSpace(meta.Content)
+	}
+	item := ExpandedItem{
+		KnowledgeID:     knowledge.ID,
+		Title:           knowledge.Title,
+		Content:         content,
+		Source:          knowledge.Source,
+		SourceSpace:     source,
+		FreshnessStatus: "fresh",
+		UpdatedAt:       knowledge.UpdatedAt,
+	}
+	if state != nil {
+		item.QualityScore = state.QualityScore
+		if state.FreshnessStatus != "" {
+			item.FreshnessStatus = state.FreshnessStatus
+		}
+	}
+	return item
 }
 
 func pageResultKnowledges(pageResult *types.PageResult) []*types.Knowledge {

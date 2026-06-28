@@ -35,6 +35,12 @@ type MineInput struct {
 	Tag    string
 }
 
+// ExpandInput 是 expand_knowledge_result 的输入。
+type ExpandInput struct {
+	UserID string
+	IDs    []string
+}
+
 // AccessRecord 是搜索命中的轻量访问记录。
 type AccessRecord struct {
 	TenantID    uint64
@@ -55,6 +61,18 @@ type ResultItem struct {
 	UpdatedAt       time.Time   `json:"updated_at"`
 }
 
+// ExpandedItem 是展开后的知识详情。
+type ExpandedItem struct {
+	KnowledgeID     string      `json:"knowledge_id"`
+	Title           string      `json:"title"`
+	Content         string      `json:"content"`
+	Source          string      `json:"source,omitempty"`
+	SourceSpace     SourceSpace `json:"source_space"`
+	QualityScore    int         `json:"quality_score"`
+	FreshnessStatus string      `json:"freshness_status"`
+	UpdatedAt       time.Time   `json:"updated_at"`
+}
+
 // SearchResult 是 search_knowledge 响应。
 type SearchResult struct {
 	Results   []ResultItem `json:"results"`
@@ -65,4 +83,9 @@ type SearchResult struct {
 type MineResult struct {
 	Results []ResultItem `json:"results"`
 	Total   int64        `json:"total"`
+}
+
+// ExpandResult 是 expand_knowledge_result 的响应。
+type ExpandResult struct {
+	Results []ExpandedItem `json:"results"`
 }
