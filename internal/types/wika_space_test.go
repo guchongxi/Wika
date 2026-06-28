@@ -49,3 +49,22 @@ func TestWikaP1aGovernanceTableNames(t *testing.T) {
 		})
 	}
 }
+
+func TestWikaP1bKnowledgeTableNames(t *testing.T) {
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "knowledge state", got: (WikaKnowledgeState{}).TableName(), want: "wika_knowledge_state"},
+		{name: "access daily", got: (KnowledgeAccessDaily{}).TableName(), want: "knowledge_access_daily"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Fatalf("expected table name %q, got %q", tc.want, tc.got)
+			}
+		})
+	}
+}

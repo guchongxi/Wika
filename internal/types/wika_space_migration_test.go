@@ -53,3 +53,31 @@ func TestWikaP1aGovernanceMigrationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestWikaP1bKnowledgeMigrationContract(t *testing.T) {
+	path := filepath.Join("..", "..", "migrations", "versioned", "000092_wika_knowledge_state_access.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected Wika P1b knowledge migration to exist: %v", err)
+	}
+
+	sql := string(raw)
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS wika_knowledge_state",
+		"knowledge_id VARCHAR(36) PRIMARY KEY",
+		"quality_score INT NOT NULL DEFAULT 0 CHECK (quality_score BETWEEN 0 AND 100)",
+		"freshness_status VARCHAR(24) NOT NULL DEFAULT 'fresh'",
+		"confidence_score NUMERIC(4,3)",
+		"ux_wika_knowledge_state_idempotency",
+		"CREATE TABLE IF NOT EXISTS knowledge_access_daily",
+		"PRIMARY KEY (tenant_id, kb_id, knowledge_id, day)",
+		"access_count BIGINT NOT NULL DEFAULT 0 CHECK (access_count >= 0)",
+		"idx_knowledge_access_daily_kb_day",
+		"idx_knowledge_access_daily_knowledge_day",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("expected migration to contain %q", fragment)
+		}
+	}
+}
