@@ -137,3 +137,27 @@ func TestWikaP2EvaluationMigrationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestWikaP3FreshnessMigrationContract(t *testing.T) {
+	path := filepath.Join("..", "..", "migrations", "versioned", "000095_wika_freshness.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected Wika P3 freshness migration to exist: %v", err)
+	}
+
+	sql := string(raw)
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS freshness_checks",
+		"CREATE TABLE IF NOT EXISTS freshness_check_items",
+		"issue_type VARCHAR(32) NOT NULL",
+		"status VARCHAR(24) NOT NULL DEFAULT 'open'",
+		"idx_freshness_checks_kb_created",
+		"idx_freshness_check_items_knowledge",
+		"idx_freshness_check_items_status",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("expected migration to contain %q", fragment)
+		}
+	}
+}
