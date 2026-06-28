@@ -44,6 +44,8 @@ type WikaEvalRun struct {
 	KBID           string     `json:"kb_id" gorm:"type:varchar(36);not null;index:idx_eval_runs_kb_created"`
 	DatasetID      uint64     `json:"dataset_id" gorm:"not null;index"`
 	DatasetVersion int        `json:"dataset_version" gorm:"not null;default:1"`
+	ScheduleID     *uint64    `json:"schedule_id,omitempty" gorm:"index;uniqueIndex:ux_eval_runs_schedule_slot,where:schedule_id IS NOT NULL"`
+	ScheduledFor   *time.Time `json:"scheduled_for,omitempty" gorm:"uniqueIndex:ux_eval_runs_schedule_slot,where:schedule_id IS NOT NULL"`
 	Trigger        string     `json:"trigger" gorm:"type:varchar(32);not null"`
 	Status         string     `json:"status" gorm:"type:varchar(32);not null"`
 	MRR            float64    `json:"mrr" gorm:"column:mrr;type:numeric(8,6);not null;default:0"`

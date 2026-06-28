@@ -1,5 +1,7 @@
 package evaluation
 
+import "time"
+
 // CreateDatasetInput 是创建黄金 QA 数据集的输入。
 type CreateDatasetInput struct {
 	ActorID     string
@@ -22,10 +24,12 @@ type AddQAItemInput struct {
 
 // RunInput 是触发正式评测 run 的输入。
 type RunInput struct {
-	ActorID   string
-	TenantID  uint64
-	KBID      string
-	DatasetID uint64
+	ActorID      string
+	TenantID     uint64
+	KBID         string
+	DatasetID    uint64
+	ScheduleID   *uint64
+	ScheduledFor *time.Time
 }
 
 // RunMetrics 是一次正式评测的核心指标。
@@ -40,4 +44,5 @@ const (
 	RunStatusRunning   = "running"
 	RunStatusCompleted = "completed"
 	RunTriggerManual   = "manual"
+	RunTriggerSchedule = "schedule"
 )

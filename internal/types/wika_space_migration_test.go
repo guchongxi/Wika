@@ -262,3 +262,35 @@ func TestWikaP5URLRefreshMigrationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestWikaP5EvalScheduleMigrationContract(t *testing.T) {
+	path := filepath.Join("..", "..", "migrations", "versioned", "000100_wika_eval_schedule.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected Wika P5 eval schedule migration to exist: %v", err)
+	}
+
+	sql := string(raw)
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS wika_eval_schedules",
+		"dataset_id BIGINT NOT NULL REFERENCES eval_datasets(id)",
+		"cron_expr VARCHAR(128) NOT NULL",
+		"next_run_at TIMESTAMPTZ NOT NULL",
+		"consecutive_failures INT NOT NULL DEFAULT 0",
+		"last_failure_code VARCHAR(64)",
+		"locked_until TIMESTAMPTZ",
+		"locked_by VARCHAR(128)",
+		"schedule_id BIGINT",
+		"scheduled_for TIMESTAMPTZ",
+		"ux_wika_eval_schedules_enabled",
+		"WHERE enabled = TRUE",
+		"ux_eval_runs_schedule_slot",
+		"WHERE schedule_id IS NOT NULL",
+		"idx_wika_eval_schedules_due",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("expected migration to contain %q", fragment)
+		}
+	}
+}

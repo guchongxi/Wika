@@ -87,6 +87,7 @@ import (
 	wikaeval "github.com/Tencent/WeKnora/internal/wika/evaluation"
 	wikafreshness "github.com/Tencent/WeKnora/internal/wika/freshness"
 	wikaconflict "github.com/Tencent/WeKnora/internal/wika/governance/conflict"
+	wikaevalschedule "github.com/Tencent/WeKnora/internal/wika/governance/evalschedule"
 	wikaurlrefresh "github.com/Tencent/WeKnora/internal/wika/governance/urlrefresh"
 	wikasafefetch "github.com/Tencent/WeKnora/internal/wika/governance/urlrefresh/safefetch"
 	wikaversion "github.com/Tencent/WeKnora/internal/wika/governance/version"
@@ -184,6 +185,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(wikaeval.NewGormStore))
 	must(container.Provide(wikafreshness.NewGormStore))
 	must(container.Provide(wikaconflict.NewGormStore))
+	must(container.Provide(wikaevalschedule.NewGormStore))
 	must(container.Provide(wikaurlrefresh.NewGormStore))
 	must(container.Provide(wikaversion.NewGormStore))
 	must(container.Provide(wikagraph.NewGormStore))
@@ -225,6 +227,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(wikaconflict.NewService))
 	must(container.Provide(wikaversion.NewService))
 	must(container.Provide(initWikaURLRefreshService))
+	must(container.Provide(initWikaEvalScheduleService))
 	must(container.Provide(wikagraph.NewService))
 	must(container.Provide(wikaintake.NewService))
 	must(container.Provide(wikasearch.NewService))
@@ -380,6 +383,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(handler.NewWikaConflictHandler))
 	must(container.Provide(handler.NewWikaVersionHandler))
 	must(container.Provide(handler.NewWikaURLRefreshHandler))
+	must(container.Provide(handler.NewWikaEvalScheduleHandler))
 	must(container.Provide(handler.NewWikaGraphHandler))
 
 	// Data source handler
@@ -477,6 +481,14 @@ func initWikaURLRefreshService(store *wikaurlrefresh.GormStore, audit interfaces
 		wikaurlrefresh.WithKnowledgeUpdater(knowledge),
 		wikaurlrefresh.WithVersionRecorder(versions),
 		wikaurlrefresh.WithFeatureGate(settings),
+	)
+}
+
+func initWikaEvalScheduleService(store *wikaevalschedule.GormStore, runner *wikaeval.Service, settings interfaces.SystemSettingService) *wikaevalschedule.Service {
+	return wikaevalschedule.NewService(
+		store,
+		runner,
+		wikaevalschedule.WithFeatureGate(settings),
 	)
 }
 

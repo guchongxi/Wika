@@ -125,12 +125,18 @@ func (s *Service) RunEvaluation(ctx context.Context, input RunInput) (*types.Wik
 		return nil, err
 	}
 	now := time.Now()
+	trigger := RunTriggerManual
+	if input.ScheduleID != nil {
+		trigger = RunTriggerSchedule
+	}
 	run, err := s.store.CreateRun(ctx, &types.WikaEvalRun{
 		TenantID:       input.TenantID,
 		KBID:           strings.TrimSpace(input.KBID),
 		DatasetID:      input.DatasetID,
 		DatasetVersion: 1,
-		Trigger:        RunTriggerManual,
+		ScheduleID:     input.ScheduleID,
+		ScheduledFor:   input.ScheduledFor,
+		Trigger:        trigger,
 		Status:         RunStatusRunning,
 		Metrics:        types.JSON([]byte("{}")),
 		SearchConfig:   types.JSON([]byte("{}")),

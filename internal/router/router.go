@@ -96,6 +96,7 @@ type RouterParams struct {
 	WikaConflictHandler          *handler.WikaConflictHandler
 	WikaVersionHandler           *handler.WikaVersionHandler
 	WikaURLRefreshHandler        *handler.WikaURLRefreshHandler
+	WikaEvalScheduleHandler      *handler.WikaEvalScheduleHandler
 	WikaTokenService             *wikaauth.TokenService
 }
 
@@ -242,7 +243,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterWeKnoraCloudRoutes(v1, params.WeKnoraCloudHandler, rbacGuards)
 		RegisterWikiPageRoutes(v1, params.WikiPageHandler, rbacGuards)
 		RegisterChunkerDebugRoutes(v1, rbacGuards)
-		RegisterWikaRoutes(v1, params.WikaTokenHandler, params.WikaKnowledgeHandler, params.WikaSuggestionHandler, params.WikaEvaluationHandler, params.WikaFreshnessHandler, params.WikaGraphHandler, params.WikaConflictHandler, params.WikaVersionHandler, params.WikaURLRefreshHandler, rbacGuards)
+		RegisterWikaRoutes(v1, params.WikaTokenHandler, params.WikaKnowledgeHandler, params.WikaSuggestionHandler, params.WikaEvaluationHandler, params.WikaFreshnessHandler, params.WikaGraphHandler, params.WikaConflictHandler, params.WikaVersionHandler, params.WikaURLRefreshHandler, params.WikaEvalScheduleHandler, rbacGuards)
 	}
 
 	return r
@@ -260,8 +261,8 @@ func RegisterChunkerDebugRoutes(r *gin.RouterGroup, g *rbacGuards) {
 }
 
 // RegisterWikaRoutes 注册 Wika 产品化接口。
-func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, knowledgeHandler *handler.WikaKnowledgeHandler, suggestionHandler *handler.WikaSuggestionHandler, evaluationHandler *handler.WikaEvaluationHandler, freshnessHandler *handler.WikaFreshnessHandler, graphHandler *handler.WikaGraphHandler, conflictHandler *handler.WikaConflictHandler, versionHandler *handler.WikaVersionHandler, urlRefreshHandler *handler.WikaURLRefreshHandler, g *rbacGuards) {
-	if tokenHandler == nil && knowledgeHandler == nil && suggestionHandler == nil && evaluationHandler == nil && freshnessHandler == nil && graphHandler == nil && conflictHandler == nil && versionHandler == nil && urlRefreshHandler == nil {
+func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, knowledgeHandler *handler.WikaKnowledgeHandler, suggestionHandler *handler.WikaSuggestionHandler, evaluationHandler *handler.WikaEvaluationHandler, freshnessHandler *handler.WikaFreshnessHandler, graphHandler *handler.WikaGraphHandler, conflictHandler *handler.WikaConflictHandler, versionHandler *handler.WikaVersionHandler, urlRefreshHandler *handler.WikaURLRefreshHandler, evalScheduleHandler *handler.WikaEvalScheduleHandler, g *rbacGuards) {
+	if tokenHandler == nil && knowledgeHandler == nil && suggestionHandler == nil && evaluationHandler == nil && freshnessHandler == nil && graphHandler == nil && conflictHandler == nil && versionHandler == nil && urlRefreshHandler == nil && evalScheduleHandler == nil {
 		return
 	}
 	wika := r.Group("/wika")
@@ -300,6 +301,14 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 			eval.POST("/datasets", evaluationHandler.CreateDataset)
 			eval.POST("/datasets/:dataset_id/items", evaluationHandler.AddQAItem)
 			eval.POST("/runs", evaluationHandler.RunEvaluation)
+		}
+	}
+	if evalScheduleHandler != nil {
+		evalSchedules := wika.Group("/kb/:id/eval/schedules", viewerGuards...)
+		{
+			evalSchedules.POST("", evalScheduleHandler.CreateSchedule)
+			evalSchedules.PUT("/:schedule_id", evalScheduleHandler.UpdateSchedule)
+			evalSchedules.DELETE("/:schedule_id", evalScheduleHandler.DisableSchedule)
 		}
 	}
 	if freshnessHandler != nil {
