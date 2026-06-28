@@ -18,6 +18,11 @@ type Validator struct {
 	resolver Resolver
 }
 
+type FetchTarget struct {
+	URL *url.URL
+	IPs []net.IP
+}
+
 func NewValidator(resolver Resolver) *Validator {
 	if resolver == nil {
 		resolver = net.DefaultResolver
@@ -26,6 +31,14 @@ func NewValidator(resolver Resolver) *Validator {
 }
 
 func (v *Validator) ValidateURL(ctx context.Context, raw string) (*url.URL, error) {
+	target, err := v.ValidateFetchTarget(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	return target.URL, nil
+}
+
+func (v *Validator) ValidateFetchTarget(ctx context.Context, raw string) (*FetchTarget, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return nil, fmt.Errorf("invalid url: %w", err)
@@ -50,10 +63,12 @@ func (v *Validator) ValidateURL(ctx context.Context, raw string) (*url.URL, erro
 	if isObfuscatedIPLikeHost(host) {
 		return nil, fmt.Errorf("ip-like hostname is not allowed")
 	}
+	var resolvedIPs []net.IP
 	if ip := net.ParseIP(host); ip != nil {
 		if isBlockedIP(ip) {
 			return nil, fmt.Errorf("blocked ip address")
 		}
+		resolvedIPs = append(resolvedIPs, ip)
 	} else {
 		ips, err := v.resolver.LookupIPAddr(ctx, host)
 		if err != nil {
@@ -66,11 +81,12 @@ func (v *Validator) ValidateURL(ctx context.Context, raw string) (*url.URL, erro
 			if isBlockedIP(item.IP) {
 				return nil, fmt.Errorf("hostname resolves to blocked ip")
 			}
+			resolvedIPs = append(resolvedIPs, item.IP)
 		}
 	}
 	parsed.Scheme = scheme
 	parsed.Host = hostWithPort(host, parsed.Port())
-	return parsed, nil
+	return &FetchTarget{URL: parsed, IPs: resolvedIPs}, nil
 }
 
 func normalizeHost(host string) (string, error) {

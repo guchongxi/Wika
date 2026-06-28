@@ -3,6 +3,7 @@ package safefetch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,24 @@ func (v *fakeURLValidator) ValidateURL(ctx context.Context, raw string) (*url.UR
 		return nil, errors.New("blocked by validator")
 	}
 	return url.Parse(raw)
+}
+
+type fakeFetchTargetValidator struct {
+	ip    net.IP
+	calls []string
+}
+
+func (v *fakeFetchTargetValidator) ValidateURL(ctx context.Context, raw string) (*url.URL, error) {
+	return url.Parse(raw)
+}
+
+func (v *fakeFetchTargetValidator) ValidateFetchTarget(ctx context.Context, raw string) (*FetchTarget, error) {
+	v.calls = append(v.calls, raw)
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &FetchTarget{URL: parsed, IPs: []net.IP{v.ip}}, nil
 }
 
 func TestFetcherReadsSafeTextWithoutProxy(t *testing.T) {
@@ -63,6 +82,55 @@ func TestFetcherReadsSafeTextWithoutProxy(t *testing.T) {
 	}
 	if proxyHits.Load() != 0 {
 		t.Fatalf("proxy was used %d times", proxyHits.Load())
+	}
+}
+
+func TestFetcherDialsValidatedPinnedIP(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("pinned"))
+	}))
+	defer target.Close()
+
+	tcpAddr := target.Listener.Addr().(*net.TCPAddr)
+	validator := &fakeFetchTargetValidator{ip: tcpAddr.IP}
+	fetcher := NewFetcher(validator, WithMaxBytes(1024))
+
+	got, err := fetcher.Fetch(context.Background(), fmt.Sprintf("http://safe.rebind.test:%d/source", tcpAddr.Port))
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+	if got.Text != "pinned" {
+		t.Fatalf("unexpected fetched text: %q", got.Text)
+	}
+}
+
+func TestFetcherPinsRedirectTargetIP(t *testing.T) {
+	var redirectURL string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, redirectURL, http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("redirect pinned"))
+	}))
+	defer target.Close()
+
+	tcpAddr := target.Listener.Addr().(*net.TCPAddr)
+	redirectURL = fmt.Sprintf("http://redirect.rebind.test:%d/final", tcpAddr.Port)
+	validator := &fakeFetchTargetValidator{ip: tcpAddr.IP}
+	fetcher := NewFetcher(validator, WithMaxBytes(1024))
+
+	got, err := fetcher.Fetch(context.Background(), fmt.Sprintf("http://safe.rebind.test:%d/start", tcpAddr.Port))
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+	if got.Text != "redirect pinned" {
+		t.Fatalf("unexpected fetched text: %q", got.Text)
+	}
+	if len(validator.calls) < 2 {
+		t.Fatalf("expected original and redirect target to be validated, got %v", validator.calls)
 	}
 }
 

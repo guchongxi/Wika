@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 )
 
@@ -15,6 +16,10 @@ const defaultMaxBytes int64 = 2 * 1024 * 1024
 
 type URLValidator interface {
 	ValidateURL(ctx context.Context, raw string) (*url.URL, error)
+}
+
+type FetchTargetValidator interface {
+	ValidateFetchTarget(ctx context.Context, raw string) (*FetchTarget, error)
 }
 
 type FetchResult struct {
@@ -67,13 +72,15 @@ func (f *Fetcher) Fetch(ctx context.Context, raw string) (*FetchResult, error) {
 	if f.validator == nil {
 		return nil, fmt.Errorf("url validator is required")
 	}
-	checkedURL, err := f.validator.ValidateURL(ctx, raw)
+	target, err := f.validateFetchTarget(ctx, raw)
 	if err != nil {
 		return nil, err
 	}
+	pins := newPinnedTargets()
+	pins.add(target)
 
-	client := f.httpClient()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, checkedURL.String(), nil)
+	client := f.httpClient(pins)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.URL.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -108,10 +115,21 @@ func (f *Fetcher) Fetch(ctx context.Context, raw string) (*FetchResult, error) {
 	}, nil
 }
 
-func (f *Fetcher) httpClient() *http.Client {
+func (f *Fetcher) validateFetchTarget(ctx context.Context, raw string) (*FetchTarget, error) {
+	if validator, ok := f.validator.(FetchTargetValidator); ok {
+		return validator.ValidateFetchTarget(ctx, raw)
+	}
+	checkedURL, err := f.validator.ValidateURL(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	return &FetchTarget{URL: checkedURL}, nil
+}
+
+func (f *Fetcher) httpClient(pins *pinnedTargets) *http.Client {
 	transport := &http.Transport{
 		Proxy:                 nil,
-		DialContext:           f.dialContext,
+		DialContext:           f.pinnedDialContext(pins),
 		DisableKeepAlives:     true,
 		ResponseHeaderTimeout: 10 * time.Second,
 	}
@@ -122,10 +140,84 @@ func (f *Fetcher) httpClient() *http.Client {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects")
 			}
-			_, err := f.validator.ValidateURL(req.Context(), req.URL.String())
-			return err
+			target, err := f.validateFetchTarget(req.Context(), req.URL.String())
+			if err != nil {
+				return err
+			}
+			pins.add(target)
+			req.URL = target.URL
+			return nil
 		},
 	}
+}
+
+func (f *Fetcher) pinnedDialContext(pins *pinnedTargets) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network string, addr string) (net.Conn, error) {
+		ips := pins.get(addr)
+		if len(ips) == 0 {
+			return f.dialContext(ctx, network, addr)
+		}
+		_, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return f.dialContext(ctx, network, addr)
+		}
+		var lastErr error
+		for _, ip := range ips {
+			conn, err := f.dialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
+}
+
+type pinnedTargets struct {
+	mu  sync.RWMutex
+	ips map[string][]net.IP
+}
+
+func newPinnedTargets() *pinnedTargets {
+	return &pinnedTargets{ips: map[string][]net.IP{}}
+}
+
+func (p *pinnedTargets) add(target *FetchTarget) {
+	if target == nil || target.URL == nil || len(target.IPs) == 0 {
+		return
+	}
+	addr := dialAddress(target.URL)
+	if addr == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ips[addr] = append([]net.IP(nil), target.IPs...)
+}
+
+func (p *pinnedTargets) get(addr string) []net.IP {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return append([]net.IP(nil), p.ips[addr]...)
+}
+
+func dialAddress(urlValue *url.URL) string {
+	host := urlValue.Hostname()
+	if host == "" {
+		return ""
+	}
+	port := urlValue.Port()
+	if port == "" {
+		switch urlValue.Scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return ""
+		}
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func isAllowedContentType(contentType string) bool {
