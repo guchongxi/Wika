@@ -48,6 +48,13 @@ class WikaDailyToolsTest(unittest.TestCase):
         client.search_knowledge("排查", limit=3, include_team=False, format="compact")
         client.expand_knowledge_result(["k-1", "k-2"])
         client.get_my_knowledge(limit=10, status="fresh", tag="debug")
+        client.suggest_to_team(
+            "k-1",
+            target_space_id=80,
+            target_kb_id="kb-team",
+            reason="团队可复用",
+            idempotency_key="idem-suggest-1",
+        )
 
         self.assertEqual(client.calls[0][0], "POST")
         self.assertEqual(client.calls[0][1], "/wika/knowledge/push")
@@ -65,6 +72,13 @@ class WikaDailyToolsTest(unittest.TestCase):
         self.assertEqual(client.calls[3][2]["params"]["limit"], 10)
         self.assertEqual(client.calls[3][2]["params"]["status"], "fresh")
         self.assertEqual(client.calls[3][2]["params"]["tag"], "debug")
+        self.assertEqual(client.calls[4][0], "POST")
+        self.assertEqual(client.calls[4][1], "/wika/suggestions")
+        self.assertEqual(client.calls[4][2]["json"]["knowledge_id"], "k-1")
+        self.assertEqual(client.calls[4][2]["json"]["target_space_id"], 80)
+        self.assertEqual(client.calls[4][2]["json"]["target_kb_id"], "kb-team")
+        self.assertEqual(client.calls[4][2]["json"]["reason"], "团队可复用")
+        self.assertEqual(client.calls[4][2]["json"]["idempotency_key"], "idem-suggest-1")
 
 
 if __name__ == "__main__":

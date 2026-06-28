@@ -304,6 +304,25 @@ class WeKnoraClient:
             params["tag"] = tag
         return self._request("GET", "/wika/knowledge/mine", params=params)
 
+    def suggest_to_team(
+        self,
+        knowledge_id: str,
+        target_space_id: int | None = None,
+        target_kb_id: str | None = None,
+        reason: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> Dict:
+        """Suggest personal knowledge to a team with Wika AI pre-review."""
+        data: Dict[str, Any] = {"knowledge_id": knowledge_id}
+        optional = {
+            "target_space_id": target_space_id,
+            "target_kb_id": target_kb_id,
+            "reason": reason,
+            "idempotency_key": idempotency_key,
+        }
+        data.update({key: value for key, value in optional.items() if value is not None})
+        return self._request("POST", "/wika/suggestions", json=data)
+
     # Model Management - Methods for managing AI models (LLM, Embedding, Rerank)
     def create_model(
         self,
@@ -762,6 +781,36 @@ async def handle_list_tools() -> list[types.Tool]:
                     "status": {"type": "string", "description": "Optional status filter"},
                     "tag": {"type": "string", "description": "Optional tag filter"},
                 },
+            },
+        ),
+        types.Tool(
+            name="suggest_to_team",
+            description="Suggest personal Wika knowledge to a team and receive AI pre-review result",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "knowledge_id": {
+                        "type": "string",
+                        "description": "Personal knowledge ID to suggest",
+                    },
+                    "target_space_id": {
+                        "type": "integer",
+                        "description": "Optional target team space ID; defaults to current tenant context",
+                    },
+                    "target_kb_id": {
+                        "type": "string",
+                        "description": "Optional target team knowledge base ID",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Reason why this knowledge should be shared with the team",
+                    },
+                    "idempotency_key": {
+                        "type": "string",
+                        "description": "Idempotency key for repeated suggestion calls",
+                    },
+                },
+                "required": ["knowledge_id"],
             },
         ),
         types.Tool(
@@ -1257,6 +1306,14 @@ async def handle_call_tool(
                 limit=args.get("limit", 20),
                 status=args.get("status"),
                 tag=args.get("tag"),
+            )
+        elif name == "suggest_to_team":
+            result = client.suggest_to_team(
+                args["knowledge_id"],
+                target_space_id=args.get("target_space_id"),
+                target_kb_id=args.get("target_kb_id"),
+                reason=args.get("reason"),
+                idempotency_key=args.get("idempotency_key"),
             )
         elif name == "create_knowledge_from_file":
             result = client.create_knowledge_from_file(

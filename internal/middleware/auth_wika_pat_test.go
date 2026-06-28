@@ -96,6 +96,9 @@ func newWikaPATAuthRouter(t *testing.T, verifier *stubWikaPATVerifier, userSvc *
 		}
 		c.Status(http.StatusOK)
 	})
+	r.POST("/api/v1/wika/suggestions", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
 	r.GET("/api/v1/wika/tokens", func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
@@ -128,6 +131,32 @@ func TestAuthAcceptsWikaPATForDailyKnowledgeRoute(t *testing.T) {
 	}
 	if userSvc.validateTokenCalls != 0 {
 		t.Fatalf("wika_pat token must not be sent through JWT validation")
+	}
+}
+
+func TestAuthRequiresSuggestionCreateScopeForWikaPAT(t *testing.T) {
+	verifier := &stubWikaPATVerifier{token: &types.WikaUserToken{
+		UserID:    "u-pat",
+		TenantID:  7,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}}
+	userSvc := &stubAuthUserService{user: &types.User{
+		ID:       "u-pat",
+		TenantID: 7,
+		IsActive: true,
+	}}
+	r := newWikaPATAuthRouter(t, verifier, userSvc)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/suggestions", nil)
+	req.Header.Set("Authorization", "Bearer wika_pat_valid")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected PAT auth to pass, got %d body=%s", w.Code, w.Body.String())
+	}
+	if verifier.requiredScope != "suggestion:create" {
+		t.Fatalf("expected suggestion:create scope, got %q", verifier.requiredScope)
 	}
 }
 

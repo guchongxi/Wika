@@ -81,3 +81,29 @@ func TestWikaP1bKnowledgeMigrationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestWikaP1cSuggestionMigrationContract(t *testing.T) {
+	path := filepath.Join("..", "..", "migrations", "versioned", "000093_wika_suggestions.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected Wika P1c suggestion migration to exist: %v", err)
+	}
+
+	sql := string(raw)
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS knowledge_suggestions",
+		"CREATE TABLE IF NOT EXISTS knowledge_lineage",
+		"ai_decision VARCHAR(32) NOT NULL",
+		"status VARCHAR(32) NOT NULL",
+		"policy_version INT NOT NULL DEFAULT 1",
+		"ux_knowledge_suggestions_open",
+		"ux_knowledge_suggestions_idempotency",
+		"idx_knowledge_lineage_source",
+		"idx_knowledge_lineage_target",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("expected migration to contain %q", fragment)
+		}
+	}
+}

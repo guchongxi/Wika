@@ -86,6 +86,7 @@ import (
 	wikaauth "github.com/Tencent/WeKnora/internal/wika/auth"
 	wikaintake "github.com/Tencent/WeKnora/internal/wika/intake"
 	wikasearch "github.com/Tencent/WeKnora/internal/wika/search"
+	wikasuggestion "github.com/Tencent/WeKnora/internal/wika/suggestion"
 	"github.com/tencent/vectordatabase-sdk-go/tcvectordb"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/auth"
@@ -175,6 +176,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(wikaauth.NewGormTokenStore))
 	must(container.Provide(wikaintake.NewGormStore))
 	must(container.Provide(wikasearch.NewGormStore))
+	must(container.Provide(wikasuggestion.NewGormStore))
 
 	// MCP manager for managing MCP client connections
 	logger.Debugf(ctx, "[Container] Registering MCP manager...")
@@ -206,6 +208,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(initWikaTokenService))
 	must(container.Provide(wikaintake.NewService))
 	must(container.Provide(wikasearch.NewService))
+	must(container.Provide(wikasuggestion.NewService))
 
 	// Extract services - register individual extracters with names
 	must(container.Provide(service.NewChunkExtractService, dig.Name("chunkExtractor")))
@@ -351,6 +354,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(handler.NewOrganizationHandler))
 	must(container.Provide(handler.NewWikaTokenHandler))
 	must(container.Provide(handler.NewWikaKnowledgeHandler))
+	must(container.Provide(handler.NewWikaSuggestionHandler))
 
 	// Data source handler
 	must(container.Provide(handler.NewDataSourceHandler))

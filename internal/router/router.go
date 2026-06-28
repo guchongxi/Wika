@@ -89,6 +89,7 @@ type RouterParams struct {
 	WikiPageHandler              *handler.WikiPageHandler
 	WikaTokenHandler             *handler.WikaTokenHandler
 	WikaKnowledgeHandler         *handler.WikaKnowledgeHandler
+	WikaSuggestionHandler        *handler.WikaSuggestionHandler
 	WikaTokenService             *wikaauth.TokenService
 }
 
@@ -235,7 +236,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterWeKnoraCloudRoutes(v1, params.WeKnoraCloudHandler, rbacGuards)
 		RegisterWikiPageRoutes(v1, params.WikiPageHandler, rbacGuards)
 		RegisterChunkerDebugRoutes(v1, rbacGuards)
-		RegisterWikaRoutes(v1, params.WikaTokenHandler, params.WikaKnowledgeHandler, rbacGuards)
+		RegisterWikaRoutes(v1, params.WikaTokenHandler, params.WikaKnowledgeHandler, params.WikaSuggestionHandler, rbacGuards)
 	}
 
 	return r
@@ -253,8 +254,8 @@ func RegisterChunkerDebugRoutes(r *gin.RouterGroup, g *rbacGuards) {
 }
 
 // RegisterWikaRoutes 注册 Wika 产品化接口。
-func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, knowledgeHandler *handler.WikaKnowledgeHandler, g *rbacGuards) {
-	if tokenHandler == nil && knowledgeHandler == nil {
+func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, knowledgeHandler *handler.WikaKnowledgeHandler, suggestionHandler *handler.WikaSuggestionHandler, g *rbacGuards) {
+	if tokenHandler == nil && knowledgeHandler == nil && suggestionHandler == nil {
 		return
 	}
 	wika := r.Group("/wika")
@@ -277,6 +278,12 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 			knowledge.POST("/search", knowledgeHandler.SearchKnowledge)
 			knowledge.POST("/expand", knowledgeHandler.ExpandKnowledge)
 			knowledge.GET("/mine", knowledgeHandler.ListMyKnowledge)
+		}
+	}
+	if suggestionHandler != nil {
+		suggestions := wika.Group("/suggestions", viewerGuards...)
+		{
+			suggestions.POST("", suggestionHandler.CreateSuggestion)
 		}
 	}
 }
