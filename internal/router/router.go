@@ -90,6 +90,7 @@ type RouterParams struct {
 	WikaTokenHandler             *handler.WikaTokenHandler
 	WikaKnowledgeHandler         *handler.WikaKnowledgeHandler
 	WikaSuggestionHandler        *handler.WikaSuggestionHandler
+	WikaEvaluationHandler        *handler.WikaEvaluationHandler
 	WikaTokenService             *wikaauth.TokenService
 }
 
@@ -236,7 +237,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterWeKnoraCloudRoutes(v1, params.WeKnoraCloudHandler, rbacGuards)
 		RegisterWikiPageRoutes(v1, params.WikiPageHandler, rbacGuards)
 		RegisterChunkerDebugRoutes(v1, rbacGuards)
-		RegisterWikaRoutes(v1, params.WikaTokenHandler, params.WikaKnowledgeHandler, params.WikaSuggestionHandler, rbacGuards)
+		RegisterWikaRoutes(v1, params.WikaTokenHandler, params.WikaKnowledgeHandler, params.WikaSuggestionHandler, params.WikaEvaluationHandler, rbacGuards)
 	}
 
 	return r
@@ -254,8 +255,8 @@ func RegisterChunkerDebugRoutes(r *gin.RouterGroup, g *rbacGuards) {
 }
 
 // RegisterWikaRoutes 注册 Wika 产品化接口。
-func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, knowledgeHandler *handler.WikaKnowledgeHandler, suggestionHandler *handler.WikaSuggestionHandler, g *rbacGuards) {
-	if tokenHandler == nil && knowledgeHandler == nil && suggestionHandler == nil {
+func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, knowledgeHandler *handler.WikaKnowledgeHandler, suggestionHandler *handler.WikaSuggestionHandler, evaluationHandler *handler.WikaEvaluationHandler, g *rbacGuards) {
+	if tokenHandler == nil && knowledgeHandler == nil && suggestionHandler == nil && evaluationHandler == nil {
 		return
 	}
 	wika := r.Group("/wika")
@@ -286,6 +287,13 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 			suggestions.POST("", suggestionHandler.CreateSuggestion)
 			suggestions.PUT("/:id/human-review", suggestionHandler.HumanReview)
 			suggestions.POST("/:id/apply", suggestionHandler.ApplySuggestion)
+		}
+	}
+	if evaluationHandler != nil {
+		eval := wika.Group("/kb/:id/eval", viewerGuards...)
+		{
+			eval.POST("/datasets", evaluationHandler.CreateDataset)
+			eval.POST("/datasets/:dataset_id/items", evaluationHandler.AddQAItem)
 		}
 	}
 }

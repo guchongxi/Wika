@@ -111,3 +111,29 @@ func TestWikaP1cSuggestionMigrationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestWikaP2EvaluationMigrationContract(t *testing.T) {
+	path := filepath.Join("..", "..", "migrations", "versioned", "000094_wika_evaluation.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected Wika P2 evaluation migration to exist: %v", err)
+	}
+
+	sql := string(raw)
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS eval_datasets",
+		"CREATE TABLE IF NOT EXISTS eval_qa_items",
+		"CREATE TABLE IF NOT EXISTS eval_runs",
+		"CREATE TABLE IF NOT EXISTS eval_run_items",
+		"expected_knowledge_ids JSONB NOT NULL DEFAULT '[]'::jsonb",
+		"expected_chunk_ids JSONB NOT NULL DEFAULT '[]'::jsonb",
+		"dataset_version INT NOT NULL DEFAULT 1",
+		"idx_eval_qa_items_dataset_enabled",
+		"idx_eval_runs_kb_created",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("expected migration to contain %q", fragment)
+		}
+	}
+}

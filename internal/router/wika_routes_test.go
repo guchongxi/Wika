@@ -24,7 +24,7 @@ func TestRegisterWikaRoutesIncludesSuggestions(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, &handler.WikaSuggestionHandler{}, nil)
+	RegisterWikaRoutes(api, nil, nil, &handler.WikaSuggestionHandler{}, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/suggestions", strings.NewReader(`{"knowledge_id":"k-personal"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -47,7 +47,7 @@ func TestRegisterWikaRoutesIncludesSuggestionReviewAndApply(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, &handler.WikaSuggestionHandler{}, nil)
+	RegisterWikaRoutes(api, nil, nil, &handler.WikaSuggestionHandler{}, nil, nil)
 
 	for _, tc := range []struct {
 		method string
@@ -64,5 +64,28 @@ func TestRegisterWikaRoutesIncludesSuggestionReviewAndApply(t *testing.T) {
 		if w.Code == http.StatusNotFound {
 			t.Fatalf("expected %s %s to be registered, got 404", tc.method, tc.path)
 		}
+	}
+}
+
+func TestRegisterWikaRoutesIncludesEvaluationDatasets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(middleware.ErrorHandler())
+	engine.Use(func(c *gin.Context) {
+		c.Set(types.UserIDContextKey.String(), "u-test")
+		c.Set(types.TenantIDContextKey.String(), uint64(80))
+		c.Next()
+	})
+	api := engine.Group("/api/v1")
+
+	RegisterWikaRoutes(api, nil, nil, nil, &handler.WikaEvaluationHandler{}, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/kb/kb-team/eval/datasets", strings.NewReader(`{"name":"团队检索黄金 QA"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code == http.StatusNotFound {
+		t.Fatalf("expected evaluation dataset route to be registered, got 404")
 	}
 }

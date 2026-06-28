@@ -84,6 +84,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
 	wikaauth "github.com/Tencent/WeKnora/internal/wika/auth"
+	wikaeval "github.com/Tencent/WeKnora/internal/wika/evaluation"
 	wikaintake "github.com/Tencent/WeKnora/internal/wika/intake"
 	wikasearch "github.com/Tencent/WeKnora/internal/wika/search"
 	wikasuggestion "github.com/Tencent/WeKnora/internal/wika/suggestion"
@@ -174,6 +175,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(repository.NewTaskPendingOpsRepository))
 	must(container.Provide(repository.NewTaskDeadLetterRepository))
 	must(container.Provide(wikaauth.NewGormTokenStore))
+	must(container.Provide(wikaeval.NewGormStore))
 	must(container.Provide(wikaintake.NewGormStore))
 	must(container.Provide(wikasearch.NewGormStore))
 	must(container.Provide(wikasuggestion.NewGormStore))
@@ -206,6 +208,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewSystemSettingService))
 	must(container.Provide(service.NewWeKnoraCloudService))
 	must(container.Provide(initWikaTokenService))
+	must(container.Provide(wikaeval.NewService))
 	must(container.Provide(wikaintake.NewService))
 	must(container.Provide(wikasearch.NewService))
 	must(container.Provide(wikasuggestion.NewService))
@@ -355,6 +358,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(handler.NewWikaTokenHandler))
 	must(container.Provide(handler.NewWikaKnowledgeHandler))
 	must(container.Provide(handler.NewWikaSuggestionHandler))
+	must(container.Provide(handler.NewWikaEvaluationHandler))
 
 	// Data source handler
 	must(container.Provide(handler.NewDataSourceHandler))
