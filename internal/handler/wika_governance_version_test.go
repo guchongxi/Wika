@@ -18,6 +18,7 @@ type stubWikaVersionService struct {
 	listInput    wikaversion.ListVersionsInput
 	diffInput    wikaversion.DiffInput
 	restoreInput wikaversion.RestoreInput
+	restoreErr   error
 }
 
 func (s *stubWikaVersionService) ListVersions(_ context.Context, input wikaversion.ListVersionsInput) ([]*types.WikaKnowledgeVersion, error) {
@@ -32,6 +33,9 @@ func (s *stubWikaVersionService) Diff(_ context.Context, input wikaversion.DiffI
 
 func (s *stubWikaVersionService) Restore(_ context.Context, input wikaversion.RestoreInput) (*wikaversion.RestoreResult, error) {
 	s.restoreInput = input
+	if s.restoreErr != nil {
+		return nil, s.restoreErr
+	}
 	return &wikaversion.RestoreResult{RestoredFromVersionID: input.VersionID, NewVersionID: 9, KnowledgeID: input.KnowledgeID, Status: "restored"}, nil
 }
 
@@ -89,6 +93,20 @@ func TestWikaVersionRestoreParsesReasonAndVersionID(t *testing.T) {
 		service.restoreInput.VersionID != 7 ||
 		service.restoreInput.Reason != "误操作恢复" {
 		t.Fatalf("unexpected restore input: %+v", service.restoreInput)
+	}
+}
+
+func TestWikaVersionRestoreFeatureDisabledReturnsNotFound(t *testing.T) {
+	service := &stubWikaVersionService{restoreErr: wikaversion.ErrFeatureDisabled}
+	r := newWikaVersionTestRouter(service)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/knowledge/k-1/versions/7/restore", strings.NewReader(`{"reason":"误操作恢复"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 

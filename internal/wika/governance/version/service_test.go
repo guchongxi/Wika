@@ -11,6 +11,7 @@ type fakeVersionStore struct {
 	input    RecordVersionInput
 	records  []RecordVersionInput
 	versions map[uint64]*types.WikaKnowledgeVersion
+	getCalls int
 }
 
 func (s *fakeVersionStore) RecordVersion(ctx context.Context, input RecordVersionInput) (*types.WikaKnowledgeVersion, error) {
@@ -40,6 +41,7 @@ func (s *fakeVersionStore) ListVersions(ctx context.Context, input ListVersionsI
 }
 
 func (s *fakeVersionStore) GetVersion(ctx context.Context, input GetVersionInput) (*types.WikaKnowledgeVersion, error) {
+	s.getCalls++
 	if item, ok := s.versions[input.VersionID]; ok {
 		return item, nil
 	}
@@ -70,6 +72,14 @@ func (u *fakeKnowledgeUpdater) UpdateManualKnowledge(ctx context.Context, knowle
 		Title:           payload.Title,
 		EnableStatus:    payload.Status,
 	}, nil
+}
+
+type fakeFeatureGate struct {
+	enabled bool
+}
+
+func (g fakeFeatureGate) GetBool(ctx context.Context, key string, envName string, def bool) bool {
+	return g.enabled
 }
 
 func TestVersionServiceRecordVersionComputesHashAndWritesAudit(t *testing.T) {
@@ -118,7 +128,7 @@ func TestVersionServiceRestoreUpdatesKnowledgeAndRecordsNewVersion(t *testing.T)
 	}}
 	updater := &fakeKnowledgeUpdater{}
 	audit := &fakeVersionAudit{}
-	svc := &Service{store: store, audit: audit, knowledge: updater}
+	svc := &Service{store: store, audit: audit, knowledge: updater, flags: fakeFeatureGate{enabled: true}}
 
 	result, err := svc.Restore(context.Background(), RestoreInput{
 		ActorID:     "u-admin",
@@ -149,6 +159,38 @@ func TestVersionServiceRestoreUpdatesKnowledgeAndRecordsNewVersion(t *testing.T)
 	}
 	if len(audit.entries) == 0 || audit.entries[len(audit.entries)-1].Action != types.AuditActionWikaVersionRestored {
 		t.Fatalf("expected restore audit event, got %+v", audit.entries)
+	}
+}
+
+func TestVersionServiceRestoreReturnsFeatureDisabledBeforeSideEffects(t *testing.T) {
+	store := &fakeVersionStore{versions: map[uint64]*types.WikaKnowledgeVersion{
+		7: {
+			ID:          7,
+			KnowledgeID: "k-1",
+			TenantID:    80,
+			KBID:        "kb-team",
+			VersionNo:   2,
+			Title:       "旧标题",
+			Content:     "旧内容",
+			Status:      "enabled",
+		},
+	}}
+	updater := &fakeKnowledgeUpdater{}
+	audit := &fakeVersionAudit{}
+	svc := &Service{store: store, audit: audit, knowledge: updater, flags: fakeFeatureGate{enabled: false}}
+
+	_, err := svc.Restore(context.Background(), RestoreInput{
+		ActorID:     "u-admin",
+		TenantID:    80,
+		KnowledgeID: "k-1",
+		VersionID:   7,
+		Reason:      "误操作恢复",
+	})
+	if err != ErrFeatureDisabled {
+		t.Fatalf("expected ErrFeatureDisabled, got %v", err)
+	}
+	if store.getCalls != 0 || updater.payload != nil || len(store.records) != 0 || len(audit.entries) != 0 {
+		t.Fatalf("feature-disabled restore produced side effects: getCalls=%d payload=%+v records=%+v audit=%+v", store.getCalls, updater.payload, store.records, audit.entries)
 	}
 }
 

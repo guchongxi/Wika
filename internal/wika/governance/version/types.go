@@ -8,6 +8,7 @@ import (
 )
 
 var ErrVersionNotFound = errors.New("knowledge version not found")
+var ErrFeatureDisabled = errors.New("wika feature disabled")
 
 type RecordVersionInput struct {
 	KnowledgeID  string

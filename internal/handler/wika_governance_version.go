@@ -125,6 +125,10 @@ func (h *WikaVersionHandler) Restore(c *gin.Context) {
 			c.Error(apperrors.NewNotFoundError("knowledge version not found"))
 			return
 		}
+		if stderrors.Is(err, wikaversion.ErrFeatureDisabled) {
+			c.Error(apperrors.NewNotFoundError("wika version feature disabled"))
+			return
+		}
 		c.Error(apperrors.NewInternalServerError("failed to restore knowledge version"))
 		return
 	}

@@ -20,14 +20,21 @@ type knowledgeUpdater interface {
 	UpdateManualKnowledge(ctx context.Context, knowledgeID string, payload *types.ManualKnowledgePayload) (*types.Knowledge, error)
 }
 
+type featureGate interface {
+	GetBool(ctx context.Context, key string, envName string, def bool) bool
+}
+
 type Service struct {
 	store     Store
 	audit     auditLogger
 	knowledge knowledgeUpdater
+	flags     featureGate
 }
 
-func NewService(store *GormStore, audit interfaces.AuditLogService, knowledge interfaces.KnowledgeService) *Service {
-	return &Service{store: store, audit: audit, knowledge: knowledge}
+const versionFeatureFlagKey = "wika.governance.version.enabled"
+
+func NewService(store *GormStore, audit interfaces.AuditLogService, knowledge interfaces.KnowledgeService, flags interfaces.SystemSettingService) *Service {
+	return &Service{store: store, audit: audit, knowledge: knowledge, flags: flags}
 }
 
 func (s *Service) RecordVersion(ctx context.Context, input RecordVersionInput) (*types.WikaKnowledgeVersion, error) {
@@ -96,6 +103,9 @@ func (s *Service) Diff(ctx context.Context, input DiffInput) (*DiffResult, error
 }
 
 func (s *Service) Restore(ctx context.Context, input RestoreInput) (*RestoreResult, error) {
+	if !s.versionFeatureEnabled(ctx) {
+		return nil, ErrFeatureDisabled
+	}
 	if s.store == nil {
 		return nil, ErrVersionNotFound
 	}
@@ -158,6 +168,13 @@ func (s *Service) Restore(ctx context.Context, input RestoreInput) (*RestoreResu
 		KnowledgeID:           input.KnowledgeID,
 		Status:                status,
 	}, nil
+}
+
+func (s *Service) versionFeatureEnabled(ctx context.Context) bool {
+	if s.flags == nil {
+		return false
+	}
+	return s.flags.GetBool(ctx, versionFeatureFlagKey, "", false)
 }
 
 func hashContent(content string) string {
