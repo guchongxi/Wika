@@ -37,6 +37,7 @@ Wika 是从 [WeKnora](https://github.com/Tencent/WeKnora) fork 的知识闭环�
 P5 快速开工入口：
 
 - 先确认 P1-P4 门禁已通过，再按 [tech-plan.md](./tech-plan.md) 的“P5 Implementation Map”“P0-P5 任务卡索引”“P5 RED 测试包”拆 PR。
+- 开工前先读 [tech-plan.md](./tech-plan.md) 的“P5 每卡 TDD 执行模板”“P5 子阶段最小切片边界”和“P5 通用实现契约”，确认当前 PR 只覆盖一张任务卡。
 - 每个 P5 子阶段先写 migration/type 约束 RED 测试，再写 store/service 状态机和权限测试，最后补 handler/router/container 测试。
 - P5b Version 是 P5c URL Refresh apply 的前置；P5c 不得绕过 VersionService 直接改正文。
 - P5e 必须先让 ScopeResolver 输出 `shared scope` 和 `allowed_fields`，再接 SearchService、expand、download、preview 和 direct-id 读取。

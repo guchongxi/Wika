@@ -670,6 +670,7 @@ SystemAdmin 字段级边界：
 5. Organization 共享可以授权、引用检索、撤销；撤销后新检索不再命中。
 6. P5a-P5e 关闭任一 feature flag 后，对应 worker 不再领取新任务，对应写 API 不再产生新状态。
 7. 所有 P5 审计只包含元数据、hash 和脱敏摘要，不包含正文、snippet、diff 全文、抓取正文或 expected answer。
+8. 每个 P5 子阶段必须按独立任务卡提交 RED 测试、最小实现、回归命令、API 冒烟和回滚动作；一个子阶段完成不代表整个 P5 完成。
 
 ## 九、后续增强
 

@@ -2108,6 +2108,24 @@ P1b Search + P3 Freshness State
 
 实现时允许并行创建 migration，但业务 API 的打开顺序必须遵循上图。不能为了并行开发让 P5c 绕过 VersionService，也不能让 P5e 在 ScopeResolver 未支持 `shared` scope 时直接改 SearchService。
 
+P5 每卡 TDD 执行模板：
+
+1. **锁定单卡范围**：只选择 `P5a-1`、`P5c-3` 这类单张任务卡；同 PR 不混入其他子阶段 API、worker 或前端入口。
+2. **先写 RED**：优先写 migration/type 约束测试；再写 store/service 状态机、权限、审计和幂等测试；最后写 handler/router/container 注册测试。
+3. **最小 GREEN**：先让当前卡对应 package 测试通过；不为后续子阶段预置空实现、空路由或未启用 worker。
+4. **补回归**：当前卡涉及旧 API、ScopeResolver、SearchService、EvaluationService、VersionService 或 worker lifecycle 时，同 PR 必须补对应回归测试。
+5. **验收证据**：提交前按“P5 每卡证据模板”记录测试命令、fixture/API 冒烟、审计事件和回滚动作。
+
+P5 子阶段最小切片边界：
+
+| 子阶段 | 首张卡只做什么 | 后续卡打开条件 | 禁止混入 |
+|--------|----------------|----------------|----------|
+| P5a Conflict | `wika_conflict_checks/items` DDL、类型、canonical pair 约束 | migration/type 测试通过后再做 worker；worker 通过后再做 API | AI 自动合并、自动删除、直接改知识正文 |
+| P5b Version | `wika_knowledge_versions` DDL、类型、`version_no` 唯一 | baseline 和递增版本测试通过后再接写路径 hook；hook 覆盖后再做 diff/restore API | 只在 handler 手动调用版本记录、restore 覆盖历史 |
+| P5c URL Refresh | URL job/schedule DDL、slot 唯一、safe fetcher fixture | P5b Version hook 可用后才做 review apply；safe fetcher 全绿后才做 worker | 抓取成功直接覆盖正文、绕过 SSRF 或 VersionService |
+| P5d Eval Schedule | `wika_eval_schedules` DDL、enabled 唯一、`eval_runs` slot 字段/约束 | P2 EvaluationService 可复用后再做 worker；worker 幂等后再做 API | 复制评测指标逻辑、单实例进程锁、无限失败重试 |
+| P5e Org Share | `wika_org_shares` DDL、复用既有 org/member 的约束测试 | ScopeResolver 能输出 `shared` scope 后再接 SearchService；搜索裁剪通过后再接 expand/download/preview/direct-id | 新建平行 Organization 主表、复制正文、org admin 绕过团队授权 |
+
 P5 推荐目录：
 
 ```text
@@ -2317,6 +2335,23 @@ RED 测试顺序：
 P5 只能在 P1-P4 门禁通过后开启。所有 P5 API 默认放在功能开关后，或按阶段路由注册，不得在数据模型未完成时暴露空实现。
 
 #### P5 通用实现契约
+
+共享依赖：
+
+- `FeatureGate`：按 flag key 从 `system_settings` 读取布尔值；读取失败、缺失、非法值或缓存过期时返回 disabled 语义。service 和 worker 不能直接读环境变量。
+- `ScopeResolver`：所有 direct-id 入口先回溯父 KB、knowledge 或 org，再按 actor/action 解析；handler 不能自己拼权限条件。
+- `AuditWriter`：支持在当前 DB transaction 内写审计事件；安全相关状态变更不能先提交业务再异步补审计。
+- `Clock`：worker、cron、lease、backoff 和测试统一使用可注入时钟；测试不得依赖真实时间睡眠。
+- `Logger`：只记录脱敏摘要、hash、failure_code 和 request_id；不能记录正文、diff 全文、抓取正文、expected answer 或 token hash。
+- `WorkerRunner`：由 server bootstrap 显式启动；constructor、DI 注册和单元测试不得启动后台 goroutine。
+
+service 构造最小依赖形态：
+
+```text
+NewService(store, scopeResolver, featureGate, auditWriter, clock, logger, ...)
+```
+
+其中 `...` 只能是当前子阶段真实需要的上游 service，例如 P5b 需要知识更新链路适配点，P5c review/apply 需要 VersionService，P5d 需要 EvaluationService，P5e 需要 OrganizationService 和 Search/Scope 适配点。不得为了未来能力把所有 P5 service 互相注入。
 
 Feature flag：
 
