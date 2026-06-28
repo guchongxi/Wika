@@ -53,6 +53,14 @@ func (a *fakeURLRefreshAudit) Log(ctx context.Context, entry *types.AuditLog) er
 	return nil
 }
 
+type fakeFeatureGate struct {
+	enabled bool
+}
+
+func (g fakeFeatureGate) GetBool(ctx context.Context, key string, envName string, def bool) bool {
+	return g.enabled
+}
+
 func TestServiceRunJobFetchesIntoPendingReviewWithoutUpdatingKnowledge(t *testing.T) {
 	db := setupURLRefreshStoreTestDB(t)
 	store := NewGormStore(db)
@@ -72,7 +80,7 @@ func TestServiceRunJobFetchesIntoPendingReviewWithoutUpdatingKnowledge(t *testin
 		ContentType: "text/plain",
 		FinalURL:    "https://example.com/doc",
 		SizeBytes:   int64(len("新抓取内容")),
-	}})
+	}}, WithFeatureGate(fakeFeatureGate{enabled: true}))
 	require.NoError(t, svc.RunJob(context.Background(), RunJobInput{
 		JobID:         job.ID,
 		WorkerID:      "worker-1",
@@ -120,7 +128,7 @@ func TestServiceReviewApplyUpdatesKnowledgeAndRecordsVersion(t *testing.T) {
 	updater := &fakeKnowledgeUpdater{updated: &types.Knowledge{ID: "k-url", TenantID: 90, KnowledgeBaseID: "kb-url", Title: "新标题", Type: types.KnowledgeTypeManual, EnableStatus: types.ManualKnowledgeStatusPublish}}
 	recorder := &fakeVersionRecorder{}
 	audit := &fakeURLRefreshAudit{}
-	svc := NewService(store, fakeFetcher{}, WithKnowledgeUpdater(updater), WithVersionRecorder(recorder), WithAuditLogger(audit))
+	svc := NewService(store, fakeFetcher{}, WithKnowledgeUpdater(updater), WithVersionRecorder(recorder), WithAuditLogger(audit), WithFeatureGate(fakeFeatureGate{enabled: true}))
 
 	result, err := svc.ReviewJob(context.Background(), ReviewJobInput{
 		ActorID:  "u-reviewer",
@@ -178,7 +186,7 @@ func TestServiceReviewRejectDoesNotUpdateKnowledge(t *testing.T) {
 
 	updater := &fakeKnowledgeUpdater{}
 	recorder := &fakeVersionRecorder{}
-	svc := NewService(store, fakeFetcher{}, WithKnowledgeUpdater(updater), WithVersionRecorder(recorder))
+	svc := NewService(store, fakeFetcher{}, WithKnowledgeUpdater(updater), WithVersionRecorder(recorder), WithFeatureGate(fakeFeatureGate{enabled: true}))
 
 	result, err := svc.ReviewJob(context.Background(), ReviewJobInput{
 		ActorID:  "u-reviewer",
@@ -209,7 +217,7 @@ func TestServiceReviewBeforePendingReviewReturnsStateConflict(t *testing.T) {
 		Now:         now,
 	})
 	require.NoError(t, err)
-	svc := NewService(store, fakeFetcher{}, WithKnowledgeUpdater(&fakeKnowledgeUpdater{}), WithVersionRecorder(&fakeVersionRecorder{}))
+	svc := NewService(store, fakeFetcher{}, WithKnowledgeUpdater(&fakeKnowledgeUpdater{}), WithVersionRecorder(&fakeVersionRecorder{}), WithFeatureGate(fakeFeatureGate{enabled: true}))
 
 	_, err = svc.ReviewJob(context.Background(), ReviewJobInput{
 		ActorID:  "u-reviewer",
@@ -219,5 +227,43 @@ func TestServiceReviewBeforePendingReviewReturnsStateConflict(t *testing.T) {
 	})
 	if err != ErrInvalidJobState {
 		t.Fatalf("expected ErrInvalidJobState, got %v", err)
+	}
+}
+
+func TestServiceFeatureFlagFailClosed(t *testing.T) {
+	db := setupURLRefreshStoreTestDB(t)
+	store := NewGormStore(db)
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	svc := NewService(store, fakeFetcher{}, WithFeatureGate(fakeFeatureGate{enabled: false}))
+
+	_, err := svc.CreateJob(context.Background(), CreateJobInput{
+		ActorID:     "u-owner",
+		TenantID:    90,
+		KBID:        "kb-url",
+		KnowledgeID: "k-url",
+		SourceURL:   "https://example.com/doc",
+		Now:         now,
+	})
+	if err != ErrFeatureDisabled {
+		t.Fatalf("expected CreateJob feature disabled, got %v", err)
+	}
+
+	job, err := store.CreateJob(context.Background(), CreateJobInput{
+		ActorID:     "u-owner",
+		TenantID:    90,
+		KBID:        "kb-url",
+		KnowledgeID: "k-url",
+		SourceURL:   "https://example.com/doc",
+		Now:         now,
+	})
+	require.NoError(t, err)
+	err = svc.RunJob(context.Background(), RunJobInput{JobID: job.ID, WorkerID: "worker-1", Now: now, LeaseDuration: time.Minute})
+	if err != ErrFeatureDisabled {
+		t.Fatalf("expected RunJob feature disabled, got %v", err)
+	}
+	var notLeased types.WikaURLRefreshJob
+	require.NoError(t, db.First(&notLeased, "id = ?", job.ID).Error)
+	if notLeased.Attempts != 0 || notLeased.LockedBy != "" || notLeased.Status != JobStatusPending {
+		t.Fatalf("disabled worker should not lease job: %+v", notLeased)
 	}
 }

@@ -31,15 +31,22 @@ type AuditLogger interface {
 	Log(ctx context.Context, entry *types.AuditLog) error
 }
 
+type FeatureGate interface {
+	GetBool(ctx context.Context, key string, envName string, def bool) bool
+}
+
 type Service struct {
 	store     Store
 	fetcher   Fetcher
 	knowledge KnowledgeUpdater
 	versions  VersionRecorder
 	audit     AuditLogger
+	flags     FeatureGate
 }
 
 type ServiceOption func(*Service)
+
+const urlRefreshFeatureFlagKey = "wika.governance.url_refresh.enabled"
 
 func WithKnowledgeUpdater(knowledge KnowledgeUpdater) ServiceOption {
 	return func(s *Service) {
@@ -59,6 +66,12 @@ func WithAuditLogger(audit AuditLogger) ServiceOption {
 	}
 }
 
+func WithFeatureGate(flags FeatureGate) ServiceOption {
+	return func(s *Service) {
+		s.flags = flags
+	}
+}
+
 func NewService(store Store, fetcher Fetcher, opts ...ServiceOption) *Service {
 	svc := &Service{store: store, fetcher: fetcher}
 	for _, opt := range opts {
@@ -68,6 +81,9 @@ func NewService(store Store, fetcher Fetcher, opts ...ServiceOption) *Service {
 }
 
 func (s *Service) CreateJob(ctx context.Context, input CreateJobInput) (*types.WikaURLRefreshJob, error) {
+	if !s.featureEnabled(ctx) {
+		return nil, ErrFeatureDisabled
+	}
 	if s.store == nil {
 		return nil, nil
 	}
@@ -75,6 +91,9 @@ func (s *Service) CreateJob(ctx context.Context, input CreateJobInput) (*types.W
 }
 
 func (s *Service) RunJob(ctx context.Context, input RunJobInput) error {
+	if !s.featureEnabled(ctx) {
+		return ErrFeatureDisabled
+	}
 	if s.store == nil {
 		return nil
 	}
@@ -117,6 +136,9 @@ func (s *Service) RunJob(ctx context.Context, input RunJobInput) error {
 }
 
 func (s *Service) ReviewJob(ctx context.Context, input ReviewJobInput) (*ReviewJobResult, error) {
+	if !s.featureEnabled(ctx) {
+		return nil, ErrFeatureDisabled
+	}
 	if s.store == nil {
 		return nil, ErrJobNotFound
 	}
@@ -224,6 +246,13 @@ func (s *Service) logReviewed(ctx context.Context, actorID string, tenantID uint
 		TargetType:  "wika_url_refresh_job",
 		TargetID:    strconv.FormatUint(jobID, 10),
 	})
+}
+
+func (s *Service) featureEnabled(ctx context.Context) bool {
+	if s.flags == nil {
+		return false
+	}
+	return s.flags.GetBool(ctx, urlRefreshFeatureFlagKey, "", false)
 }
 
 func hashFetchedContent(content string) string {

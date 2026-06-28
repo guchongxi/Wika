@@ -20,6 +20,7 @@ var ErrJobLeaseUnavailable = errors.New("url refresh job lease unavailable")
 var ErrJobNotFound = errors.New("url refresh job not found")
 var ErrInvalidJobState = errors.New("url refresh job state conflict")
 var ErrInvalidReviewDecision = errors.New("invalid url refresh review decision")
+var ErrFeatureDisabled = errors.New("wika url refresh feature disabled")
 
 const (
 	ReviewDecisionApply  = "apply"
