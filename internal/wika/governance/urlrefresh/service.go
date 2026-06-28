@@ -50,6 +50,7 @@ type ServiceOption func(*Service)
 
 const urlRefreshFeatureFlagKey = "wika.governance.url_refresh.enabled"
 const minScheduleInterval = time.Hour
+const defaultScheduleWorkerID = "wika-url-refresh-scheduler"
 
 func WithKnowledgeUpdater(knowledge KnowledgeUpdater) ServiceOption {
 	return func(s *Service) {
@@ -185,6 +186,14 @@ func (s *Service) RunDueSchedules(ctx context.Context, now time.Time) ([]*types.
 		if item == nil {
 			continue
 		}
+		locked, err := s.store.AcquireSchedule(ctx, item.ID, defaultScheduleWorkerID, now, time.Minute)
+		if err != nil {
+			if err == ErrScheduleLeaseUnavailable {
+				continue
+			}
+			return nil, err
+		}
+		item = locked
 		scheduledFor := item.NextRunAt
 		existing, err := s.store.FindJobByScheduleSlot(ctx, item.ID, scheduledFor)
 		if err == nil {

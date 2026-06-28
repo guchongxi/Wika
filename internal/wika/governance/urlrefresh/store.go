@@ -17,6 +17,7 @@ type Store interface {
 	FailJob(ctx context.Context, jobID uint64, workerID string, now time.Time, failureCode string, errMsg string) error
 	CreateOrUpdateSchedule(ctx context.Context, input CreateOrUpdateScheduleInput, nextRunAt time.Time) (*types.WikaURLRefreshSchedule, error)
 	ListDueSchedules(ctx context.Context, now time.Time, limit int) ([]*types.WikaURLRefreshSchedule, error)
+	AcquireSchedule(ctx context.Context, scheduleID uint64, workerID string, now time.Time, lease time.Duration) (*types.WikaURLRefreshSchedule, error)
 	FindJobByScheduleSlot(ctx context.Context, scheduleID uint64, scheduledFor time.Time) (*types.WikaURLRefreshJob, error)
 	MarkScheduleTriggered(ctx context.Context, scheduleID uint64, jobID uint64, nextRunAt time.Time, now time.Time) error
 	MarkScheduleSucceeded(ctx context.Context, scheduleID uint64, now time.Time) error
@@ -221,6 +222,36 @@ func (s *GormStore) ListDueSchedules(ctx context.Context, now time.Time, limit i
 		Limit(limit).
 		Find(&schedules).Error
 	return schedules, err
+}
+
+func (s *GormStore) AcquireSchedule(ctx context.Context, scheduleID uint64, workerID string, now time.Time, lease time.Duration) (*types.WikaURLRefreshSchedule, error) {
+	if lease <= 0 {
+		lease = time.Minute
+	}
+	result := s.db.WithContext(ctx).Model(&types.WikaURLRefreshSchedule{}).
+		Where("id = ?", scheduleID).
+		Where("enabled = ?", true).
+		Where("next_run_at <= ?", now).
+		Where("locked_until IS NULL OR locked_until < ?", now).
+		Updates(map[string]any{
+			"locked_by":    workerID,
+			"locked_until": now.Add(lease),
+			"updated_at":   now,
+		})
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, ErrScheduleLeaseUnavailable
+	}
+	var schedule types.WikaURLRefreshSchedule
+	if err := s.db.WithContext(ctx).First(&schedule, "id = ?", scheduleID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrScheduleNotFound
+		}
+		return nil, err
+	}
+	return &schedule, nil
 }
 
 func (s *GormStore) FindJobByScheduleSlot(ctx context.Context, scheduleID uint64, scheduledFor time.Time) (*types.WikaURLRefreshJob, error) {

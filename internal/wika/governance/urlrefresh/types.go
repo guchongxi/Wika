@@ -23,6 +23,7 @@ var ErrInvalidReviewDecision = errors.New("invalid url refresh review decision")
 var ErrFeatureDisabled = errors.New("wika url refresh feature disabled")
 var ErrInvalidSchedule = errors.New("invalid url refresh schedule")
 var ErrScheduleNotFound = errors.New("url refresh schedule not found")
+var ErrScheduleLeaseUnavailable = errors.New("url refresh schedule lease unavailable")
 
 const (
 	ReviewDecisionApply  = "apply"

@@ -56,3 +56,30 @@ func TestGormStoreCreateAndAcquireJobOnlyOnce(t *testing.T) {
 		t.Fatalf("expected lease unavailable, got %v", err)
 	}
 }
+
+func TestGormStoreAcquireScheduleOnlyOnce(t *testing.T) {
+	db := setupURLRefreshStoreTestDB(t)
+	store := NewGormStore(db)
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	schedule, err := store.CreateOrUpdateSchedule(context.Background(), CreateOrUpdateScheduleInput{
+		ActorID:     "u-owner",
+		TenantID:    90,
+		KBID:        "kb-url",
+		KnowledgeID: "k-url",
+		SourceURL:   "https://example.com/doc",
+		CronExpr:    "0 * * * *",
+		Enabled:     true,
+		Now:         now,
+	}, now.Add(-time.Minute))
+	require.NoError(t, err)
+
+	acquired, err := store.AcquireSchedule(context.Background(), schedule.ID, "worker-1", now, time.Minute)
+	require.NoError(t, err)
+	if acquired.LockedBy != "worker-1" || acquired.LockedUntil == nil || !acquired.NextRunAt.Before(now) {
+		t.Fatalf("unexpected acquired schedule: %+v", acquired)
+	}
+	_, err = store.AcquireSchedule(context.Background(), schedule.ID, "worker-2", now, time.Minute)
+	if err != ErrScheduleLeaseUnavailable {
+		t.Fatalf("expected schedule lease unavailable, got %v", err)
+	}
+}
