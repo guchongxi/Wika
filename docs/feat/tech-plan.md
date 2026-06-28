@@ -1,6 +1,6 @@
 # Wika 技术实现方案
 
-> 版本: 2.1
+> 版本: 2.2
 > 日期: 2026-06-29
 > 基于: WeKnora v0.6.2 fork
 > 对应需求: [requirements.md](./requirements.md)
@@ -165,6 +165,7 @@ internal/wika/
   freshness/      # 保鲜状态、访问聚合、扫描任务
   admin/          # 默认配置、空间概览、系统治理
   graph/          # 图谱读模型，后置增强
+  governance/     # P5 高级治理：冲突、版本、URL 重抓、定时评测、跨团队共享
 ```
 
 原则：
@@ -734,6 +735,7 @@ wika_conflict_checks
   attempts
   locked_until
   locked_by
+  failure_code
   created_by
   started_at
   completed_at
@@ -809,6 +811,7 @@ wika_url_refresh_jobs
   fetched_content
   diff_summary jsonb
   ssrf_check jsonb
+  failure_code
   error_msg
   attempts
   locked_until
@@ -833,6 +836,7 @@ wika_url_refresh_schedules
   next_run_at
   last_job_id
   consecutive_failures
+  last_failure_code
   locked_until
   locked_by
   created_by
@@ -863,6 +867,7 @@ wika_eval_schedules
   next_run_at
   last_run_id
   consecutive_failures
+  last_failure_code
   locked_until
   locked_by
   created_by
@@ -889,6 +894,7 @@ wika_org_members
   org_id
   tenant_id
   role                       # owner | admin | member
+  created_by
   created_at
 
 wika_org_shares
@@ -899,8 +905,10 @@ wika_org_shares
   target_tenant_id
   mode                       # reference | snapshot
   allowed_fields jsonb
-  status                     # active | revoked
+  status                     # pending | active | revoked
   created_by
+  accepted_by
+  accepted_at
   revoked_by
   revoked_at
   created_at
@@ -910,6 +918,7 @@ wika_org_shares
 
 - P5 默认 `mode=reference`，不复制正文。
 - `allowed_fields` 默认不含个人正文和证据；共享搜索命中后仍要校验接收团队成员权限。
+- source team 创建 share 后，如 target team Admin/Owner 未确认，状态为 `pending`，不得进入 ScopeResolver。
 - revoke 后新 ScopeResolver 不再返回该 share scope。
 
 ## 六、核心服务设计
@@ -1501,6 +1510,7 @@ POST /api/v1/wika/orgs/:org_id/members
 DELETE /api/v1/wika/orgs/:org_id/members/:tenant_id
 GET  /api/v1/wika/orgs/:org_id/shares
 POST /api/v1/wika/orgs/:org_id/shares
+PUT  /api/v1/wika/orgs/:org_id/shares/:share_id/accept
 DELETE /api/v1/wika/orgs/:org_id/shares/:share_id
 ```
 
@@ -1545,7 +1555,7 @@ P5 状态机：
 | knowledge version | 递增 `version_no`，无终态 | restore 生成新版本 | restore 不修改历史 version 内容 |
 | url refresh job | `pending -> running -> pending_review -> applied/rejected`，任意抓取失败到 `failed` | `pending_review` 前不可 apply | running 直接 review/apply 返回 409 |
 | eval schedule | `enabled=true/false` + `consecutive_failures` | 连续失败达到阈值后 disable 或降频 | disabled 不触发 run |
-| org share | `active -> revoked` | revoke 后不可重新 active；新建 share 生成新记录 | revoked share 不进入 ScopeResolver |
+| org share | `pending -> active -> revoked` | target team 或 org admin 确认后才 active；revoke 后不可重新 active；新建 share 生成新记录 | pending/revoked share 不进入 ScopeResolver |
 
 P5 API 明细：
 
@@ -1623,9 +1633,15 @@ response: { org_id, tenant_id, role }
 
 POST /api/v1/wika/orgs/:org_id/shares
 request: { source_kb_id, target_tenant_id, mode?: "reference", allowed_fields?: [] }
-response: { share_id, status: "active", allowed_fields }
-权限: source team Admin/Owner 创建；target team Admin/Owner 或 org admin 确认接收。
+response: { share_id, status: "pending|active", allowed_fields }
+权限: source team Admin/Owner 创建；如果调用者同时具备 target team Admin/Owner 或 org owner/admin 权限可直接 active，否则由 accept 接口确认接收。
 约束: allowed_fields 只能是服务端白名单；默认不含 content/chunk/evidence/file。
+
+PUT /api/v1/wika/orgs/:org_id/shares/:share_id/accept
+request: { comment? }
+response: { share_id, status: "active", accepted_at }
+权限: target team Admin/Owner 或 org owner/admin；personal target 禁止。
+幂等: 已 active 返回 active 终态；revoked 返回 409。
 
 DELETE /api/v1/wika/orgs/:org_id/shares/:share_id
 response: { share_id, status: "revoked", revoked_at }
@@ -1751,6 +1767,7 @@ P5 audit event taxonomy：
 | `wika.eval_schedule.updated` | actor_id, tenant_id, kb_id, schedule_id, enabled, cron_expr_hash, request_id | QA 正文 |
 | `wika.eval_schedule.run_failed` | actor_id/system, tenant_id, kb_id, schedule_id, run_id, failure_code, consecutive_failures | expected_answer |
 | `wika.org_share.created` | actor_id, org_id, source_tenant_id, source_kb_id, target_tenant_id, share_id, allowed_fields, request_id | 正文、证据 |
+| `wika.org_share.accepted` | actor_id, org_id, share_id, target_tenant_id, old_status, new_status, request_id | 正文、证据 |
 | `wika.org_share.revoked` | actor_id, org_id, share_id, source_tenant_id, target_tenant_id, request_id | 正文、证据 |
 
 旧接口必须接入 personal scope：
@@ -2168,8 +2185,25 @@ P5 统一错误码：
 | P5d-3 Eval schedule API | cron 非法 400，disabled 不触发 | `internal/handler/wika_eval_schedule.go` | handler/API 测试 |
 | P5e-1 Org model migration | org/member/share 约束和 revoke 状态 | `migrations/versioned/000101*`、`internal/types/wika_org_share.go` | migration up/down |
 | P5e-2 Org/member API | personal tenant 禁止加入 Organization | `internal/handler/wika_org.go` | 角色和接收方确认测试 |
-| P5e-3 Share authorization | allowed_fields 只能服务端白名单 | `internal/wika/governance/orgshare` | share/create/revoke 测试 |
+| P5e-3 Share authorization | allowed_fields 只能服务端白名单；pending share 不进入搜索 | `internal/wika/governance/orgshare` | share/create/accept/revoke 测试 |
 | P5e-4 Shared scope search | revoke 后 ScopeResolver 不再返回 shared scope | `internal/wika/scope`、`internal/wika/search` | `search_knowledge` shared scope 回归 |
+
+P5 RED 测试包：
+
+| 子阶段 | 必建测试文件 | 首批断言 |
+|--------|--------------|----------|
+| P5a Conflict | `internal/types/wika_governance_test.go`、`internal/wika/governance/conflict/{store,service}_test.go`、`internal/handler/wika_governance_conflict_test.go`、`internal/router/wika_routes_test.go`、`internal/container/wika_registration_test.go` | partial unique 生效；两个 worker 只有一个成功 lease；`CreateCheck` 写审计；resolved 后再次修改返回 409；路由和 DI 可注册 |
+| P5b Version | `internal/types/wika_version_test.go`、`internal/wika/governance/version/{store,service,diff}_test.go`、`internal/handler/wika_governance_version_test.go` | `(knowledge_id, version_no)` 唯一；连续写路径递增；restore 调用知识更新链路并产生新版本；SystemAdmin 读 personal 只有元数据 |
+| P5c URL Refresh | `internal/types/wika_url_refresh_test.go`、`internal/wika/governance/urlrefresh/safefetch/fetcher_test.go`、`internal/wika/governance/urlrefresh/{store,service,worker}_test.go`、`internal/handler/wika_governance_urlrefresh_test.go` | 内网/metadata/重定向/DNS rebinding/超大响应阻断；正常抓取进入 `pending_review`；apply 前状态不符返回 409；apply 生成版本和审计 |
+| P5d Eval Schedule | `internal/types/wika_eval_schedule_test.go`、`internal/wika/governance/evalschedule/{cron,store,worker}_test.go`、`internal/handler/wika_eval_schedule_test.go` | cron 非法 400；enabled 唯一；两个 scheduler 只创建一个 run；连续失败后 disable 或延后；run 创建复用 P2 service |
+| P5e Org Share | `internal/types/wika_org_share_test.go`、`internal/wika/governance/orgshare/{store,service}_test.go`、`internal/wika/scope/shared_scope_test.go`、`internal/wika/search/shared_scope_test.go`、`internal/handler/wika_org_test.go` | personal tenant/KB 禁止；allowed_fields 白名单；pending 不可搜索；accept 后可裁剪命中；revoke 后同 query 不命中 |
+
+RED 测试顺序：
+
+1. 先写 migration/type 约束测试，避免 service 先行后发现 DDL 不支持。
+2. 再写 store/service 状态机和权限回溯测试。
+3. 最后写 handler/router/container 测试，确保 API 契约、路由和 DI 一次落地。
+4. 每个子阶段 GREEN 前至少跑对应 package 测试和 `git diff --check`。
 
 ### P5 子能力实施契约
 
@@ -2389,6 +2423,7 @@ RunDueSchedules(ctx, now)
 CreateOrganization(ctx, actor, payload)
 AddOrgMember(ctx, actor, orgID, tenantID, role)
 CreateShare(ctx, actor, orgID, sourceKBID, targetTenantID, allowedFields)
+AcceptShare(ctx, actor, shareID)
 RevokeShare(ctx, actor, shareID)
 ListSharedScopes(ctx, actor, tenantID)
 ```
@@ -2401,12 +2436,14 @@ ListSharedScopes(ctx, actor, tenantID)
 - revoke 后 ScopeResolver 不能再返回该 share；历史访问日志和 lineage metadata 保留。
 - personal tenant 禁止加入 Organization，personal KB 禁止作为 Organization share source。
 - `allowed_fields` 只能从服务端白名单枚举中选择，客户端传入未知字段返回 400。
-- `CreateShare` 要求 source team Admin/Owner；target team Admin/Owner 或 org owner/admin 必须确认接收。
+- `CreateShare` 要求 source team Admin/Owner；当创建者同时具备 target team Admin/Owner 或 org owner/admin 权限时可直接 active，否则进入 pending。
+- `AcceptShare` 要求 target team Admin/Owner 或 org owner/admin，成功后 active，才会进入 ScopeResolver。
 - `RevokeShare` 允许 source team Admin/Owner、target team Admin/Owner 或 org owner/admin 执行。
 
 必测：
 
 - 未加入接收团队的用户不能通过 org share 搜索。
+- pending share 不进入 ScopeResolver。
 - revoke 后同一 query 不再返回共享结果。
 - SystemAdmin 不因 Organization 共享获得个人或团队正文读取权。
 - personal tenant 禁止加入 org；personal KB 禁止作为 source。
@@ -2440,7 +2477,7 @@ P5 migration 必测约束：
 - `wika_url_refresh_schedules(knowledge_id, source_url)` 启用状态唯一。
 - `wika_eval_schedules(kb_id, dataset_id)` 启用状态唯一。
 - `wika_org_members(org_id, tenant_id)` 唯一。
-- `wika_org_shares` active 状态下同一 `source_kb_id + target_tenant_id` 唯一。
+- `wika_org_shares` pending/active 状态下同一 `source_kb_id + target_tenant_id` 唯一。
 - down migration 必须按 org share/member/org、eval schedule、url refresh schedule/job、version、conflict 的依赖顺序回滚。
 
 P5 migration 建议索引：
@@ -2461,7 +2498,7 @@ P5 migration 建议索引：
 | `wika_eval_schedules` | `(enabled, next_run_at, locked_until)` | due schedule 扫描 |
 | `wika_org_members` | unique `(org_id, tenant_id)` | 成员唯一 |
 | `wika_org_members` | `(tenant_id, role)` | 查询团队所属 org |
-| `wika_org_shares` | unique `(source_kb_id, target_tenant_id)` where status = `active` | active share 唯一 |
+| `wika_org_shares` | unique `(source_kb_id, target_tenant_id)` where status in (`pending`, `active`) | 待确认或 active share 唯一 |
 | `wika_org_shares` | `(target_tenant_id, status)` | ScopeResolver 解析 shared scope |
 | `wika_org_shares` | `(source_tenant_id, source_kb_id, status)` | 来源团队共享管理 |
 
@@ -2545,4 +2582,4 @@ P5 每卡证据模板：
 | P5b-1/P5b-2/P5b-3 Version | `go test ./internal/wika/governance/version ./internal/handler` | `GET /wika/knowledge/:id/versions`、`POST /restore` | `wika.version.recorded`、`wika.version.restored` |
 | P5c-0/P5c-1/P5c-2/P5c-3/P5c-4 URL refresh | `go test ./internal/types ./internal/wika/governance/urlrefresh ./internal/handler` | migration up/down、SSRF fixture；`POST /url-refresh`、`PUT /url-refresh/:id/review` | `wika.url_refresh.job_created`、`job_failed`、`reviewed` |
 | P5d-1/P5d-2/P5d-3 Eval schedule | `go test ./internal/wika/governance/evalschedule ./internal/handler` | cron fixture；`POST /eval/schedules`、disable 后 worker 不触发 | `wika.eval_schedule.updated`、`run_failed` |
-| P5e-1/P5e-2/P5e-3/P5e-4 Org share | `go test ./internal/wika/governance/orgshare ./internal/wika/scope ./internal/wika/search ./internal/handler` | share/revoke fixture；`search_knowledge` shared scope 回归 | `wika.org_share.created`、`wika.org_share.revoked` |
+| P5e-1/P5e-2/P5e-3/P5e-4 Org share | `go test ./internal/wika/governance/orgshare ./internal/wika/scope ./internal/wika/search ./internal/handler` | share/accept/revoke fixture；`search_knowledge` shared scope 回归 | `wika.org_share.created`、`wika.org_share.accepted`、`wika.org_share.revoked` |

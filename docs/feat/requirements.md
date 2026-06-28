@@ -1,9 +1,9 @@
 # Wika 改造需求方案
 
-> 版本: 2.1
+> 版本: 2.2
 > 日期: 2026-06-29
 > 基于: WeKnora v0.6.2 fork
-> 状态: P0-P5 方案可拆分实施，P5 已补齐到任务卡级实现口径
+> 状态: P0-P5 方案可拆分实施，P5 已补齐到可写 RED 测试和进入实现口径
 
 ## 一、目标
 
@@ -116,7 +116,7 @@ Wika 分两层验收：
 | P2 | 作为团队维护者，我能用黄金 QA 判断知识调整是否提升检索质量 | 至少 5 条 QA，其中 3 条有 expected IDs、1 条无 expected IDs、1 条越权引用 | 正式 run 有指标和 case 明细；无 expected IDs 只能 dry-run；导出不泄露无权正文 |
 | P3 | 作为维护者，我能发现和处理过期、低质、长期未复用知识 | 过期、将过期、低质量、低置信、90 天无访问知识各 1 条 | scanner 可生成保鲜项；处理动作有审计；检索热路径不写 `knowledges` 主表 |
 | P4 | 作为团队成员，我能通过图谱理解知识关系，且图谱失败不影响搜索 | 团队实体 3 个、关系 3 条、个人实体 1 个、模拟图谱服务失败 | 团队图谱可分页；个人图谱受 Owner 限制；搜索返回图谱贡献或降级标识 |
-| P5 | 作为团队维护者，我能处理冲突、恢复版本、确认 URL 更新、运行定时评测、授权跨团队引用 | 冲突候选、两个知识版本、URL 重抓 fixture、评测计划、Organization share/revoke 各 1 组 | 每个高级治理动作都有状态流转、回滚或撤销路径、scope 校验和审计记录 |
+| P5 | 作为团队维护者，我能处理冲突、恢复版本、确认 URL 更新、运行定时评测、授权跨团队引用 | 冲突候选、两个知识版本、URL 重抓 fixture、评测计划、Organization share/accept/revoke 各 1 组 | 每个高级治理动作都有状态流转、回滚或撤销路径、scope 校验和审计记录 |
 
 ### 阶段发布矩阵
 
@@ -135,7 +135,7 @@ Wika 分两层验收：
 | P5b Version | 不覆盖历史版本 | restore 100% 生成新版本；版本正文越权 0 泄露 | 两个版本 diff/restore 通过 | 所有知识写路径均记录版本 | restore 覆盖历史或绕过 scope | 禁用 restore API，保留版本列表只读 |
 | P5c URL Refresh | 不直接覆盖正文；不抓取非 HTTP(S) | SSRF fixture 100% 阻断；成功抓取 100% 进入待确认 | safe fetcher fixture 全绿 | 定时/手动 job 可停用，review/apply 有审计 | 内网/metadata/重定向绕过或恶意 HTML 执行 | 停用 URL refresh worker 和 schedule |
 | P5d Eval Schedule | 不复制评测逻辑 | due schedule 触发成功率 >= 99%；连续失败后 100% 降频或停用 | 单 schedule cron 触发 run | 多实例锁验证通过；失败告警可查 | 重复触发 run 或无限失败重试 | 停用 schedule worker，保留手动评测 |
-| P5e Org Share | 不共享个人正文、证据、文件；默认不复制 | revoke 后新 search 0 命中；allowed fields 裁剪 100% 生效 | share/revoke fixture 通过 | 接收团队权限和 shared scope 回归全绿 | 撤销后仍命中或字段越权 | 停用 shared scope，保留审计和 lineage 元数据 |
+| P5e Org Share | 不共享个人正文、证据、文件；默认不复制 | revoke 后新 search 0 命中；allowed fields 裁剪 100% 生效 | share/accept/revoke fixture 通过 | 接收团队权限和 shared scope 回归全绿 | 撤销后仍命中或字段越权 | 停用 shared scope，保留审计和 lineage 元数据 |
 
 ## 五、功能需求
 
@@ -534,7 +534,7 @@ P5 不是一个大功能包，必须按 P5a-P5e 独立打开、独立回滚、�
 | P5b Version | 作为团队维护者，我要知道知识被谁改过，并能恢复旧版本 | 写路径记录版本 -> 查看版本列表 -> 查看 diff -> restore | 新 `version_no` | restore 必须调用现有知识更新和索引链路，并生成新版本；历史版本只读 |
 | P5c URL Refresh | 作为团队维护者，我要安全检查来源 URL 是否更新，再决定是否应用 | 创建 job 或 schedule -> safe fetch -> diff -> 人工 apply/reject | `applied`、`rejected`、`failed` | SSRF fixture 全部阻断；抓取成功默认 `pending_review`；apply 生成版本 |
 | P5d Eval Schedule | 作为团队维护者，我要让稳定数据集定时评测，但失败时不能无限重试 | 创建 schedule -> worker 领取 due schedule -> 创建 run -> 更新 next_run 或 failure | `enabled=false` 或降频后的 enabled | 多实例不重复触发；失败达到阈值后停用或延后；run/case 明细复用 P2 |
-| P5e Org Share | 作为团队维护者，我要授权其他团队引用本团队知识，同时可随时撤销 | 创建 org -> 加入团队 -> 创建 share -> shared scope 搜索 -> revoke | `revoked` | 默认 reference，不复制正文；allowed_fields 服务端白名单裁剪；revoke 后新搜索不命中 |
+| P5e Org Share | 作为团队维护者，我要授权其他团队引用本团队知识，同时可随时撤销 | 创建 org -> 加入团队 -> 创建 share -> 接收方 accept -> shared scope 搜索 -> revoke | `revoked` | 默认 reference，不复制正文；pending 不进入搜索；allowed_fields 服务端白名单裁剪；revoke 后新搜索不命中 |
 
 P5 灰度和回滚口径：
 
@@ -552,7 +552,17 @@ P5 验证数据必须最少包含：
 | 版本 | 同一知识至少 3 个版本，包含标题变更、正文变更、标签变更 |
 | URL 重抓 | 正常 HTTP 页面、重定向到内网、metadata IP、超大响应、非文本 content-type |
 | 定时评测 | enabled schedule 1 个、disabled schedule 1 个、连续失败 schedule 1 个 |
-| Organization 共享 | source team、target team、非成员用户、share active/revoked 各 1 组 |
+| Organization 共享 | source team、target team、非成员用户、share pending/active/revoked 各 1 组 |
+
+P5 进入实现前必须满足：
+
+- P1-P4 完成门禁已通过，特别是 ScopeResolver、SearchService、EvaluationService 和 Freshness state 可复用。
+- P5a-P5e 每个子阶段都有独立 feature flag、回滚动作和最小 fixture。
+- 每个子阶段第一张任务卡都能写出失败测试，失败原因必须是“生产代码未实现”，不是需求不清。
+- direct-id API 已定义父资源回溯方式，例如 conflict item 回溯 KB、version/job 回溯 knowledge、share 回溯 org/source KB/target tenant。
+- 会修改知识正文、标题、标签、状态或有效期的动作都先接入 VersionService；没有版本记录的 apply/restore 不允许上线。
+- worker 型能力必须有 DB lease、失败阈值、审计或结构化日志和停用路径。
+- 前端只消费后端状态和权限结果，不在前端自行判断能否越权操作。
 
 ## 六、安全需求
 
@@ -589,6 +599,7 @@ SystemAdmin 字段级边界：
 | 团队流转 | 自动通过率、待确认率、不通过率、人工覆盖率 |
 | 评测 | MRR、Recall@5、NDCG@5、低分 QA 数 |
 | 保鲜 | 过期知识数、低置信知识数、长期未命中知识数 |
+| 高级治理 | open conflict 数、restore 次数、URL refresh 失败率、due schedule 延迟、active/revoked share 数 |
 | 成本 | LLM token、embedding 次数、rerank 次数、图谱抽取次数 |
 
 ## 八、阶段验收标准
@@ -634,6 +645,8 @@ SystemAdmin 字段级边界：
 3. URL 重抓具备 SSRF 防护 fixture，通过后只生成待确认更新。
 4. 定时评测可配置、运行、失败重试/降频，并保留 run 明细。
 5. Organization 共享可以授权、引用检索、撤销；撤销后新检索不再命中。
+6. P5a-P5e 关闭任一 feature flag 后，对应 worker 不再领取新任务，对应写 API 不再产生新状态。
+7. 所有 P5 审计只包含元数据、hash 和脱敏摘要，不包含正文、snippet、diff 全文、抓取正文或 expected answer。
 
 ## 九、后续增强
 
