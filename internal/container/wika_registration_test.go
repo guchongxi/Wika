@@ -26,6 +26,8 @@ func TestContainerRegistersWikaSuggestionComponents(t *testing.T) {
 		"wikaconflict.NewNoopCandidateGenerator",
 		"wikaconflict.NewService",
 		"handler.NewWikaConflictHandler",
+		"wikaversion.NewGormStore",
+		"wikaversion.NewService",
 		"wikagraph.NewGormStore",
 		"wikagraph.NewService",
 		"handler.NewWikaGraphHandler",

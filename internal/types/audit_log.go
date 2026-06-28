@@ -61,6 +61,12 @@ const (
 	// AuditActionWikaConflictItemResolved fires when a maintainer changes
 	// a conflict item status. Evidence正文不进入审计日志。
 	AuditActionWikaConflictItemResolved AuditAction = "wika.conflict.item_resolved"
+	// AuditActionWikaVersionRecorded fires when Wika records a knowledge
+	// version snapshot. Content and diff正文不进入审计日志。
+	AuditActionWikaVersionRecorded AuditAction = "wika.version.recorded"
+	// AuditActionWikaVersionRestored fires when Wika restores an old
+	// version by creating a new version. Content diff 不进入审计日志。
+	AuditActionWikaVersionRestored AuditAction = "wika.version.restored"
 
 	// VectorStore lifecycle actions. Emitted by VectorStoreService.
 	// Cover both env-store-derived (__env_*) and DB store create /

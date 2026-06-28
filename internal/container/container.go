@@ -87,6 +87,7 @@ import (
 	wikaeval "github.com/Tencent/WeKnora/internal/wika/evaluation"
 	wikafreshness "github.com/Tencent/WeKnora/internal/wika/freshness"
 	wikaconflict "github.com/Tencent/WeKnora/internal/wika/governance/conflict"
+	wikaversion "github.com/Tencent/WeKnora/internal/wika/governance/version"
 	wikagraph "github.com/Tencent/WeKnora/internal/wika/graph"
 	wikaintake "github.com/Tencent/WeKnora/internal/wika/intake"
 	wikasearch "github.com/Tencent/WeKnora/internal/wika/search"
@@ -181,6 +182,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(wikaeval.NewGormStore))
 	must(container.Provide(wikafreshness.NewGormStore))
 	must(container.Provide(wikaconflict.NewGormStore))
+	must(container.Provide(wikaversion.NewGormStore))
 	must(container.Provide(wikagraph.NewGormStore))
 	must(container.Provide(wikaintake.NewGormStore))
 	must(container.Provide(wikasearch.NewGormStore))
@@ -218,6 +220,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(wikafreshness.NewService))
 	must(container.Provide(wikaconflict.NewNoopCandidateGenerator))
 	must(container.Provide(wikaconflict.NewService))
+	must(container.Provide(wikaversion.NewService))
 	must(container.Provide(wikagraph.NewService))
 	must(container.Provide(wikaintake.NewService))
 	must(container.Provide(wikasearch.NewService))
