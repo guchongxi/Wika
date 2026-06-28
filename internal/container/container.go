@@ -88,6 +88,7 @@ import (
 	wikafreshness "github.com/Tencent/WeKnora/internal/wika/freshness"
 	wikaconflict "github.com/Tencent/WeKnora/internal/wika/governance/conflict"
 	wikaevalschedule "github.com/Tencent/WeKnora/internal/wika/governance/evalschedule"
+	wikaorgshare "github.com/Tencent/WeKnora/internal/wika/governance/orgshare"
 	wikaurlrefresh "github.com/Tencent/WeKnora/internal/wika/governance/urlrefresh"
 	wikasafefetch "github.com/Tencent/WeKnora/internal/wika/governance/urlrefresh/safefetch"
 	wikaversion "github.com/Tencent/WeKnora/internal/wika/governance/version"
@@ -186,6 +187,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(wikafreshness.NewGormStore))
 	must(container.Provide(wikaconflict.NewGormStore))
 	must(container.Provide(wikaevalschedule.NewGormStore))
+	must(container.Provide(wikaorgshare.NewGormStore))
 	must(container.Provide(wikaurlrefresh.NewGormStore))
 	must(container.Provide(wikaversion.NewGormStore))
 	must(container.Provide(wikagraph.NewGormStore))
@@ -228,6 +230,8 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(wikaversion.NewService))
 	must(container.Provide(initWikaURLRefreshService))
 	must(container.Provide(initWikaEvalScheduleService))
+	must(container.Provide(wikaorgshare.NewTenantMemberAdminChecker))
+	must(container.Provide(initWikaOrgShareService))
 	must(container.Provide(wikagraph.NewService))
 	must(container.Provide(wikaintake.NewService))
 	must(container.Provide(wikasearch.NewService))
@@ -489,6 +493,14 @@ func initWikaEvalScheduleService(store *wikaevalschedule.GormStore, runner *wika
 		store,
 		runner,
 		wikaevalschedule.WithFeatureGate(settings),
+	)
+}
+
+func initWikaOrgShareService(store *wikaorgshare.GormStore, admin wikaorgshare.TeamAdminChecker, settings interfaces.SystemSettingService) *wikaorgshare.Service {
+	return wikaorgshare.NewService(
+		store,
+		admin,
+		wikaorgshare.WithFeatureGate(settings),
 	)
 }
 
