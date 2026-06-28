@@ -19,7 +19,7 @@ func TestContainerRegistersWikaSuggestionComponents(t *testing.T) {
 	source := string(raw)
 	required := []string{
 		"wikasuggestion.NewGormStore",
-		"wikasuggestion.NewService",
+		"initWikaSuggestionService",
 		"handler.NewWikaSuggestionHandler",
 		"wikaeval.NewGormStore",
 		"wikaeval.NewService",

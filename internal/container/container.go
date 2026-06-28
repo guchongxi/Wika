@@ -238,7 +238,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(wikaintake.NewService))
 	must(container.Provide(initWikaScopeResolver))
 	must(container.Provide(wikasearch.NewService))
-	must(container.Provide(wikasuggestion.NewService))
+	must(container.Provide(initWikaSuggestionService))
 
 	// Extract services - register individual extracters with names
 	must(container.Provide(service.NewChunkExtractService, dig.Name("chunkExtractor")))
@@ -478,6 +478,10 @@ func initWikaTokenService(store *wikaauth.GormTokenStore) *wikaauth.TokenService
 		pepper = "wika-dev-token-pepper"
 	}
 	return wikaauth.NewTokenService(store, pepper)
+}
+
+func initWikaSuggestionService(store *wikasuggestion.GormStore, knowledge interfaces.KnowledgeService) *wikasuggestion.Service {
+	return wikasuggestion.NewService(store, knowledge)
 }
 
 func initWikaURLRefreshService(store *wikaurlrefresh.GormStore, audit interfaces.AuditLogService, knowledge interfaces.KnowledgeService, versions *wikaversion.Service, settings interfaces.SystemSettingService) *wikaurlrefresh.Service {
