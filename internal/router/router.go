@@ -88,6 +88,7 @@ type RouterParams struct {
 	WeKnoraCloudHandler          *handler.WeKnoraCloudHandler
 	WikiPageHandler              *handler.WikiPageHandler
 	WikaTokenHandler             *handler.WikaTokenHandler
+	WikaKnowledgeHandler         *handler.WikaKnowledgeHandler
 	WikaTokenService             *wikaauth.TokenService
 }
 
@@ -234,7 +235,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterWeKnoraCloudRoutes(v1, params.WeKnoraCloudHandler, rbacGuards)
 		RegisterWikiPageRoutes(v1, params.WikiPageHandler, rbacGuards)
 		RegisterChunkerDebugRoutes(v1, rbacGuards)
-		RegisterWikaRoutes(v1, params.WikaTokenHandler, rbacGuards)
+		RegisterWikaRoutes(v1, params.WikaTokenHandler, params.WikaKnowledgeHandler, rbacGuards)
 	}
 
 	return r
@@ -252,20 +253,30 @@ func RegisterChunkerDebugRoutes(r *gin.RouterGroup, g *rbacGuards) {
 }
 
 // RegisterWikaRoutes 注册 Wika 产品化接口。
-func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, g *rbacGuards) {
-	if tokenHandler == nil {
+func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, knowledgeHandler *handler.WikaKnowledgeHandler, g *rbacGuards) {
+	if tokenHandler == nil && knowledgeHandler == nil {
 		return
 	}
 	wika := r.Group("/wika")
-	tokenGuards := []gin.HandlerFunc{}
+	viewerGuards := []gin.HandlerFunc{}
 	if g != nil {
-		tokenGuards = append(tokenGuards, g.Viewer())
+		viewerGuards = append(viewerGuards, g.Viewer())
 	}
-	tokens := wika.Group("/tokens", tokenGuards...)
-	{
-		tokens.GET("", tokenHandler.ListTokens)
-		tokens.POST("", tokenHandler.CreateToken)
-		tokens.DELETE("/:id", tokenHandler.RevokeToken)
+	if tokenHandler != nil {
+		tokens := wika.Group("/tokens", viewerGuards...)
+		{
+			tokens.GET("", tokenHandler.ListTokens)
+			tokens.POST("", tokenHandler.CreateToken)
+			tokens.DELETE("/:id", tokenHandler.RevokeToken)
+		}
+	}
+	if knowledgeHandler != nil {
+		knowledge := wika.Group("/knowledge", viewerGuards...)
+		{
+			knowledge.POST("/push", knowledgeHandler.PushKnowledge)
+			knowledge.POST("/search", knowledgeHandler.SearchKnowledge)
+			knowledge.GET("/mine", knowledgeHandler.ListMyKnowledge)
+		}
 	}
 }
 

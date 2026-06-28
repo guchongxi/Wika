@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Configuration - Load from environment variables with defaults
 WEKNORA_BASE_URL = os.getenv("WEKNORA_BASE_URL", "http://localhost:8080/api/v1")
 WEKNORA_API_KEY = os.getenv("WEKNORA_API_KEY", "")
+WEKNORA_PAT = os.getenv("WEKNORA_PAT", "")
 # Chat SSE read timeout in seconds. LLM responses can be slow; default 300s.
 try:
     WEKNORA_CHAT_TIMEOUT = int(os.getenv("WEKNORA_CHAT_TIMEOUT", "300"))
@@ -40,10 +41,11 @@ except ValueError:
 class WeKnoraClient:
     """Client for interacting with WeKnora API"""
 
-    def __init__(self, base_url: str, api_key: str):
+    def __init__(self, base_url: str, api_key: str, pat: str = ""):
         """Initialize the WeKnora API client with base URL and authentication"""
         self.base_url = base_url
         self.api_key = api_key
+        self.pat = pat
         # SSL verification: enabled by default. Set WEKNORA_VERIFY_SSL=false to disable
         # (e.g. for self-signed certs in dev environments — NOT recommended for production).
         self.verify_ssl = os.getenv("WEKNORA_VERIFY_SSL", "true").lower() != "false"
@@ -57,12 +59,12 @@ class WeKnoraClient:
         self.session = requests.Session()
         self.session.verify = self.verify_ssl
         # Set default headers for all requests
-        self.session.headers.update(
-            {
-                "X-API-Key": api_key,  # API key for authentication
-                "Content-Type": "application/json",  # Default content type
-            }
-        )
+        headers = {"Content-Type": "application/json"}
+        if pat:
+            headers["Authorization"] = f"Bearer {pat}"
+        elif api_key:
+            headers["X-API-Key"] = api_key
+        self.session.headers.update(headers)
 
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """Make a request to the WeKnora API
@@ -207,7 +209,7 @@ class WeKnoraClient:
             # Temporarily remove Content-Type header for multipart/form-data request
             # (requests will set it automatically with boundary)
             headers = self.session.headers.copy()
-            del headers["Content-Type"]
+            headers.pop("Content-Type", None)
             # Use requests.post directly instead of session to avoid header conflicts
             response = requests.post(
                 f"{self.base_url}/knowledge-bases/{kb_id}/knowledge/file",
@@ -244,6 +246,60 @@ class WeKnoraClient:
     def delete_knowledge(self, knowledge_id: str) -> Dict:
         """Delete knowledge"""
         return self._request("DELETE", f"/knowledge/{knowledge_id}")
+
+    def push_knowledge(
+        self,
+        content: str,
+        title: str | None = None,
+        source: str | None = None,
+        tags: list[str] | None = None,
+        evidence: str | None = None,
+        expires_at: str | None = None,
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+    ) -> Dict:
+        data: Dict[str, Any] = {
+            "content": content,
+            "dry_run": dry_run,
+        }
+        optional = {
+            "title": title,
+            "source": source,
+            "tags": tags,
+            "evidence": evidence,
+            "expires_at": expires_at,
+            "idempotency_key": idempotency_key,
+        }
+        data.update({key: value for key, value in optional.items() if value is not None})
+        return self._request("POST", "/wika/knowledge/push", json=data)
+
+    def search_knowledge(
+        self,
+        query: str,
+        limit: int = 5,
+        include_team: bool = True,
+        format: str = "compact",
+    ) -> Dict:
+        data = {
+            "query": query,
+            "limit": limit,
+            "include_team": include_team,
+            "format": format,
+        }
+        return self._request("POST", "/wika/knowledge/search", json=data)
+
+    def get_my_knowledge(
+        self,
+        limit: int = 20,
+        status: str | None = None,
+        tag: str | None = None,
+    ) -> Dict:
+        params: Dict[str, Any] = {"limit": limit}
+        if status:
+            params["status"] = status
+        if tag:
+            params["tag"] = tag
+        return self._request("GET", "/wika/knowledge/mine", params=params)
 
     # Model Management - Methods for managing AI models (LLM, Embedding, Rerank)
     def create_model(
@@ -488,7 +544,7 @@ class WeKnoraClient:
 # Initialize MCP server instance
 app = Server("weknora-server")
 # Initialize WeKnora API client with configuration
-client = WeKnoraClient(WEKNORA_BASE_URL, WEKNORA_API_KEY)
+client = WeKnoraClient(WEKNORA_BASE_URL, WEKNORA_API_KEY, WEKNORA_PAT)
 
 
 # Tool definitions - Register all available tools for the MCP protocol
@@ -616,6 +672,80 @@ async def handle_list_tools() -> list[types.Tool]:
             },
         ),
         # Knowledge Management
+        types.Tool(
+            name="push_knowledge",
+            description="Create personal Wika knowledge through the daily user PAT flow",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Knowledge title"},
+                    "content": {"type": "string", "description": "Knowledge content"},
+                    "source": {"type": "string", "description": "Source URL or note"},
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Knowledge tags",
+                    },
+                    "evidence": {"type": "string", "description": "Evidence or context"},
+                    "expires_at": {
+                        "type": "string",
+                        "description": "Expiration timestamp in RFC3339 format",
+                    },
+                    "idempotency_key": {
+                        "type": "string",
+                        "description": "Idempotency key for repeated calls",
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Return normalized preview without persisting",
+                        "default": False,
+                    },
+                },
+                "required": ["content"],
+            },
+        ),
+        types.Tool(
+            name="search_knowledge",
+            description="Search personal and team Wika knowledge without specifying knowledge base IDs",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of compact results",
+                        "default": 5,
+                    },
+                    "include_team": {
+                        "type": "boolean",
+                        "description": "Include joined team spaces",
+                        "default": True,
+                    },
+                    "format": {
+                        "type": "string",
+                        "description": "Response format",
+                        "default": "compact",
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
+        types.Tool(
+            name="get_my_knowledge",
+            description="List personal Wika knowledge from the user's default personal space",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of personal knowledge items",
+                        "default": 20,
+                    },
+                    "status": {"type": "string", "description": "Optional status filter"},
+                    "tag": {"type": "string", "description": "Optional tag filter"},
+                },
+            },
+        ),
         types.Tool(
             name="create_knowledge_from_file",
             description="Create knowledge from a local file on the server filesystem",
@@ -1084,6 +1214,30 @@ async def handle_call_tool(
             result = client.hybrid_search(kb_id, args["query"], config)
 
         # Knowledge Management
+        elif name == "push_knowledge":
+            result = client.push_knowledge(
+                content=args["content"],
+                title=args.get("title"),
+                source=args.get("source"),
+                tags=args.get("tags"),
+                evidence=args.get("evidence"),
+                expires_at=args.get("expires_at"),
+                idempotency_key=args.get("idempotency_key"),
+                dry_run=args.get("dry_run", False),
+            )
+        elif name == "search_knowledge":
+            result = client.search_knowledge(
+                args["query"],
+                limit=args.get("limit", 5),
+                include_team=args.get("include_team", True),
+                format=args.get("format", "compact"),
+            )
+        elif name == "get_my_knowledge":
+            result = client.get_my_knowledge(
+                limit=args.get("limit", 20),
+                status=args.get("status"),
+                tag=args.get("tag"),
+            )
         elif name == "create_knowledge_from_file":
             result = client.create_knowledge_from_file(
                 args["kb_id"], args["file_path"], args.get("enable_multimodel", True)
