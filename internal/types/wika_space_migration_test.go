@@ -192,3 +192,35 @@ func TestWikaP4GraphMigrationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestWikaP5ConflictMigrationContract(t *testing.T) {
+	path := filepath.Join("..", "..", "migrations", "versioned", "000097_wika_conflicts.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected Wika P5 conflict migration to exist: %v", err)
+	}
+
+	sql := string(raw)
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS wika_conflict_checks",
+		"CREATE TABLE IF NOT EXISTS wika_conflict_items",
+		"attempts INT NOT NULL DEFAULT 0",
+		"locked_until TIMESTAMPTZ",
+		"locked_by VARCHAR(128)",
+		"source_knowledge_id VARCHAR(36) NOT NULL",
+		"target_knowledge_id VARCHAR(36) NOT NULL",
+		"conflict_type VARCHAR(32) NOT NULL",
+		"evidence JSONB NOT NULL DEFAULT '{}'::jsonb",
+		"status VARCHAR(24) NOT NULL DEFAULT 'open'",
+		"reviewer_comment TEXT",
+		"ux_wika_conflict_items_open",
+		"WHERE status IN ('open', 'confirmed')",
+		"idx_wika_conflict_checks_worker",
+		"idx_wika_conflict_items_status",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("expected migration to contain %q", fragment)
+		}
+	}
+}
