@@ -11,6 +11,8 @@ import (
 
 type Store interface {
 	RecordVersion(ctx context.Context, input RecordVersionInput) (*types.WikaKnowledgeVersion, error)
+	ListVersions(ctx context.Context, input ListVersionsInput) ([]*types.WikaKnowledgeVersion, error)
+	GetVersion(ctx context.Context, input GetVersionInput) (*types.WikaKnowledgeVersion, error)
 }
 
 type GormStore struct {
@@ -58,6 +60,44 @@ func (s *GormStore) RecordVersion(ctx context.Context, input RecordVersionInput)
 		return nil, err
 	}
 	return &created, nil
+}
+
+func (s *GormStore) ListVersions(ctx context.Context, input ListVersionsInput) ([]*types.WikaKnowledgeVersion, error) {
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := input.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	var versions []*types.WikaKnowledgeVersion
+	err := s.db.WithContext(ctx).
+		Where("tenant_id = ? AND knowledge_id = ?", input.TenantID, input.KnowledgeID).
+		Order("version_no DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&versions).Error
+	if err != nil {
+		return nil, err
+	}
+	return versions, nil
+}
+
+func (s *GormStore) GetVersion(ctx context.Context, input GetVersionInput) (*types.WikaKnowledgeVersion, error) {
+	var version types.WikaKnowledgeVersion
+	err := s.db.WithContext(ctx).
+		First(&version, "id = ? AND tenant_id = ? AND knowledge_id = ?", input.VersionID, input.TenantID, input.KnowledgeID).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrVersionNotFound
+		}
+		return nil, err
+	}
+	return &version, nil
 }
 
 func jsonOrDefault(value types.JSON, fallback string) types.JSON {

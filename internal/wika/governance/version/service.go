@@ -49,6 +49,46 @@ func (s *Service) RecordVersion(ctx context.Context, input RecordVersionInput) (
 	return version, nil
 }
 
+func (s *Service) ListVersions(ctx context.Context, input ListVersionsInput) ([]*types.WikaKnowledgeVersion, error) {
+	if s.store == nil {
+		return nil, nil
+	}
+	return s.store.ListVersions(ctx, input)
+}
+
+func (s *Service) Diff(ctx context.Context, input DiffInput) (*DiffResult, error) {
+	if s.store == nil {
+		return nil, ErrVersionNotFound
+	}
+	from, err := s.store.GetVersion(ctx, GetVersionInput{
+		ActorID:     input.ActorID,
+		TenantID:    input.TenantID,
+		KnowledgeID: input.KnowledgeID,
+		VersionID:   input.FromVersion,
+		SystemAdmin: input.SystemAdmin,
+	})
+	if err != nil {
+		return nil, err
+	}
+	to, err := s.store.GetVersion(ctx, GetVersionInput{
+		ActorID:     input.ActorID,
+		TenantID:    input.TenantID,
+		KnowledgeID: input.KnowledgeID,
+		VersionID:   input.ToVersion,
+		SystemAdmin: input.SystemAdmin,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &DiffResult{
+		FromVersionNo:  from.VersionNo,
+		ToVersionNo:    to.VersionNo,
+		TitleChanged:   from.Title != to.Title,
+		ContentChanged: from.Content != to.Content,
+		TagsChanged:    string(from.Tags) != string(to.Tags),
+	}, nil
+}
+
 func hashContent(content string) string {
 	sum := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(sum[:])

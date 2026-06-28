@@ -57,3 +57,30 @@ func TestGormVersionStoreRecordVersionIncrementsVersionNo(t *testing.T) {
 		t.Fatalf("unexpected version numbers: first=%d second=%d", first.VersionNo, second.VersionNo)
 	}
 }
+
+func TestGormVersionStoreListVersionsNewestFirst(t *testing.T) {
+	db := setupVersionStoreTestDB(t)
+	store := NewGormStore(db)
+	for _, content := range []string{"第一版内容", "第二版内容"} {
+		_, err := store.RecordVersion(context.Background(), RecordVersionInput{
+			KnowledgeID:  "k-1",
+			TenantID:     80,
+			KBID:         "kb-team",
+			Title:        "手册",
+			Content:      content,
+			ContentHash:  content,
+			ChangeReason: "manual_update",
+			ActorID:      "u-owner",
+		})
+		require.NoError(t, err)
+	}
+
+	versions, err := store.ListVersions(context.Background(), ListVersionsInput{
+		TenantID:    80,
+		KnowledgeID: "k-1",
+	})
+	require.NoError(t, err)
+	if len(versions) != 2 || versions[0].VersionNo != 2 || versions[1].VersionNo != 1 {
+		t.Fatalf("expected newest first versions, got %+v", versions)
+	}
+}
