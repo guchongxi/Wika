@@ -213,6 +213,40 @@ func TestVersionServiceRestoreUsesManualPublishStatusForEnabledSnapshot(t *testi
 	}
 }
 
+func TestVersionServiceRestorePassesVersionTagsToKnowledgeUpdater(t *testing.T) {
+	store := &fakeVersionStore{versions: map[uint64]*types.WikaKnowledgeVersion{
+		7: {
+			ID:          7,
+			KnowledgeID: "k-1",
+			TenantID:    80,
+			KBID:        "kb-team",
+			VersionNo:   2,
+			Title:       "旧标题",
+			Content:     "旧内容",
+			Status:      types.ManualKnowledgeStatusPublish,
+			Tags:        types.JSON([]byte(`["tag-a","tag-b"]`)),
+		},
+	}}
+	updater := &fakeKnowledgeUpdater{}
+	svc := &Service{store: store, knowledge: updater, flags: fakeFeatureGate{enabled: true}}
+
+	_, err := svc.Restore(context.Background(), RestoreInput{
+		ActorID:     "u-admin",
+		TenantID:    80,
+		KnowledgeID: "k-1",
+		VersionID:   7,
+		Reason:      "恢复标签",
+	})
+	if err != nil {
+		t.Fatalf("Restore returned error: %v", err)
+	}
+	if updater.payload == nil || len(updater.payload.TagIDs) != 2 ||
+		updater.payload.TagIDs[0] != "tag-a" ||
+		updater.payload.TagIDs[1] != "tag-b" {
+		t.Fatalf("expected tag ids restored from version snapshot, got %+v", updater.payload)
+	}
+}
+
 func TestVersionServiceRestoreReturnsFeatureDisabledBeforeSideEffects(t *testing.T) {
 	store := &fakeVersionStore{versions: map[uint64]*types.WikaKnowledgeVersion{
 		7: {

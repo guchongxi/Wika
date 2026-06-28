@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -140,6 +141,7 @@ func (s *Service) Restore(ctx context.Context, input RestoreInput) (*RestoreResu
 		Title:   version.Title,
 		Content: version.Content,
 		Status:  restoreManualStatus(version),
+		TagIDs:  restoreTagIDs(version),
 		Channel: types.ChannelWeb,
 	})
 	if err != nil {
@@ -248,6 +250,23 @@ func isManualStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func restoreTagIDs(version *types.WikaKnowledgeVersion) []string {
+	if version == nil || len(version.Tags) == 0 {
+		return nil
+	}
+	var tags []string
+	if err := json.Unmarshal(version.Tags, &tags); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if trimmed := strings.TrimSpace(tag); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func hashContent(content string) string {
