@@ -74,4 +74,5 @@ type RestoreResult struct {
 	NewVersionID          uint64 `json:"new_version_id"`
 	KnowledgeID           string `json:"knowledge_id"`
 	Status                string `json:"status"`
+	Noop                  bool   `json:"noop"`
 }

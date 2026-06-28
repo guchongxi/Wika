@@ -60,6 +60,21 @@ func (a *fakeVersionAudit) Log(ctx context.Context, entry *types.AuditLog) error
 type fakeKnowledgeUpdater struct {
 	knowledgeID string
 	payload     *types.ManualKnowledgePayload
+	current     *types.Knowledge
+}
+
+func (u *fakeKnowledgeUpdater) GetKnowledgeByID(ctx context.Context, knowledgeID string) (*types.Knowledge, error) {
+	if u.current == nil {
+		return &types.Knowledge{
+			ID:              knowledgeID,
+			TenantID:        80,
+			KnowledgeBaseID: "kb-team",
+			Type:            types.KnowledgeTypeManual,
+			Title:           "当前标题",
+			EnableStatus:    "publish",
+		}, nil
+	}
+	return u.current, nil
 }
 
 func (u *fakeKnowledgeUpdater) UpdateManualKnowledge(ctx context.Context, knowledgeID string, payload *types.ManualKnowledgePayload) (*types.Knowledge, error) {
@@ -191,6 +206,52 @@ func TestVersionServiceRestoreReturnsFeatureDisabledBeforeSideEffects(t *testing
 	}
 	if store.getCalls != 0 || updater.payload != nil || len(store.records) != 0 || len(audit.entries) != 0 {
 		t.Fatalf("feature-disabled restore produced side effects: getCalls=%d payload=%+v records=%+v audit=%+v", store.getCalls, updater.payload, store.records, audit.entries)
+	}
+}
+
+func TestVersionServiceRestoreReturnsNoopWhenTargetMatchesCurrentKnowledge(t *testing.T) {
+	current := &types.Knowledge{
+		ID:              "k-1",
+		TenantID:        80,
+		KnowledgeBaseID: "kb-team",
+		Type:            types.KnowledgeTypeManual,
+		Title:           "旧标题",
+		EnableStatus:    "publish",
+	}
+	if err := current.SetManualMetadata(types.NewManualKnowledgeMetadata("旧内容", "publish", 3)); err != nil {
+		t.Fatalf("failed to prepare manual metadata: %v", err)
+	}
+	store := &fakeVersionStore{versions: map[uint64]*types.WikaKnowledgeVersion{
+		7: {
+			ID:          7,
+			KnowledgeID: "k-1",
+			TenantID:    80,
+			KBID:        "kb-team",
+			VersionNo:   2,
+			Title:       "旧标题",
+			Content:     "旧内容",
+			Status:      "publish",
+		},
+	}}
+	updater := &fakeKnowledgeUpdater{current: current}
+	audit := &fakeVersionAudit{}
+	svc := &Service{store: store, audit: audit, knowledge: updater, flags: fakeFeatureGate{enabled: true}}
+
+	result, err := svc.Restore(context.Background(), RestoreInput{
+		ActorID:     "u-admin",
+		TenantID:    80,
+		KnowledgeID: "k-1",
+		VersionID:   7,
+		Reason:      "重复点击恢复",
+	})
+	if err != nil {
+		t.Fatalf("Restore returned error: %v", err)
+	}
+	if result == nil || !result.Noop || result.NewVersionID != 0 || result.RestoredFromVersionID != 7 {
+		t.Fatalf("expected stable noop result, got %+v", result)
+	}
+	if updater.payload != nil || len(store.records) != 0 || len(audit.entries) != 0 {
+		t.Fatalf("noop restore produced side effects: payload=%+v records=%+v audit=%+v", updater.payload, store.records, audit.entries)
 	}
 }
 

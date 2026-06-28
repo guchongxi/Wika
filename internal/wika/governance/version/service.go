@@ -16,7 +16,8 @@ type auditLogger interface {
 	Log(ctx context.Context, entry *types.AuditLog) error
 }
 
-type knowledgeUpdater interface {
+type knowledgeAccessor interface {
+	GetKnowledgeByID(ctx context.Context, knowledgeID string) (*types.Knowledge, error)
 	UpdateManualKnowledge(ctx context.Context, knowledgeID string, payload *types.ManualKnowledgePayload) (*types.Knowledge, error)
 }
 
@@ -27,7 +28,7 @@ type featureGate interface {
 type Service struct {
 	store     Store
 	audit     auditLogger
-	knowledge knowledgeUpdater
+	knowledge knowledgeAccessor
 	flags     featureGate
 }
 
@@ -122,6 +123,19 @@ func (s *Service) Restore(ctx context.Context, input RestoreInput) (*RestoreResu
 	if err != nil {
 		return nil, err
 	}
+	current, err := s.knowledge.GetKnowledgeByID(ctx, input.KnowledgeID)
+	if err != nil {
+		return nil, err
+	}
+	if restoreTargetMatchesCurrent(version, current) {
+		_, status := currentManualContentAndStatus(current)
+		return &RestoreResult{
+			RestoredFromVersionID: version.ID,
+			KnowledgeID:           input.KnowledgeID,
+			Status:                status,
+			Noop:                  true,
+		}, nil
+	}
 	updated, err := s.knowledge.UpdateManualKnowledge(ctx, input.KnowledgeID, &types.ManualKnowledgePayload{
 		Title:   version.Title,
 		Content: version.Content,
@@ -175,6 +189,38 @@ func (s *Service) versionFeatureEnabled(ctx context.Context) bool {
 		return false
 	}
 	return s.flags.GetBool(ctx, versionFeatureFlagKey, "", false)
+}
+
+func restoreTargetMatchesCurrent(version *types.WikaKnowledgeVersion, current *types.Knowledge) bool {
+	if version == nil || current == nil {
+		return false
+	}
+	content, status := currentManualContentAndStatus(current)
+	return strings.TrimSpace(version.Title) == strings.TrimSpace(current.Title) &&
+		version.Content == content &&
+		strings.TrimSpace(version.Status) == strings.TrimSpace(status)
+}
+
+func currentManualContentAndStatus(current *types.Knowledge) (string, string) {
+	status := currentKnowledgeStatus(current)
+	if current == nil || !current.IsManual() {
+		return "", status
+	}
+	meta, err := current.ManualMetadata()
+	if err != nil || meta == nil {
+		return "", status
+	}
+	if strings.TrimSpace(meta.Status) != "" {
+		status = meta.Status
+	}
+	return meta.Content, status
+}
+
+func currentKnowledgeStatus(current *types.Knowledge) string {
+	if current == nil {
+		return ""
+	}
+	return current.EnableStatus
 }
 
 func hashContent(content string) string {
