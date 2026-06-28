@@ -16,6 +16,7 @@ import (
 type wikaEvaluationService interface {
 	CreateDataset(ctx context.Context, input wikaeval.CreateDatasetInput) (*types.WikaEvalDataset, error)
 	AddQAItem(ctx context.Context, input wikaeval.AddQAItemInput) (*types.WikaEvalQAItem, error)
+	RunEvaluation(ctx context.Context, input wikaeval.RunInput) (*types.WikaEvalRun, error)
 }
 
 // WikaEvaluationHandler 暴露 Wika 质量评测数据集入口。
@@ -39,6 +40,10 @@ type addWikaEvalQAItemRequest struct {
 	ExpectedChunkIDs     []string `json:"expected_chunk_ids"`
 	Tags                 []string `json:"tags"`
 	Enabled              *bool    `json:"enabled"`
+}
+
+type runWikaEvalRequest struct {
+	DatasetID uint64 `json:"dataset_id"`
 }
 
 // CreateDataset 创建团队 KB 的黄金 QA 数据集。
@@ -110,6 +115,42 @@ func (h *WikaEvaluationHandler) AddQAItem(c *gin.Context) {
 			return
 		}
 		c.Error(apperrors.NewInternalServerError("failed to add evaluation qa item"))
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// RunEvaluation 触发一次正式评测 run。
+func (h *WikaEvaluationHandler) RunEvaluation(c *gin.Context) {
+	userID, tenantID, ok := wikaKnowledgeContext(c)
+	if !ok {
+		return
+	}
+	if h.service == nil {
+		c.Error(apperrors.NewInternalServerError("wika evaluation service unavailable"))
+		return
+	}
+	var req runWikaEvalRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(apperrors.NewBadRequestError("invalid request body").WithDetails(err.Error()))
+		return
+	}
+	if req.DatasetID == 0 {
+		c.Error(apperrors.NewBadRequestError("dataset_id is required"))
+		return
+	}
+	result, err := h.service.RunEvaluation(c.Request.Context(), wikaeval.RunInput{
+		ActorID:   userID,
+		TenantID:  tenantID,
+		KBID:      strings.TrimSpace(c.Param("id")),
+		DatasetID: req.DatasetID,
+	})
+	if err != nil {
+		if err == wikaeval.ErrDatasetNotReadyForFormalRun {
+			c.Error(apperrors.NewBadRequestError("formal evaluation requires expected knowledge or chunk ids"))
+			return
+		}
+		c.Error(apperrors.NewInternalServerError("failed to run evaluation"))
 		return
 	}
 	c.JSON(http.StatusOK, result)

@@ -294,6 +294,7 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 		{
 			eval.POST("/datasets", evaluationHandler.CreateDataset)
 			eval.POST("/datasets/:dataset_id/items", evaluationHandler.AddQAItem)
+			eval.POST("/runs", evaluationHandler.RunEvaluation)
 		}
 	}
 }

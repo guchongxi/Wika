@@ -89,3 +89,26 @@ func TestRegisterWikaRoutesIncludesEvaluationDatasets(t *testing.T) {
 		t.Fatalf("expected evaluation dataset route to be registered, got 404")
 	}
 }
+
+func TestRegisterWikaRoutesIncludesEvaluationRuns(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(middleware.ErrorHandler())
+	engine.Use(func(c *gin.Context) {
+		c.Set(types.UserIDContextKey.String(), "u-test")
+		c.Set(types.TenantIDContextKey.String(), uint64(80))
+		c.Next()
+	})
+	api := engine.Group("/api/v1")
+
+	RegisterWikaRoutes(api, nil, nil, nil, &handler.WikaEvaluationHandler{}, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/kb/kb-team/eval/runs", strings.NewReader(`{"dataset_id":11}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code == http.StatusNotFound {
+		t.Fatalf("expected evaluation run route to be registered, got 404")
+	}
+}

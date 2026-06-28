@@ -17,6 +17,7 @@ import (
 type stubWikaEvaluationService struct {
 	createDatasetInput *wikaeval.CreateDatasetInput
 	addQAItemInput     *wikaeval.AddQAItemInput
+	runInput           *wikaeval.RunInput
 }
 
 func (s *stubWikaEvaluationService) CreateDataset(_ context.Context, input wikaeval.CreateDatasetInput) (*types.WikaEvalDataset, error) {
@@ -27,6 +28,11 @@ func (s *stubWikaEvaluationService) CreateDataset(_ context.Context, input wikae
 func (s *stubWikaEvaluationService) AddQAItem(_ context.Context, input wikaeval.AddQAItemInput) (*types.WikaEvalQAItem, error) {
 	s.addQAItemInput = &input
 	return &types.WikaEvalQAItem{ID: 21, DatasetID: input.DatasetID, Question: input.Question, ExpectedKnowledgeIDs: types.JSON([]byte(`["k-1"]`))}, nil
+}
+
+func (s *stubWikaEvaluationService) RunEvaluation(_ context.Context, input wikaeval.RunInput) (*types.WikaEvalRun, error) {
+	s.runInput = &input
+	return &types.WikaEvalRun{ID: 31, TenantID: input.TenantID, KBID: input.KBID, DatasetID: input.DatasetID, Status: wikaeval.RunStatusCompleted, Total: 1, RecallAt5: 1}, nil
 }
 
 func newWikaEvaluationTestRouter(service *stubWikaEvaluationService) *gin.Engine {
@@ -41,6 +47,7 @@ func newWikaEvaluationTestRouter(service *stubWikaEvaluationService) *gin.Engine
 	h := &WikaEvaluationHandler{service: service}
 	r.POST("/api/v1/wika/kb/:id/eval/datasets", h.CreateDataset)
 	r.POST("/api/v1/wika/kb/:id/eval/datasets/:dataset_id/items", h.AddQAItem)
+	r.POST("/api/v1/wika/kb/:id/eval/runs", h.RunEvaluation)
 	return r
 }
 
@@ -93,5 +100,23 @@ func TestWikaEvaluationAddQAItemPassesExpectedIDs(t *testing.T) {
 		len(service.addQAItemInput.ExpectedKnowledgeIDs) != 1 ||
 		len(service.addQAItemInput.ExpectedChunkIDs) != 1 {
 		t.Fatalf("unexpected add qa input: %+v", service.addQAItemInput)
+	}
+}
+
+func TestWikaEvaluationRunPassesDatasetAndActorToService(t *testing.T) {
+	service := &stubWikaEvaluationService{}
+	r := newWikaEvaluationTestRouter(service)
+
+	w := doWikaEvaluationJSON(t, r, http.MethodPost, "/api/v1/wika/kb/kb-team/eval/runs", `{"dataset_id":11}`)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if service.runInput == nil ||
+		service.runInput.ActorID != "u-test" ||
+		service.runInput.TenantID != 80 ||
+		service.runInput.KBID != "kb-team" ||
+		service.runInput.DatasetID != 11 {
+		t.Fatalf("unexpected run input: %+v", service.runInput)
 	}
 }
