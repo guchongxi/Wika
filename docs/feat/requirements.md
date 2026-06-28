@@ -1,9 +1,9 @@
 # Wika 改造需求方案
 
-> 版本: 2.0
-> 日期: 2026-06-28
+> 版本: 2.1
+> 日期: 2026-06-29
 > 基于: WeKnora v0.6.2 fork
-> 状态: P0-P5 方案可拆分实施，待进入阶段开发确认
+> 状态: P0-P5 方案可拆分实施，P5 已补齐到任务卡级实现口径
 
 ## 一、目标
 
@@ -523,6 +523,36 @@ P5 默认安全边界：
 - URL 重抓只生成待确认更新，不直接覆盖正文。
 - 定时评测连续失败后必须停用或降频，不能无限重试。
 - Organization 共享默认 `reference`，默认不包含个人正文、证据正文和文件内容。
+
+#### P5 子阶段用户故事与验收口径
+
+P5 不是一个大功能包，必须按 P5a-P5e 独立打开、独立回滚、独立验收。每个子阶段都只能在自身稳定锚点和功能开关开启后对用户可见。
+
+| 子阶段 | 用户故事 | 主流程 | 终态 | 必须验收 |
+|--------|----------|--------|------|----------|
+| P5a Conflict | 作为团队维护者，我要看到疑似冲突知识并人工判断，避免团队知识互相矛盾 | 创建 check -> worker 生成 item -> 查看证据摘要 -> 确认/驳回/解决 | `confirmed`、`dismissed`、`resolved` | AI 只给解释；任何状态流转都不改知识正文；同一未终态冲突不重复出现 |
+| P5b Version | 作为团队维护者，我要知道知识被谁改过，并能恢复旧版本 | 写路径记录版本 -> 查看版本列表 -> 查看 diff -> restore | 新 `version_no` | restore 必须调用现有知识更新和索引链路，并生成新版本；历史版本只读 |
+| P5c URL Refresh | 作为团队维护者，我要安全检查来源 URL 是否更新，再决定是否应用 | 创建 job 或 schedule -> safe fetch -> diff -> 人工 apply/reject | `applied`、`rejected`、`failed` | SSRF fixture 全部阻断；抓取成功默认 `pending_review`；apply 生成版本 |
+| P5d Eval Schedule | 作为团队维护者，我要让稳定数据集定时评测，但失败时不能无限重试 | 创建 schedule -> worker 领取 due schedule -> 创建 run -> 更新 next_run 或 failure | `enabled=false` 或降频后的 enabled | 多实例不重复触发；失败达到阈值后停用或延后；run/case 明细复用 P2 |
+| P5e Org Share | 作为团队维护者，我要授权其他团队引用本团队知识，同时可随时撤销 | 创建 org -> 加入团队 -> 创建 share -> shared scope 搜索 -> revoke | `revoked` | 默认 reference，不复制正文；allowed_fields 服务端白名单裁剪；revoke 后新搜索不命中 |
+
+P5 灰度和回滚口径：
+
+- 每个子阶段都有独立 feature flag，默认关闭。
+- 关闭 feature flag 后，新 API 写入和 worker 领取停止；已生成记录保持只读或可安全查看。
+- P5 worker 必须可独立停用，不能影响 P1-P4 的入库、搜索、评测和保鲜。
+- P5 API 不允许先暴露空实现；未开启时返回稳定错误，不能误导前端进入半可用状态。
+- P5 前端只展示当前开启的子阶段入口；隐藏入口不是权限控制，后端仍必须执行 scope 和状态机校验。
+
+P5 验证数据必须最少包含：
+
+| 数据类别 | 最小 fixture |
+|----------|--------------|
+| 冲突候选 | 同团队相互矛盾知识 1 组、重复知识 1 组、非冲突高相似知识 1 组 |
+| 版本 | 同一知识至少 3 个版本，包含标题变更、正文变更、标签变更 |
+| URL 重抓 | 正常 HTTP 页面、重定向到内网、metadata IP、超大响应、非文本 content-type |
+| 定时评测 | enabled schedule 1 个、disabled schedule 1 个、连续失败 schedule 1 个 |
+| Organization 共享 | source team、target team、非成员用户、share active/revoked 各 1 组 |
 
 ## 六、安全需求
 

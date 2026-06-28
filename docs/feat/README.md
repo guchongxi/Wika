@@ -25,13 +25,13 @@ Wika 是从 [WeKnora](https://github.com/Tencent/WeKnora) fork 的知识闭环�
 
 ## 当前实施边界
 
-当前文档已补齐到 P0-P5 均可拆分实施的状态。实现仍必须按阶段推进，不能因为后续阶段已有方案就跳过前置安全和数据门禁。
+当前文档已补齐到 P0-P5 均可拆分实施的状态，其中 P5 已拆成 P5a-P5e 子阶段、任务卡、迁移约束、worker lease、API 状态机和验收证据。实现仍必须按阶段推进，不能因为后续阶段已有方案就跳过前置安全和数据门禁。
 
 实施入口：
 
 1. 先完成 [tech-plan.md](./tech-plan.md) 的 P0 ADR，并把 ADR-01 到 ADR-10 作为编码前不可变决策。
 2. P1 拆成 P1a/P1b/P1c：先做空间、默认 KB、用户级 token 和旧 API scope；再做入库/检索；最后做 `suggest_to_team`。
-3. P2-P5 每期都有独立数据模型、API、权限、安全和验收门禁；只有上一期门禁通过，下一期才能进入编码。
+3. P2-P5 每期都有独立数据模型、API、权限、安全和验收门禁；P5 子阶段也必须独立 feature flag、独立回滚、独立验收。
 4. 所有阶段都必须满足：个人正文不被 SystemAdmin 读取、旧 WeKnora API 不绕过 personal scope、AI 输出不绕过确定性安全规则。
 
 实施前检查：
@@ -41,6 +41,7 @@ Wika 是从 [WeKnora](https://github.com/Tencent/WeKnora) fork 的知识闭环�
 - 需要改旧 WeKnora API 时，同 PR 包含旧接口越权测试。
 - MCP 日常工具使用用户级 PAT，不复用租户 API key。
 - P5 能力默认不在 P1-P4 暗中开启。
+- P5 worker 使用 DB lease 和幂等状态机，不能用进程内锁或单实例假设。
 
 关键前置决策：
 
