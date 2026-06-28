@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/database"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"gorm.io/gorm"
@@ -28,6 +29,9 @@ func NewAuditLogRepository(db *gorm.DB) interfaces.AuditLogRepository {
 // the database default if zero. Service-layer Log() fills both before
 // calling here so this is mostly a pass-through.
 func (r *auditLogRepository) Create(ctx context.Context, entry *types.AuditLog) error {
+	if tx, ok := database.GormTransactionFromContext(ctx); ok {
+		return tx.WithContext(ctx).Create(entry).Error
+	}
 	return r.db.WithContext(ctx).Create(entry).Error
 }
 

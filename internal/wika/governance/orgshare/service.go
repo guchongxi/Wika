@@ -3,6 +3,7 @@ package orgshare
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -16,10 +17,15 @@ type FeatureGate interface {
 	GetBool(ctx context.Context, key string, envName string, def bool) bool
 }
 
+type AuditLogger interface {
+	Log(ctx context.Context, entry *types.AuditLog) error
+}
+
 type Service struct {
 	store Store
 	admin TeamAdminChecker
 	flags FeatureGate
+	audit AuditLogger
 }
 
 type ServiceOption func(*Service)
@@ -29,6 +35,12 @@ const FeatureFlagKey = "wika.governance.org_share.enabled"
 func WithFeatureGate(flags FeatureGate) ServiceOption {
 	return func(s *Service) {
 		s.flags = flags
+	}
+}
+
+func WithAuditLogger(audit AuditLogger) ServiceOption {
+	return func(s *Service) {
+		s.audit = audit
 	}
 }
 
@@ -64,72 +76,124 @@ func (s *Service) CreateShare(ctx context.Context, input CreateShareInput) (*typ
 		acceptedAt = &now
 	}
 	rawFields, _ := json.Marshal(fields)
-	return s.store.CreateShare(ctx, &types.WikaOrgShare{
-		OrgID:          input.OrgID,
-		SourceTenantID: input.SourceTenantID,
-		SourceKBID:     input.SourceKBID,
-		TargetTenantID: input.TargetTenantID,
-		Mode:           types.WikaOrgShareModeReference,
-		AllowedFields:  types.JSON(rawFields),
-		Status:         status,
-		CreatedBy:      input.ActorID,
-		AcceptedBy:     acceptedBy,
-		AcceptedAt:     acceptedAt,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+	var share *types.WikaOrgShare
+	err = s.withTransaction(ctx, func(txCtx context.Context, store Store) error {
+		created, err := store.CreateShare(ctx, &types.WikaOrgShare{
+			OrgID:          input.OrgID,
+			SourceTenantID: input.SourceTenantID,
+			SourceKBID:     input.SourceKBID,
+			TargetTenantID: input.TargetTenantID,
+			Mode:           types.WikaOrgShareModeReference,
+			AllowedFields:  types.JSON(rawFields),
+			Status:         status,
+			CreatedBy:      input.ActorID,
+			AcceptedBy:     acceptedBy,
+			AcceptedAt:     acceptedAt,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		})
+		if err != nil {
+			return err
+		}
+		if err := s.logShareAudit(txCtx, types.AuditActionWikaOrgShareCreated, input.ActorID, "", created.Status, created, created.SourceTenantID); err != nil {
+			return err
+		}
+		share = created
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return share, nil
 }
 
 func (s *Service) AcceptShare(ctx context.Context, input AcceptShareInput) (*types.WikaOrgShare, error) {
 	if !s.featureEnabled(ctx) {
 		return nil, ErrFeatureDisabled
 	}
-	share, err := s.store.GetShare(ctx, input.ShareID)
-	if err != nil {
-		return nil, err
-	}
-	if share.Status != types.WikaOrgShareStatusPending {
-		return nil, ErrInvalidShareState
-	}
-	if !s.canAdmin(ctx, input.ActorID, share.TargetTenantID) {
-		return nil, ErrScopeDenied
-	}
 	now := input.Now
 	if now.IsZero() {
 		now = time.Now()
 	}
-	return s.store.UpdateShare(ctx, input.ShareID, map[string]any{
-		"status":      types.WikaOrgShareStatusActive,
-		"accepted_by": input.ActorID,
-		"accepted_at": now,
-		"updated_at":  now,
+	var updated *types.WikaOrgShare
+	err := s.withTransaction(ctx, func(txCtx context.Context, store Store) error {
+		share, err := store.GetShare(ctx, input.ShareID)
+		if err != nil {
+			return err
+		}
+		if share.Status != types.WikaOrgShareStatusPending {
+			return ErrInvalidShareState
+		}
+		if !s.canAdmin(ctx, input.ActorID, share.TargetTenantID) {
+			return ErrScopeDenied
+		}
+		next, err := store.UpdateShare(ctx, input.ShareID, map[string]any{
+			"status":      types.WikaOrgShareStatusActive,
+			"accepted_by": input.ActorID,
+			"accepted_at": now,
+			"updated_at":  now,
+		})
+		if err != nil {
+			return err
+		}
+		if err := s.logShareAudit(txCtx, types.AuditActionWikaOrgShareAccepted, input.ActorID, share.Status, next.Status, next, next.TargetTenantID); err != nil {
+			return err
+		}
+		updated = next
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func (s *Service) RevokeShare(ctx context.Context, input RevokeShareInput) (*types.WikaOrgShare, error) {
 	if !s.featureEnabled(ctx) {
 		return nil, ErrFeatureDisabled
 	}
-	share, err := s.store.GetShare(ctx, input.ShareID)
-	if err != nil {
-		return nil, err
-	}
-	if share.Status == types.WikaOrgShareStatusRevoked {
-		return nil, ErrInvalidShareState
-	}
-	if !s.canAdmin(ctx, input.ActorID, share.SourceTenantID) && !s.canAdmin(ctx, input.ActorID, share.TargetTenantID) {
-		return nil, ErrScopeDenied
-	}
 	now := input.Now
 	if now.IsZero() {
 		now = time.Now()
 	}
-	return s.store.UpdateShare(ctx, input.ShareID, map[string]any{
-		"status":     types.WikaOrgShareStatusRevoked,
-		"revoked_by": input.ActorID,
-		"revoked_at": now,
-		"updated_at": now,
+	var updated *types.WikaOrgShare
+	err := s.withTransaction(ctx, func(txCtx context.Context, store Store) error {
+		share, err := store.GetShare(ctx, input.ShareID)
+		if err != nil {
+			return err
+		}
+		if share.Status == types.WikaOrgShareStatusRevoked {
+			return ErrInvalidShareState
+		}
+		if !s.canAdmin(ctx, input.ActorID, share.SourceTenantID) && !s.canAdmin(ctx, input.ActorID, share.TargetTenantID) {
+			return ErrScopeDenied
+		}
+		next, err := store.UpdateShare(ctx, input.ShareID, map[string]any{
+			"status":     types.WikaOrgShareStatusRevoked,
+			"revoked_by": input.ActorID,
+			"revoked_at": now,
+			"updated_at": now,
+		})
+		if err != nil {
+			return err
+		}
+		if err := s.logShareAudit(txCtx, types.AuditActionWikaOrgShareRevoked, input.ActorID, share.Status, next.Status, next, s.actorTenantForRevoke(ctx, input.ActorID, share)); err != nil {
+			return err
+		}
+		updated = next
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+func (s *Service) withTransaction(ctx context.Context, fn func(context.Context, Store) error) error {
+	if txStore, ok := s.store.(transactionalStore); ok {
+		return txStore.WithTransaction(ctx, fn)
+	}
+	return fn(ctx, s.store)
 }
 
 func (s *Service) featureEnabled(ctx context.Context) bool {
@@ -185,4 +249,56 @@ func SanitizeAllowedFields(fields []string) []string {
 		out = append(out, field)
 	}
 	return out
+}
+
+func (s *Service) logShareAudit(ctx context.Context, action types.AuditAction, actorID string, oldStatus string, newStatus string, share *types.WikaOrgShare, actorTenantID uint64) error {
+	if s.audit == nil || share == nil {
+		return nil
+	}
+	if actorTenantID == 0 {
+		actorTenantID = share.SourceTenantID
+	}
+	details, _ := json.Marshal(map[string]any{
+		"share_id":         share.ID,
+		"org_id":           share.OrgID,
+		"actor_tenant_id":  actorTenantID,
+		"source_tenant_id": share.SourceTenantID,
+		"source_kb_id":     share.SourceKBID,
+		"target_tenant_id": share.TargetTenantID,
+		"old_status":       oldStatus,
+		"new_status":       newStatus,
+		"allowed_fields":   SanitizeAllowedFields(decodeShareAllowedFields(share.AllowedFields)),
+	})
+	return s.audit.Log(ctx, &types.AuditLog{
+		TenantID:    actorTenantID,
+		ActorUserID: actorID,
+		Action:      action,
+		TargetType:  "wika_org_share",
+		TargetID:    strconv.FormatUint(share.ID, 10),
+		Details:     types.JSON(details),
+	})
+}
+
+func (s *Service) actorTenantForRevoke(ctx context.Context, actorID string, share *types.WikaOrgShare) uint64 {
+	if share == nil {
+		return 0
+	}
+	if s.canAdmin(ctx, actorID, share.SourceTenantID) {
+		return share.SourceTenantID
+	}
+	if s.canAdmin(ctx, actorID, share.TargetTenantID) {
+		return share.TargetTenantID
+	}
+	return 0
+}
+
+func decodeShareAllowedFields(raw types.JSON) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var fields []string
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil
+	}
+	return fields
 }

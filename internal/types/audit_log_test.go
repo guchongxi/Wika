@@ -25,6 +25,16 @@ func TestAuditAction_DotNamespaceConvention(t *testing.T) {
 		AuditActionInvitationDeclined,
 		AuditActionInvitationRevoked,
 		AuditActionInvitationExpired,
+		// Wika governance namespace
+		AuditActionWikaFreshnessItemHandled,
+		AuditActionWikaConflictCheckCreated,
+		AuditActionWikaConflictItemResolved,
+		AuditActionWikaVersionRecorded,
+		AuditActionWikaVersionRestored,
+		AuditActionWikaURLRefreshReviewed,
+		AuditActionWikaOrgShareCreated,
+		AuditActionWikaOrgShareAccepted,
+		AuditActionWikaOrgShareRevoked,
 		// VectorStore namespace (Phase 3 PR 1 / #1440)
 		AuditActionVectorStoreCreated,
 		AuditActionVectorStoreUpdated,
@@ -109,6 +119,15 @@ func TestAuditAction_NoCollisionsAcrossNamespaces(t *testing.T) {
 	register("AuditActionInvitationDeclined", AuditActionInvitationDeclined)
 	register("AuditActionInvitationRevoked", AuditActionInvitationRevoked)
 	register("AuditActionInvitationExpired", AuditActionInvitationExpired)
+	register("AuditActionWikaFreshnessItemHandled", AuditActionWikaFreshnessItemHandled)
+	register("AuditActionWikaConflictCheckCreated", AuditActionWikaConflictCheckCreated)
+	register("AuditActionWikaConflictItemResolved", AuditActionWikaConflictItemResolved)
+	register("AuditActionWikaVersionRecorded", AuditActionWikaVersionRecorded)
+	register("AuditActionWikaVersionRestored", AuditActionWikaVersionRestored)
+	register("AuditActionWikaURLRefreshReviewed", AuditActionWikaURLRefreshReviewed)
+	register("AuditActionWikaOrgShareCreated", AuditActionWikaOrgShareCreated)
+	register("AuditActionWikaOrgShareAccepted", AuditActionWikaOrgShareAccepted)
+	register("AuditActionWikaOrgShareRevoked", AuditActionWikaOrgShareRevoked)
 	register("AuditActionVectorStoreCreated", AuditActionVectorStoreCreated)
 	register("AuditActionVectorStoreUpdated", AuditActionVectorStoreUpdated)
 	register("AuditActionVectorStoreDeleted", AuditActionVectorStoreDeleted)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/database"
 	"github.com/Tencent/WeKnora/internal/types"
 	"gorm.io/gorm"
 )
@@ -14,12 +15,22 @@ type Store interface {
 	UpdateShare(ctx context.Context, shareID uint64, updates map[string]any) (*types.WikaOrgShare, error)
 }
 
+type transactionalStore interface {
+	WithTransaction(ctx context.Context, fn func(context.Context, Store) error) error
+}
+
 type GormStore struct {
 	db *gorm.DB
 }
 
 func NewGormStore(db *gorm.DB) *GormStore {
 	return &GormStore{db: db}
+}
+
+func (s *GormStore) WithTransaction(ctx context.Context, fn func(context.Context, Store) error) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return fn(database.WithGormTransaction(ctx, tx), NewGormStore(tx))
+	})
 }
 
 func (s *GormStore) CreateShare(ctx context.Context, share *types.WikaOrgShare) (*types.WikaOrgShare, error) {

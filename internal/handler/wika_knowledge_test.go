@@ -15,8 +15,11 @@ import (
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/middleware"
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	wikaintake "github.com/Tencent/WeKnora/internal/wika/intake"
 	wikasearch "github.com/Tencent/WeKnora/internal/wika/search"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 type stubWikaIntakeService struct {
@@ -311,4 +314,116 @@ func TestWikaKnowledgeExpandRejectsEmptyIDsBeforeService(t *testing.T) {
 	if search.expandInput != nil {
 		t.Fatalf("empty ids must not call service: %+v", search.expandInput)
 	}
+}
+
+func TestWikaKnowledgeExpandSharedScopeRedactsAndStopsAfterRevoke(t *testing.T) {
+	db := setupWikaKnowledgeExpandIntegrationDB(t)
+	allowedFields := types.JSON(`["id","title"]`)
+	if err := db.Create(&types.WikaOrgShare{
+		OrgID:          "org-1",
+		SourceTenantID: 80,
+		SourceKBID:     "kb-shared",
+		TargetTenantID: 90,
+		Mode:           types.WikaOrgShareModeReference,
+		AllowedFields:  allowedFields,
+		Status:         types.WikaOrgShareStatusActive,
+		CreatedBy:      "u-source",
+	}).Error; err != nil {
+		t.Fatalf("create org share: %v", err)
+	}
+
+	knowledge := &types.Knowledge{
+		ID:              "k-shared",
+		TenantID:        80,
+		KnowledgeBaseID: "kb-shared",
+		Type:            types.KnowledgeTypeManual,
+		Title:           "共享标题",
+		Description:     "不应泄露的共享摘要",
+		Source:          "https://example.com/secret",
+		Metadata:        types.JSON(`{"content":"不应泄露的共享正文"}`),
+	}
+	searchService := wikasearch.NewService(wikasearch.NewGormStore(db), &wikaKnowledgeExpandFakeKnowledgeService{
+		byID: map[string]*types.Knowledge{"k-shared": knowledge},
+	}, nil)
+	r := newWikaKnowledgeExpandIntegrationRouter(searchService)
+
+	w := doWikaKnowledgeJSON(t, r, http.MethodPost, "/api/v1/wika/knowledge/expand", `{"ids":["k-shared"]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected active share expand 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"source_space":"shared"`) || !strings.Contains(body, "共享标题") {
+		t.Fatalf("expected shared title result, body=%s", body)
+	}
+	for _, leaked := range []string{"不应泄露的共享摘要", "不应泄露的共享正文", "https://example.com/secret"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("shared expand leaked %q: %s", leaked, body)
+		}
+	}
+
+	if err := db.Model(&types.WikaOrgShare{}).Where("source_kb_id = ?", "kb-shared").Update("status", types.WikaOrgShareStatusRevoked).Error; err != nil {
+		t.Fatalf("revoke org share: %v", err)
+	}
+	w = doWikaKnowledgeJSON(t, r, http.MethodPost, "/api/v1/wika/knowledge/expand", `{"ids":["k-shared"]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected revoked share expand 200 with empty results, got %d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "k-shared") || strings.Contains(w.Body.String(), "共享标题") {
+		t.Fatalf("revoked share must not be expandable, body=%s", w.Body.String())
+	}
+}
+
+func newWikaKnowledgeExpandIntegrationRouter(searchService *wikasearch.Service) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(middleware.ErrorHandler())
+	r.Use(func(c *gin.Context) {
+		c.Set(types.UserIDContextKey.String(), "u-test")
+		c.Set(types.TenantIDContextKey.String(), uint64(90))
+		c.Next()
+	})
+	h := &WikaKnowledgeHandler{search: searchService}
+	r.POST("/api/v1/wika/knowledge/expand", h.ExpandKnowledge)
+	return r
+}
+
+type wikaKnowledgeExpandFakeKnowledgeService struct {
+	interfaces.KnowledgeService
+	byID map[string]*types.Knowledge
+}
+
+func (s *wikaKnowledgeExpandFakeKnowledgeService) GetKnowledgeByIDOnly(ctx context.Context, id string) (*types.Knowledge, error) {
+	return s.byID[id], nil
+}
+
+func setupWikaKnowledgeExpandIntegrationDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&types.UserPersonalSpace{},
+		&types.WikaSpaceDefault{},
+		&types.Tenant{},
+		&types.TenantMember{},
+		&types.KnowledgeBase{},
+		&types.WikaOrgShare{},
+		&types.WikaKnowledgeState{},
+	); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	if err := db.Create(&types.Tenant{ID: 80, Name: "source", SpaceType: types.SpaceTypeTeam}).Error; err != nil {
+		t.Fatalf("create source tenant: %v", err)
+	}
+	if err := db.Create(&types.Tenant{ID: 90, Name: "target", SpaceType: types.SpaceTypeTeam}).Error; err != nil {
+		t.Fatalf("create target tenant: %v", err)
+	}
+	if err := db.Create(&types.TenantMember{UserID: "u-test", TenantID: 90, Role: types.TenantRoleViewer, Status: types.TenantMemberStatusActive}).Error; err != nil {
+		t.Fatalf("create target member: %v", err)
+	}
+	if err := db.Create(&types.KnowledgeBase{ID: "kb-shared", TenantID: 80, Type: types.KnowledgeBaseTypeDocument}).Error; err != nil {
+		t.Fatalf("create source kb: %v", err)
+	}
+	return db
 }

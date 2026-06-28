@@ -70,6 +70,15 @@ const (
 	// AuditActionWikaURLRefreshReviewed fires when a maintainer applies
 	// or rejects a fetched URL refresh result. Fetched content 不进入审计日志。
 	AuditActionWikaURLRefreshReviewed AuditAction = "wika.url_refresh.reviewed"
+	// AuditActionWikaOrgShareCreated fires when a source team creates a
+	// Wika Organization share. Details must not contain正文、证据或 snippet。
+	AuditActionWikaOrgShareCreated AuditAction = "wika.org_share.created"
+	// AuditActionWikaOrgShareAccepted fires when a target team accepts a
+	// Wika Organization share. Shared正文不进入审计日志。
+	AuditActionWikaOrgShareAccepted AuditAction = "wika.org_share.accepted"
+	// AuditActionWikaOrgShareRevoked fires when a source or target team
+	// revokes a Wika Organization share. Shared正文不进入审计日志。
+	AuditActionWikaOrgShareRevoked AuditAction = "wika.org_share.revoked"
 
 	// VectorStore lifecycle actions. Emitted by VectorStoreService.
 	// Cover both env-store-derived (__env_*) and DB store create /

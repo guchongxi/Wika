@@ -43,6 +43,7 @@ func TestContainerRegistersWikaSuggestionComponents(t *testing.T) {
 		"wikaorgshare.NewGormStore",
 		"wikaorgshare.NewTenantMemberAdminChecker",
 		"initWikaOrgShareService",
+		"wikaorgshare.WithAuditLogger",
 		"handler.NewWikaOrgShareHandler",
 		"wikascope.NewGormStore",
 		"initWikaScopeResolver",

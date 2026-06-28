@@ -509,11 +509,12 @@ func initWikaOrgShareFeatureGate(settings interfaces.SystemSettingService) wikao
 	return settings
 }
 
-func initWikaOrgShareService(store *wikaorgshare.GormStore, admin wikaorgshare.TeamAdminChecker, settings interfaces.SystemSettingService) *wikaorgshare.Service {
+func initWikaOrgShareService(store *wikaorgshare.GormStore, admin wikaorgshare.TeamAdminChecker, settings interfaces.SystemSettingService, audit interfaces.AuditLogService) *wikaorgshare.Service {
 	return wikaorgshare.NewService(
 		store,
 		admin,
 		wikaorgshare.WithFeatureGate(settings),
+		wikaorgshare.WithAuditLogger(audit),
 	)
 }
 
