@@ -24,7 +24,7 @@ func TestRegisterWikaRoutesIncludesSuggestions(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, &handler.WikaSuggestionHandler{}, nil, nil, nil, nil, nil)
+	RegisterWikaRoutes(api, nil, nil, &handler.WikaSuggestionHandler{}, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/suggestions", strings.NewReader(`{"knowledge_id":"k-personal"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -47,7 +47,7 @@ func TestRegisterWikaRoutesIncludesSuggestionReviewAndApply(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, &handler.WikaSuggestionHandler{}, nil, nil, nil, nil, nil)
+	RegisterWikaRoutes(api, nil, nil, &handler.WikaSuggestionHandler{}, nil, nil, nil, nil, nil, nil)
 
 	for _, tc := range []struct {
 		method string
@@ -78,7 +78,7 @@ func TestRegisterWikaRoutesIncludesEvaluationDatasets(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, nil, &handler.WikaEvaluationHandler{}, nil, nil, nil, nil)
+	RegisterWikaRoutes(api, nil, nil, nil, &handler.WikaEvaluationHandler{}, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/kb/kb-team/eval/datasets", strings.NewReader(`{"name":"团队检索黄金 QA"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -101,7 +101,7 @@ func TestRegisterWikaRoutesIncludesEvaluationRuns(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, nil, &handler.WikaEvaluationHandler{}, nil, nil, nil, nil)
+	RegisterWikaRoutes(api, nil, nil, nil, &handler.WikaEvaluationHandler{}, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/kb/kb-team/eval/runs", strings.NewReader(`{"dataset_id":11}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -124,7 +124,7 @@ func TestRegisterWikaRoutesIncludesFreshnessChecks(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, nil, nil, &handler.WikaFreshnessHandler{}, nil, nil, nil)
+	RegisterWikaRoutes(api, nil, nil, nil, nil, &handler.WikaFreshnessHandler{}, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/kb/kb-team/freshness/checks", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -147,7 +147,7 @@ func TestRegisterWikaRoutesIncludesFreshnessItems(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, nil, nil, &handler.WikaFreshnessHandler{}, nil, nil, nil)
+	RegisterWikaRoutes(api, nil, nil, nil, nil, &handler.WikaFreshnessHandler{}, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/wika/freshness/items/7", strings.NewReader(`{"action":"mark_updated"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -170,7 +170,7 @@ func TestRegisterWikaRoutesIncludesGraphReadModel(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, nil, nil, nil, &handler.WikaGraphHandler{}, nil, nil)
+	RegisterWikaRoutes(api, nil, nil, nil, nil, nil, &handler.WikaGraphHandler{}, nil, nil, nil)
 
 	for _, tc := range []struct {
 		method string
@@ -201,7 +201,7 @@ func TestRegisterWikaRoutesIncludesConflictGovernance(t *testing.T) {
 	})
 	api := engine.Group("/api/v1")
 
-	RegisterWikaRoutes(api, nil, nil, nil, nil, nil, nil, &handler.WikaConflictHandler{}, nil)
+	RegisterWikaRoutes(api, nil, nil, nil, nil, nil, nil, &handler.WikaConflictHandler{}, nil, nil)
 
 	for _, tc := range []struct {
 		method string
@@ -218,6 +218,34 @@ func TestRegisterWikaRoutesIncludesConflictGovernance(t *testing.T) {
 		engine.ServeHTTP(w, req)
 		if w.Code == http.StatusNotFound {
 			t.Fatalf("expected %s %s to be registered, got 404", tc.method, tc.path)
+		}
+	}
+}
+
+func TestRegisterWikaRoutesIncludesVersionGovernance(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(middleware.ErrorHandler())
+	engine.Use(func(c *gin.Context) {
+		c.Set(types.UserIDContextKey.String(), "u-test")
+		c.Set(types.TenantIDContextKey.String(), uint64(80))
+		c.Next()
+	})
+	api := engine.Group("/api/v1")
+
+	RegisterWikaRoutes(api, nil, nil, nil, nil, nil, nil, nil, &handler.WikaVersionHandler{}, nil)
+
+	for _, tc := range []struct {
+		path string
+	}{
+		{path: "/api/v1/wika/knowledge/k-1/versions"},
+		{path: "/api/v1/wika/knowledge/k-1/versions/1/diff?to_version_id=2"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		if w.Code == http.StatusNotFound {
+			t.Fatalf("expected %s to be registered, got 404", tc.path)
 		}
 	}
 }

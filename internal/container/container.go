@@ -374,6 +374,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(handler.NewWikaEvaluationHandler))
 	must(container.Provide(handler.NewWikaFreshnessHandler))
 	must(container.Provide(handler.NewWikaConflictHandler))
+	must(container.Provide(handler.NewWikaVersionHandler))
 	must(container.Provide(handler.NewWikaGraphHandler))
 
 	// Data source handler
