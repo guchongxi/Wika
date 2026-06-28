@@ -2094,8 +2094,8 @@ P5 Implementation Map：
 
 | 子阶段 | 已落地 | 继续实现时的下一张卡 |
 |--------|--------|----------------------|
-| P5d Eval Schedule | `000100_wika_eval_schedule` migration、`internal/types/wika_eval_schedule.go`、`internal/wika/governance/evalschedule` service/store 已存在；已有测试覆盖 cron 下限、schedule slot 幂等、禁用后不触发、连续失败三次禁用 | 先补 handler/router/container RED，再接 API；随后补 worker lifecycle/DI 不自动启动和 API 冒烟 |
-| P5e Org Share | `000101_wika_org_share` migration、`internal/types/wika_org_share.go`、`internal/wika/governance/orgshare` service/store 已存在；已有测试覆盖 `allowed_fields` 白名单、pending/active、accept/revoke 权限 | 先补 share handler/router/container RED，再接 `shared scope`、SearchService 字段裁剪、expand/download/preview/direct-id 回归 |
+| P5d Eval Schedule | `000100_wika_eval_schedule` migration、`internal/types/wika_eval_schedule.go`、`internal/wika/governance/evalschedule` service/store/`RunDueSchedules`、handler/router/container 已存在；已有测试覆盖 cron 下限、schedule slot 幂等、禁用后不触发、连续失败三次禁用和 API 参数传递 | 下一张卡优先补显式 worker lifecycle、生产启动/停用路径、审计事件和 API 冒烟；不要重复实现 schedule CRUD |
+| P5e Org Share | `000101_wika_org_share` migration、`000102_wika_org_share_allowed_fields_check` 追加约束、`internal/types/wika_org_share.go`、`internal/wika/governance/orgshare` service/store、share handler/router/container、`ScopeResolver shared scope`、SearchService 字段裁剪、direct read/download/preview 裁剪回归已存在；已有测试覆盖 `allowed_fields` 写入白名单、读取侧 fail-closed、pending/active、accept/revoke 权限、shared search、expand service 裁剪、direct read 不泄露正文/文件 | 下一张卡优先补 `expand_knowledge_result` API/集成回归、revoke 后 direct-id 集成测试、API 冒烟与审计证据；不要重复创建 share/scope/search/direct-read 基础实现 |
 
 P5 依赖顺序：
 
@@ -2131,7 +2131,7 @@ P5 子阶段最小切片边界：
 | P5b Version | `wika_knowledge_versions` DDL、类型、`version_no` 唯一 | baseline 和递增版本测试通过后再接写路径 hook；hook 覆盖后再做 diff/restore API | 只在 handler 手动调用版本记录、restore 覆盖历史 |
 | P5c URL Refresh | URL job/schedule DDL、slot 唯一、safe fetcher fixture | P5b Version hook 可用后才做 review apply；safe fetcher 全绿后才做 worker | 抓取成功直接覆盖正文、绕过 SSRF 或 VersionService |
 | P5d Eval Schedule | `wika_eval_schedules` DDL、enabled 唯一、`eval_runs` slot 字段/约束 | P2 EvaluationService 可复用后再做 worker；worker 幂等后再做 API | 复制评测指标逻辑、单实例进程锁、无限失败重试 |
-| P5e Org Share | `wika_org_shares` DDL、复用既有 org/member 的约束测试 | ScopeResolver 能输出 `shared` scope 后再接 SearchService；搜索裁剪通过后再接 expand/download/preview/direct-id | 新建平行 Organization 主表、复制正文、org admin 绕过团队授权 |
+| P5e Org Share | `wika_org_shares` DDL、复用既有 org/member 的约束测试 | ScopeResolver 能输出 `shared` scope 后再接 SearchService；搜索裁剪通过后再接 expand/download/preview/direct-id；当前 direct read/download/preview 已接入，下一步补 expand API/集成和 revoke 集成回归 | 新建平行 Organization 主表、复制正文、org admin 绕过团队授权 |
 
 P5 推荐目录：
 
@@ -2319,6 +2319,7 @@ P5 handler 错误映射：
 | P5e-2 Org/member API | personal tenant 禁止加入 Organization | `internal/handler/wika_org.go` | 角色和接收方确认测试 |
 | P5e-3 Share authorization | allowed_fields 只能服务端白名单；pending share 不进入搜索 | `internal/wika/governance/orgshare` | share/create/accept/revoke 测试 |
 | P5e-4 Shared scope search | revoke 后 ScopeResolver 不再返回 shared scope | `internal/wika/scope`、`internal/wika/search` | `search_knowledge` shared scope 回归 |
+| P5e-5 Direct shared read | shared direct read 不返回正文/文件/metadata；download/preview 在 shared scope 下 403；direct 路由不被旧 KBAccess guard 提前拦截；`allowed_fields` 读取侧 fail-closed | `internal/handler/knowledge.go`、`internal/router/router.go`、`internal/container/container.go`、`migrations/versioned/000102*` | direct-id、download、preview 裁剪回归；container 真实 resolver 解析回归 |
 
 P5 RED 测试包：
 
@@ -2328,7 +2329,7 @@ P5 RED 测试包：
 | P5b Version | `internal/types/wika_version_test.go`、`internal/wika/governance/version/{store,service,diff}_test.go`、`internal/handler/wika_governance_version_test.go` | `(knowledge_id, version_no)` 唯一；既有知识首次写入先 baseline 再新版本；连续写路径递增；restore 调用知识更新链路并产生新版本；SystemAdmin 读 personal 只有元数据；无权 diff 不返回正文；flag off 禁止 restore |
 | P5c URL Refresh | `internal/types/wika_url_refresh_test.go`、`internal/wika/governance/urlrefresh/safefetch/fetcher_test.go`、`internal/wika/governance/urlrefresh/{store,service,worker}_test.go`、`internal/handler/wika_governance_urlrefresh_test.go` | 内网/metadata hostname/CNAME/重定向/DNS rebinding/编码绕过/超大响应阻断；正常抓取进入 `pending_review`；apply 前状态不符返回 409；schedule slot 幂等；低于最小 cron 返回 400；flag off 禁止新 job 且 worker 不 lease；apply 生成版本和审计 |
 | P5d Eval Schedule | `internal/types/wika_eval_schedule_test.go`、`internal/wika/governance/evalschedule/{cron,store,worker}_test.go`、`internal/handler/wika_eval_schedule_test.go` | cron 非法 400；enabled 唯一；两个 scheduler 只创建一个 run；同一 `schedule_id + scheduled_for` 不重复创建 run；连续失败后 disable 或延后；flag off worker 不创建 run；run 创建复用 P2 service |
-| P5e Org Share | `internal/types/wika_org_share_test.go`、`internal/wika/governance/orgshare/{store,service}_test.go`、`internal/wika/scope/shared_scope_test.go`、`internal/wika/search/shared_scope_test.go`、`internal/handler/wika_org_share_test.go`、`internal/handler/wika_org_test.go` | 复用现有 org/member；personal tenant/KB 禁止；allowed_fields 白名单；pending 不可搜索；org admin 不是 target team Admin 时 accept 返回 403；accept 后可裁剪命中；expand/download/preview/direct read 仍裁剪；revoke 后同 query 和 direct-id 都不命中；flag off 禁止 create/accept/revoke |
+| P5e Org Share | `internal/types/wika_org_share_test.go`、`internal/wika/governance/orgshare/{store,service}_test.go`、`internal/wika/scope/shared_scope_test.go`、`internal/wika/search/shared_scope_test.go`、`internal/handler/wika_org_share_test.go`、`internal/handler/knowledge_wika_org_share_test.go`、`internal/handler/wika_org_test.go`、`internal/router/wika_org_share_routes_test.go` | 复用现有 org/member；personal tenant/KB 禁止；allowed_fields 白名单和读取侧 fail-closed；pending 不可搜索；org admin 不是 target team Admin 时 accept 返回 403；accept 后可裁剪命中；download/preview/direct read 仍裁剪；expand service 裁剪已覆盖，API/集成需补同等回归；revoke 后同 query 和 direct-id 都不命中；flag off 禁止 create/accept/revoke/direct read |
 
 RED 测试顺序：
 
@@ -2666,6 +2667,7 @@ ListSharedScopes(ctx, actor, tenantID)
 | 000099 | url refresh jobs / url refresh schedules |
 | 000100 | eval schedules |
 | 000101 | Wika org shares；复用既有 organizations / organization_tenant_members |
+| 000102 | Wika org shares `allowed_fields` DB allowlist check；只约束 P5 新表 |
 
 当前上游迁移已到 `000063`，`000090+` 仍留有缓冲。
 
@@ -2679,6 +2681,7 @@ P5 migration 必测约束：
 - `wika_eval_schedules(kb_id, dataset_id)` 启用状态唯一。
 - `organization_tenant_members(organization_id, tenant_id)` 复用既有唯一约束；P5e 不新增平行成员表。
 - `wika_org_shares` pending/active 状态下同一 `source_kb_id + target_tenant_id` 唯一。
+- `wika_org_shares.allowed_fields` 必须有 DB allowlist CHECK，非法 `content`、`file`、`chunk`、`evidence_text` 不能落库；读取侧仍要二次 fail-closed。
 - down migration 必须按 Wika org share、eval schedule、url refresh schedule/job、version、conflict 的依赖顺序回滚；不得 drop 或改写既有 `organizations`、`organization_tenant_members`、`kb_shares`。
 
 P5 迁移落地状态：
@@ -2689,6 +2692,7 @@ P5 迁移落地状态：
 - `000099` 必须补齐或确认：`wika_url_refresh_jobs(schedule_id, scheduled_for)` slot 唯一、job 状态 check、schedule enabled 唯一、due schedule 索引、`schedule_id` 引用关系、失败计数和 down migration 不影响已生成知识版本。
 - `000100` 已存在：继续 P5d 前先确认 `wika_eval_schedules` enabled 唯一、due schedule 索引、`eval_runs(schedule_id, scheduled_for)` slot 唯一和 down migration 均与本文档一致；不要重复新建迁移，缺口用追加迁移或修正测试驱动补齐。
 - `000101` 已存在：继续 P5e 前先确认 `wika_org_shares` 状态 check、open share 唯一、target/source 查询索引和 down migration 均与本文档一致；不要新建平行 Organization 或成员迁移。
+- `000102` 已存在：继续 P5e 前先确认 `allowed_fields` DB allowlist check、down migration 和读取侧二次过滤测试均与本文档一致。
 
 P5 migration 建议索引：
 
@@ -2798,4 +2802,4 @@ P5 每卡证据模板：
 | P5b-1/P5b-2/P5b-3 Version | `go test ./internal/types ./internal/wika/governance/version ./internal/handler ./internal/router ./internal/container` | migration up/down、baseline fixture；`GET /wika/knowledge/:id/versions`、`POST /restore`、无权 diff | `wika.version.recorded`、`wika.version.restored` |
 | P5c-0/P5c-1/P5c-2/P5c-3/P5c-4 URL refresh | `go test ./internal/types ./internal/wika/governance/urlrefresh ./internal/handler ./internal/router ./internal/container` | migration up/down、SSRF fixture；`GET/POST /knowledge/:id/url-refresh`、`PUT/DELETE /knowledge/:id/url-refresh/schedules/:schedule_id`、`PUT /url-refresh/:refresh_id/review`、flag off | `wika.url_refresh.job_created`、`job_failed`、`reviewed`、`schedule_updated` |
 | P5d-1/P5d-2/P5d-3 Eval schedule | `go test ./internal/types ./internal/wika/governance/evalschedule ./internal/handler ./internal/router ./internal/container` | migration up/down、cron fixture；`POST /eval/schedules`、schedule slot 幂等、disable/flag off 后 worker 不触发 | `wika.eval_schedule.updated`、`run_failed` |
-| P5e-1/P5e-2/P5e-3/P5e-4 Org share | `go test ./internal/types ./internal/wika/governance/orgshare ./internal/wika/scope ./internal/wika/search ./internal/handler ./internal/router ./internal/container` | migration up/down、share/accept/revoke fixture；`search_knowledge` shared scope、expand/download/preview/direct read 裁剪回归 | `wika.org_share.created`、`wika.org_share.accepted`、`wika.org_share.revoked` |
+| P5e-1/P5e-2/P5e-3/P5e-4/P5e-5 Org share | `go test ./internal/types ./internal/wika/governance/orgshare ./internal/wika/scope ./internal/wika/search ./internal/handler ./internal/router ./internal/container` | migration up/down、share/accept/revoke fixture；`search_knowledge` shared scope、download/preview/direct read 裁剪回归；expand service 裁剪已覆盖，API/集成仍需补齐 | `wika.org_share.created`、`wika.org_share.accepted`、`wika.org_share.revoked` |

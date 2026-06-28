@@ -27,7 +27,7 @@ Wika 是从 [WeKnora](https://github.com/Tencent/WeKnora) fork 的知识闭环�
 
 当前文档已补齐到 P0-P5 均可拆分实施的状态，其中 P5 已拆成 P5a-P5e 子阶段、任务卡、RED 测试包、迁移约束、worker lease、API 状态机、审计事件和验收证据。P5 进入实现前还必须遵守已收口的硬门禁：feature flag fail-closed、worker 显式 lifecycle、审计同事务、schedule slot 幂等、URL 重抓成本上限、版本 baseline、Organization 复用既有组织表且团队 Admin/Owner 始终是数据授权源头。实现仍必须按阶段推进，不能因为后续阶段已有方案就跳过前置安全和数据门禁。
 
-当前仓库已有 P5d Eval Schedule 和 P5e Org Share 的迁移、types 与 service/store 基础实现。继续 P5d/P5e 时不要重复建 `000100/000101` 迁移；先按 [tech-plan.md](./tech-plan.md) 的“当前仓库 P5 实现状态”和对应任务卡补 handler/router/container、worker lifecycle、shared scope、search 字段裁剪和 direct-id 回归。
+当前仓库已有 P5d Eval Schedule 和 P5e Org Share 的迁移、types、service/store 与部分 API/scope 接入。继续 P5d/P5e 时不要重复建 `000100/000101` 迁移；先按 [tech-plan.md](./tech-plan.md) 的“当前仓库 P5 实现状态”和对应任务卡补 worker lifecycle、expand API/集成回归、API 冒烟、审计证据和剩余前端入口。
 
 实施入口：
 
@@ -42,7 +42,7 @@ P5 快速开工入口：
 - 开工前先读 [tech-plan.md](./tech-plan.md) 的“P5 每卡 TDD 执行模板”“P5 子阶段最小切片边界”和“P5 通用实现契约”，确认当前 PR 只覆盖一张任务卡。
 - 每个 P5 子阶段先写 migration/type 约束 RED 测试，再写 store/service 状态机和权限测试，最后补 handler/router/container 测试。
 - P5b Version 是 P5c URL Refresh apply 的前置；P5c 不得绕过 VersionService 直接改正文。
-- P5e 必须先让 ScopeResolver 输出 `shared scope` 和 `allowed_fields`，再接 SearchService、expand、download、preview 和 direct-id 读取。
+- P5e 必须先让 ScopeResolver 输出 `shared scope` 和 `allowed_fields`，再接 SearchService、expand、download、preview 和 direct-id 读取；当前 direct read/download/preview 已有后端回归，expand 已有 service 级裁剪回归，仍需补 API/集成和 revoke 场景。
 - P5a/P5c/P5d worker 必须先通过 feature flag fail-closed、DB lease、schedule slot 幂等和停用路径测试，不能先上线单实例假设。
 
 P5 实施读法：

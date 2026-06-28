@@ -24,7 +24,7 @@ type Service struct {
 
 type ServiceOption func(*Service)
 
-const orgShareFeatureFlagKey = "wika.governance.org_share.enabled"
+const FeatureFlagKey = "wika.governance.org_share.enabled"
 
 func WithFeatureGate(flags FeatureGate) ServiceOption {
 	return func(s *Service) {
@@ -136,7 +136,7 @@ func (s *Service) featureEnabled(ctx context.Context) bool {
 	if s.flags == nil {
 		return false
 	}
-	return s.flags.GetBool(ctx, orgShareFeatureFlagKey, "", false)
+	return s.flags.GetBool(ctx, FeatureFlagKey, "", false)
 }
 
 func (s *Service) canAdmin(ctx context.Context, actorID string, tenantID uint64) bool {
@@ -145,20 +145,44 @@ func (s *Service) canAdmin(ctx context.Context, actorID string, tenantID uint64)
 
 func normalizeAllowedFields(fields []string) ([]string, error) {
 	if len(fields) == 0 {
-		return []string{"id", "title", "source_tenant_id", "source_kb_id", "quality_score", "freshness_status"}, nil
-	}
-	allowed := map[string]bool{
-		"id":               true,
-		"title":            true,
-		"source_tenant_id": true,
-		"source_kb_id":     true,
-		"quality_score":    true,
-		"freshness_status": true,
+		return DefaultAllowedFields(), nil
 	}
 	for _, field := range fields {
-		if !allowed[field] {
+		if !IsAllowedField(field) {
 			return nil, ErrInvalidAllowedFields
 		}
 	}
-	return fields, nil
+	return append([]string(nil), fields...), nil
+}
+
+func DefaultAllowedFields() []string {
+	return []string{"id", "title", "source_tenant_id", "source_kb_id", "quality_score", "freshness_status"}
+}
+
+func IsAllowedField(field string) bool {
+	switch field {
+	case "id", "title", "source_tenant_id", "source_kb_id", "quality_score", "freshness_status":
+		return true
+	default:
+		return false
+	}
+}
+
+func SanitizeAllowedFields(fields []string) []string {
+	if len(fields) == 0 {
+		return DefaultAllowedFields()
+	}
+	out := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		if !IsAllowedField(field) {
+			continue
+		}
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		out = append(out, field)
+	}
+	return out
 }

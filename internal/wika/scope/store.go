@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/Tencent/WeKnora/internal/types"
+	wikaorgshare "github.com/Tencent/WeKnora/internal/wika/governance/orgshare"
 	"gorm.io/gorm"
 )
 
@@ -95,5 +96,5 @@ func decodeAllowedFields(raw types.JSON) []string {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil
 	}
-	return fields
+	return wikaorgshare.SanitizeAllowedFields(fields)
 }

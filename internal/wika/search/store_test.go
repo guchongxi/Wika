@@ -90,6 +90,40 @@ func TestGormSearchStoreListReadableScopesIncludesActiveOrgShares(t *testing.T) 
 	}
 }
 
+func TestGormSearchStoreSanitizesUnsafeSharedAllowedFields(t *testing.T) {
+	db := setupSearchStoreTestDB(t)
+	require.NoError(t, db.Create(&types.Tenant{ID: 90, Name: "target", SpaceType: types.SpaceTypeTeam}).Error)
+	require.NoError(t, db.Create(&types.TenantMember{UserID: "u-target", TenantID: 90, Role: types.TenantRoleViewer, Status: types.TenantMemberStatusActive}).Error)
+	require.NoError(t, db.Create(&types.Organization{ID: "org-1", Name: "org"}).Error)
+	allowedFields, err := json.Marshal([]string{"id", "title", "content", "file", "freshness_status"})
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&types.WikaOrgShare{
+		OrgID:          "org-1",
+		SourceTenantID: 80,
+		SourceKBID:     "kb-team",
+		TargetTenantID: 90,
+		Mode:           types.WikaOrgShareModeReference,
+		AllowedFields:  types.JSON(allowedFields),
+		Status:         types.WikaOrgShareStatusActive,
+		CreatedBy:      "u-source",
+	}).Error)
+
+	scopes, err := NewGormStore(db).ListReadableScopes(context.Background(), "u-target", true)
+	require.NoError(t, err)
+
+	var shared *ReadableScope
+	for i := range scopes {
+		if scopes[i].Source == SourceShared {
+			shared = &scopes[i]
+			break
+		}
+	}
+	if shared == nil {
+		t.Fatalf("expected shared scope, got %+v", scopes)
+	}
+	require.Equal(t, []string{"id", "title", "freshness_status"}, shared.AllowedFields)
+}
+
 func TestGormSearchStoreRecordAccessUpsertsDailyRollup(t *testing.T) {
 	db := setupSearchStoreTestDB(t)
 	store := NewGormStore(db)

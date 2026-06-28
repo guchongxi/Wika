@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	wikaorgshare "github.com/Tencent/WeKnora/internal/wika/governance/orgshare"
 	wikagraph "github.com/Tencent/WeKnora/internal/wika/graph"
 )
 
@@ -279,7 +280,7 @@ func scopeAllowsField(scope ReadableScope, field string) bool {
 	if scope.Source != SourceShared {
 		return true
 	}
-	for _, allowed := range scope.AllowedFields {
+	for _, allowed := range wikaorgshare.SanitizeAllowedFields(scope.AllowedFields) {
 		if allowed == field {
 			return true
 		}

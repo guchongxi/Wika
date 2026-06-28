@@ -94,6 +94,7 @@ import (
 	wikaversion "github.com/Tencent/WeKnora/internal/wika/governance/version"
 	wikagraph "github.com/Tencent/WeKnora/internal/wika/graph"
 	wikaintake "github.com/Tencent/WeKnora/internal/wika/intake"
+	wikascope "github.com/Tencent/WeKnora/internal/wika/scope"
 	wikasearch "github.com/Tencent/WeKnora/internal/wika/search"
 	wikasuggestion "github.com/Tencent/WeKnora/internal/wika/suggestion"
 	"github.com/tencent/vectordatabase-sdk-go/tcvectordb"
@@ -192,6 +193,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(wikaversion.NewGormStore))
 	must(container.Provide(wikagraph.NewGormStore))
 	must(container.Provide(wikaintake.NewGormStore))
+	must(container.Provide(wikascope.NewGormStore))
 	must(container.Provide(wikasearch.NewGormStore))
 	must(container.Provide(wikasuggestion.NewGormStore))
 
@@ -234,6 +236,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(initWikaOrgShareService))
 	must(container.Provide(wikagraph.NewService))
 	must(container.Provide(wikaintake.NewService))
+	must(container.Provide(initWikaScopeResolver))
 	must(container.Provide(wikasearch.NewService))
 	must(container.Provide(wikasuggestion.NewService))
 
@@ -379,6 +382,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewSkillService))
 	must(container.Provide(handler.NewSkillHandler))
 	must(container.Provide(handler.NewOrganizationHandler))
+	must(container.Provide(initWikaOrgShareFeatureGate))
 	must(container.Provide(handler.NewWikaTokenHandler))
 	must(container.Provide(handler.NewWikaKnowledgeHandler))
 	must(container.Provide(handler.NewWikaSuggestionHandler))
@@ -495,6 +499,14 @@ func initWikaEvalScheduleService(store *wikaevalschedule.GormStore, runner *wika
 		runner,
 		wikaevalschedule.WithFeatureGate(settings),
 	)
+}
+
+func initWikaScopeResolver(store *wikascope.GormStore) *wikascope.Resolver {
+	return wikascope.NewResolver(store)
+}
+
+func initWikaOrgShareFeatureGate(settings interfaces.SystemSettingService) wikaorgshare.FeatureGate {
+	return settings
 }
 
 func initWikaOrgShareService(store *wikaorgshare.GormStore, admin wikaorgshare.TeamAdminChecker, settings interfaces.SystemSettingService) *wikaorgshare.Service {

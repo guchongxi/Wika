@@ -23,9 +23,21 @@ import (
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/Tencent/WeKnora/internal/utils"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
+	wikaorgshare "github.com/Tencent/WeKnora/internal/wika/governance/orgshare"
+	wikascope "github.com/Tencent/WeKnora/internal/wika/scope"
 	"github.com/gin-gonic/gin"
 	"github.com/hibiken/asynq"
 )
+
+type wikaScopeResolver interface {
+	Resolve(ctx context.Context, actor wikascope.Actor, resource wikascope.Resource, action wikascope.Action) (wikascope.Decision, error)
+}
+
+type wikaSharedKnowledgeAccess struct {
+	allowedFields map[string]struct{}
+}
+
+type wikaSharedKnowledgeAccessContextKey struct{}
 
 // KnowledgeHandler processes HTTP requests related to knowledge resources
 type KnowledgeHandler struct {
@@ -33,6 +45,8 @@ type KnowledgeHandler struct {
 	kbService         interfaces.KnowledgeBaseService
 	kbShareService    interfaces.KBShareService
 	agentShareService interfaces.AgentShareService
+	wikaScopeResolver wikaScopeResolver
+	wikaOrgShareGate  wikaorgshare.FeatureGate
 	asynqClient       interfaces.TaskEnqueuer
 	spanRepo          repository.KnowledgeSpanRepository
 }
@@ -44,6 +58,8 @@ func NewKnowledgeHandler(
 	kbShareService interfaces.KBShareService,
 	agentShareService interfaces.AgentShareService,
 	asynqClient interfaces.TaskEnqueuer,
+	wikaScopeResolver *wikascope.Resolver,
+	wikaOrgShareGate wikaorgshare.FeatureGate,
 	spanRepo repository.KnowledgeSpanRepository,
 ) *KnowledgeHandler {
 	return &KnowledgeHandler{
@@ -51,6 +67,8 @@ func NewKnowledgeHandler(
 		kbService:         kbService,
 		kbShareService:    kbShareService,
 		agentShareService: agentShareService,
+		wikaScopeResolver: wikaScopeResolver,
+		wikaOrgShareGate:  wikaOrgShareGate,
 		asynqClient:       asynqClient,
 		spanRepo:          spanRepo,
 	}
@@ -182,6 +200,99 @@ func (h *KnowledgeHandler) resolveKnowledgeAndValidateKBAccess(c *gin.Context, k
 	_ = userID
 	_ = userExists
 	return nil, ctx, errors.NewForbiddenError("Permission denied to access this knowledge")
+}
+
+func (h *KnowledgeHandler) resolveKnowledgeAndValidateDirectReadAccess(c *gin.Context, knowledgeID string) (*types.Knowledge, context.Context, error) {
+	knowledge, effCtx, err := h.resolveKnowledgeAndValidateKBAccess(c, knowledgeID, types.OrgRoleViewer)
+	if err == nil {
+		return knowledge, effCtx, nil
+	}
+	appErr, ok := errors.IsAppError(err)
+	if !ok || appErr.Code != errors.ErrForbidden {
+		return nil, effCtx, err
+	}
+	return h.resolveWikaSharedKnowledgeReadAccess(c, knowledgeID)
+}
+
+func (h *KnowledgeHandler) resolveWikaSharedKnowledgeReadAccess(c *gin.Context, knowledgeID string) (*types.Knowledge, context.Context, error) {
+	ctx := c.Request.Context()
+	if h.wikaScopeResolver == nil || h.wikaOrgShareGate == nil ||
+		!h.wikaOrgShareGate.GetBool(ctx, wikaorgshare.FeatureFlagKey, "", false) {
+		return nil, ctx, errors.NewForbiddenError("Permission denied to access this knowledge")
+	}
+	userID, ok := types.UserIDFromContext(ctx)
+	if !ok {
+		return nil, ctx, errors.NewUnauthorizedError("Unauthorized")
+	}
+	knowledge, err := h.kgService.GetKnowledgeByIDOnly(ctx, knowledgeID)
+	if err != nil || knowledge == nil {
+		return nil, ctx, errors.NewNotFoundError("Knowledge not found")
+	}
+	decision, err := h.wikaScopeResolver.Resolve(ctx,
+		wikascope.Actor{UserID: userID, IsSystemAdmin: types.IsSystemAdminFromContext(ctx)},
+		wikascope.Resource{Kind: wikascope.ResourceKnowledgeBase, ID: knowledge.KnowledgeBaseID},
+		wikascope.ActionRead,
+	)
+	if err != nil {
+		logger.ErrorWithFields(ctx, err, nil)
+		return nil, ctx, errors.NewInternalServerError("Failed to verify Wika shared scope")
+	}
+	for _, scope := range decision.Scopes {
+		if decision.Allowed &&
+			scope.Source == wikascope.ScopeSourceShared &&
+			scope.TenantID == knowledge.TenantID &&
+			scope.KBID == knowledge.KnowledgeBaseID {
+			effCtx := context.WithValue(ctx, types.TenantIDContextKey, knowledge.TenantID)
+			effCtx = contextWithWikaSharedKnowledgeAccess(effCtx, scope.AllowedFields)
+			return knowledge, effCtx, nil
+		}
+	}
+	return nil, ctx, errors.NewForbiddenError("Permission denied to access this knowledge")
+}
+
+func contextWithWikaSharedKnowledgeAccess(ctx context.Context, allowedFields []string) context.Context {
+	safeFields := wikaorgshare.SanitizeAllowedFields(allowedFields)
+	fields := make(map[string]struct{}, len(safeFields))
+	for _, field := range safeFields {
+		fields[field] = struct{}{}
+	}
+	return context.WithValue(ctx, wikaSharedKnowledgeAccessContextKey{}, wikaSharedKnowledgeAccess{allowedFields: fields})
+}
+
+func wikaSharedKnowledgeAccessFromContext(ctx context.Context) (wikaSharedKnowledgeAccess, bool) {
+	access, ok := ctx.Value(wikaSharedKnowledgeAccessContextKey{}).(wikaSharedKnowledgeAccess)
+	return access, ok
+}
+
+func (a wikaSharedKnowledgeAccess) allows(field string) bool {
+	_, ok := a.allowedFields[field]
+	return ok
+}
+
+func redactKnowledgeForWikaSharedScope(ctx context.Context, knowledge *types.Knowledge) *types.Knowledge {
+	access, ok := wikaSharedKnowledgeAccessFromContext(ctx)
+	if !ok || knowledge == nil {
+		return knowledge
+	}
+	redacted := &types.Knowledge{}
+	if access.allows("id") {
+		redacted.ID = knowledge.ID
+	}
+	if access.allows("title") {
+		redacted.Title = knowledge.Title
+	}
+	if access.allows("source_tenant_id") {
+		redacted.TenantID = knowledge.TenantID
+	}
+	if access.allows("source_kb_id") {
+		redacted.KnowledgeBaseID = knowledge.KnowledgeBaseID
+	}
+	return redacted
+}
+
+func wikaSharedScopeAllowsFile(ctx context.Context) bool {
+	access, ok := wikaSharedKnowledgeAccessFromContext(ctx)
+	return !ok || access.allows("file")
 }
 
 // handleDuplicateKnowledgeError handles cases where duplicate knowledge is detected
@@ -576,7 +687,7 @@ func (h *KnowledgeHandler) GetKnowledge(c *gin.Context) {
 	}
 
 	// Resolve knowledge and validate KB access (at least viewer)
-	knowledge, _, err := h.resolveKnowledgeAndValidateKBAccess(c, id, types.OrgRoleViewer)
+	knowledge, effCtx, err := h.resolveKnowledgeAndValidateDirectReadAccess(c, id)
 	if err != nil {
 		c.Error(err)
 		return
@@ -586,7 +697,7 @@ func (h *KnowledgeHandler) GetKnowledge(c *gin.Context) {
 		secutils.SanitizeForLog(knowledge.ID), secutils.SanitizeForLog(knowledge.Title))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    knowledge,
+		"data":    redactKnowledgeForWikaSharedScope(effCtx, knowledge),
 	})
 }
 
@@ -1179,9 +1290,13 @@ func (h *KnowledgeHandler) DownloadKnowledgeFile(c *gin.Context) {
 		return
 	}
 
-	_, effCtx, err := h.resolveKnowledgeAndValidateKBAccess(c, id, types.OrgRoleViewer)
+	_, effCtx, err := h.resolveKnowledgeAndValidateDirectReadAccess(c, id)
 	if err != nil {
 		c.Error(err)
+		return
+	}
+	if !wikaSharedScopeAllowsFile(effCtx) {
+		c.Error(errors.NewForbiddenError("Permission denied to access this knowledge file"))
 		return
 	}
 	logger.Infof(ctx, "Retrieving knowledge file, ID: %s", secutils.SanitizeForLog(id))
@@ -1290,9 +1405,13 @@ func (h *KnowledgeHandler) PreviewKnowledgeFile(c *gin.Context) {
 		return
 	}
 
-	_, effCtx, err := h.resolveKnowledgeAndValidateKBAccess(c, id, types.OrgRoleViewer)
+	_, effCtx, err := h.resolveKnowledgeAndValidateDirectReadAccess(c, id)
 	if err != nil {
 		c.Error(err)
+		return
+	}
+	if !wikaSharedScopeAllowsFile(effCtx) {
+		c.Error(errors.NewForbiddenError("Permission denied to access this knowledge file"))
 		return
 	}
 
