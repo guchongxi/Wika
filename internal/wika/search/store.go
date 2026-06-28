@@ -110,7 +110,7 @@ func (s *GormStore) RecordAccess(ctx context.Context, records []AccessRecord) er
 		Columns: []clause.Column{{Name: "tenant_id"}, {Name: "kb_id"}, {Name: "knowledge_id"}, {Name: "day"}},
 		DoUpdates: clause.Assignments(map[string]any{
 			"access_count":     gorm.Expr("knowledge_access_daily.access_count + EXCLUDED.access_count"),
-			"last_accessed_at": gorm.Expr("GREATEST(knowledge_access_daily.last_accessed_at, EXCLUDED.last_accessed_at)"),
+			"last_accessed_at": gorm.Expr("CASE WHEN knowledge_access_daily.last_accessed_at > EXCLUDED.last_accessed_at THEN knowledge_access_daily.last_accessed_at ELSE EXCLUDED.last_accessed_at END"),
 		}),
 	}).Create(&items).Error
 }
