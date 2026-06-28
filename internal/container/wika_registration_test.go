@@ -22,7 +22,7 @@ func TestContainerRegistersWikaSuggestionComponents(t *testing.T) {
 		"initWikaSuggestionService",
 		"handler.NewWikaSuggestionHandler",
 		"wikaeval.NewGormStore",
-		"wikaeval.NewService",
+		"initWikaEvaluationService",
 		"handler.NewWikaEvaluationHandler",
 		"wikafreshness.NewGormStore",
 		"wikafreshness.NewService",

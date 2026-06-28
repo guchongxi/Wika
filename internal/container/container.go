@@ -225,7 +225,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewSystemSettingService))
 	must(container.Provide(service.NewWeKnoraCloudService))
 	must(container.Provide(initWikaTokenService))
-	must(container.Provide(wikaeval.NewService))
+	must(container.Provide(initWikaEvaluationService))
 	must(container.Provide(wikafreshness.NewService))
 	must(container.Provide(wikaconflict.NewNoopCandidateGenerator))
 	must(container.Provide(wikaconflict.NewService))
@@ -482,6 +482,10 @@ func initWikaTokenService(store *wikaauth.GormTokenStore) *wikaauth.TokenService
 
 func initWikaSuggestionService(store *wikasuggestion.GormStore, knowledge interfaces.KnowledgeService) *wikasuggestion.Service {
 	return wikasuggestion.NewService(store, knowledge)
+}
+
+func initWikaEvaluationService(store *wikaeval.GormStore, search *wikasearch.Service) *wikaeval.Service {
+	return wikaeval.NewService(store, search)
 }
 
 func initWikaURLRefreshService(store *wikaurlrefresh.GormStore, audit interfaces.AuditLogService, knowledge interfaces.KnowledgeService, versions *wikaversion.Service, settings interfaces.SystemSettingService) *wikaurlrefresh.Service {
