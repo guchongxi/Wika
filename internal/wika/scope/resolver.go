@@ -27,6 +27,7 @@ type ScopeSource string
 const (
 	ScopeSourcePersonal ScopeSource = "personal"
 	ScopeSourceTeam     ScopeSource = "team"
+	ScopeSourceShared   ScopeSource = "shared"
 )
 
 type Actor struct {
@@ -58,6 +59,7 @@ type Store interface {
 	GetKnowledgeBase(ctx context.Context, kbID string) (*types.KnowledgeBase, error)
 	GetTenant(ctx context.Context, tenantID uint64) (*types.Tenant, error)
 	GetTenantMember(ctx context.Context, userID string, tenantID uint64) (*types.TenantMember, error)
+	ListSharedKnowledgeBaseScopes(ctx context.Context, userID string, kbID string) ([]Scope, error)
 }
 
 type Resolver struct {
@@ -114,6 +116,15 @@ func (r *Resolver) resolveKnowledgeBase(ctx context.Context, actor Actor, kbID s
 	member, err := r.store.GetTenantMember(ctx, actor.UserID, tenant.ID)
 	if err != nil {
 		if errors.Is(err, ErrResourceNotFound) {
+			if tenant.SpaceType != types.SpaceTypePersonal {
+				sharedScopes, sharedErr := r.store.ListSharedKnowledgeBaseScopes(ctx, actor.UserID, kb.ID)
+				if sharedErr != nil {
+					return Decision{}, sharedErr
+				}
+				if len(sharedScopes) > 0 {
+					return Decision{Allowed: true, Scopes: sharedScopes}, nil
+				}
+			}
 			return hiddenDecisionFor(tenant), nil
 		}
 		return Decision{}, err

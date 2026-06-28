@@ -2,6 +2,7 @@ package scope
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -15,7 +16,7 @@ func setupScopeStoreTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&types.Tenant{}, &types.TenantMember{}, &types.KnowledgeBase{}))
+	require.NoError(t, db.AutoMigrate(&types.Tenant{}, &types.TenantMember{}, &types.KnowledgeBase{}, &types.Organization{}, &types.OrganizationTenantMember{}, &types.WikaOrgShare{}))
 	return db
 }
 
@@ -66,4 +67,48 @@ func TestGormStoreMapsMissingRowsToResourceNotFound(t *testing.T) {
 	if !errors.Is(err, ErrResourceNotFound) {
 		t.Fatalf("expected ErrResourceNotFound for missing member, got %v", err)
 	}
+}
+
+func TestGormStoreListsActiveSharedKnowledgeBaseScopes(t *testing.T) {
+	db := setupScopeStoreTestDB(t)
+	require.NoError(t, db.Create(&types.Tenant{ID: 80, Name: "source", SpaceType: types.SpaceTypeTeam}).Error)
+	require.NoError(t, db.Create(&types.Tenant{ID: 90, Name: "target", SpaceType: types.SpaceTypeTeam}).Error)
+	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb-shared", Name: "shared", TenantID: 80, Type: types.KnowledgeBaseTypeDocument}).Error)
+	require.NoError(t, db.Create(&types.TenantMember{UserID: "user-target", TenantID: 90, Role: types.TenantRoleViewer, Status: types.TenantMemberStatusActive}).Error)
+	require.NoError(t, db.Create(&types.Organization{ID: "org-1", Name: "org"}).Error)
+	require.NoError(t, db.Create(&types.OrganizationTenantMember{ID: "otm-source", OrganizationID: "org-1", TenantID: 80, Role: types.OrgRoleAdmin}).Error)
+	require.NoError(t, db.Create(&types.OrganizationTenantMember{ID: "otm-target", OrganizationID: "org-1", TenantID: 90, Role: types.OrgRoleViewer}).Error)
+	allowedFields, err := json.Marshal([]string{"id", "title"})
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&types.WikaOrgShare{
+		OrgID:          "org-1",
+		SourceTenantID: 80,
+		SourceKBID:     "kb-shared",
+		TargetTenantID: 90,
+		Mode:           types.WikaOrgShareModeReference,
+		AllowedFields:  types.JSON(allowedFields),
+		Status:         types.WikaOrgShareStatusActive,
+		CreatedBy:      "user-source",
+	}).Error)
+	require.NoError(t, db.Create(&types.WikaOrgShare{
+		OrgID:          "org-1",
+		SourceTenantID: 80,
+		SourceKBID:     "kb-shared",
+		TargetTenantID: 90,
+		Mode:           types.WikaOrgShareModeReference,
+		AllowedFields:  types.JSON(allowedFields),
+		Status:         types.WikaOrgShareStatusRevoked,
+		CreatedBy:      "user-source",
+	}).Error)
+
+	scopes, err := NewGormStore(db).ListSharedKnowledgeBaseScopes(context.Background(), "user-target", "kb-shared")
+
+	require.NoError(t, err)
+	if len(scopes) != 1 {
+		t.Fatalf("expected one active shared scope, got %+v", scopes)
+	}
+	if scopes[0].Source != ScopeSourceShared || scopes[0].TenantID != 80 || scopes[0].KBID != "kb-shared" {
+		t.Fatalf("unexpected shared scope: %+v", scopes[0])
+	}
+	require.Equal(t, []string{"id", "title"}, scopes[0].AllowedFields)
 }

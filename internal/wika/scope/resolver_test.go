@@ -11,6 +11,7 @@ type fakeScopeStore struct {
 	tenants map[uint64]*types.Tenant
 	kbs     map[string]*types.KnowledgeBase
 	members map[string]*types.TenantMember
+	shared  map[string][]Scope
 }
 
 func (f *fakeScopeStore) GetKnowledgeBase(ctx context.Context, kbID string) (*types.KnowledgeBase, error) {
@@ -38,6 +39,10 @@ func (f *fakeScopeStore) GetTenantMember(ctx context.Context, userID string, ten
 		return member, nil
 	}
 	return nil, ErrResourceNotFound
+}
+
+func (f *fakeScopeStore) ListSharedKnowledgeBaseScopes(ctx context.Context, userID string, kbID string) ([]Scope, error) {
+	return f.shared[userID+":"+kbID], nil
 }
 
 func TestResolveKnowledgeBaseReadAllowsPersonalOwner(t *testing.T) {
@@ -94,5 +99,30 @@ func TestResolveSystemAdminGetsMetadataOnlyForPersonalKB(t *testing.T) {
 	}
 	if len(decision.Scopes) != 1 || len(decision.Scopes[0].AllowedFields) == 0 {
 		t.Fatalf("expected metadata allowlist, got %+v", decision.Scopes)
+	}
+}
+
+func TestResolveKnowledgeBaseReadAllowsActiveOrgShare(t *testing.T) {
+	resolver := NewResolver(&fakeScopeStore{
+		tenants: map[uint64]*types.Tenant{80: {ID: 80, SpaceType: types.SpaceTypeTeam}},
+		kbs:     map[string]*types.KnowledgeBase{"kb-shared": {ID: "kb-shared", TenantID: 80}},
+		members: map[string]*types.TenantMember{},
+		shared: map[string][]Scope{
+			"user-target:kb-shared": {
+				{TenantID: 80, KBID: "kb-shared", Source: ScopeSourceShared, AllowedFields: []string{"id", "title"}},
+			},
+		},
+	})
+
+	decision, err := resolver.Resolve(context.Background(), Actor{UserID: "user-target"}, Resource{Kind: ResourceKnowledgeBase, ID: "kb-shared"}, ActionRead)
+
+	if err != nil {
+		t.Fatalf("expected shared allow, got error: %v", err)
+	}
+	if !decision.Allowed || decision.NotFound || len(decision.Scopes) != 1 {
+		t.Fatalf("expected shared allow decision, got %+v", decision)
+	}
+	if decision.Scopes[0].Source != ScopeSourceShared || len(decision.Scopes[0].AllowedFields) != 2 {
+		t.Fatalf("expected shared scope with allowed fields, got %+v", decision.Scopes[0])
 	}
 }
