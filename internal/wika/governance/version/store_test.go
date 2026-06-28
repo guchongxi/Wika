@@ -58,6 +58,44 @@ func TestGormVersionStoreRecordVersionIncrementsVersionNo(t *testing.T) {
 	}
 }
 
+func TestGormVersionStoreRecordVersionSkipsUnchangedSnapshot(t *testing.T) {
+	db := setupVersionStoreTestDB(t)
+	store := NewGormStore(db)
+
+	first, err := store.RecordVersion(context.Background(), RecordVersionInput{
+		KnowledgeID:  "k-1",
+		TenantID:     80,
+		KBID:         "kb-team",
+		Title:        "手册",
+		Content:      "第一版内容",
+		Tags:         types.JSON([]byte(`["tag-a"]`)),
+		Status:       "publish",
+		ContentHash:  "hash-1",
+		ChangeReason: "manual_update",
+		ActorID:      "u-owner",
+	})
+	require.NoError(t, err)
+	second, err := store.RecordVersion(context.Background(), RecordVersionInput{
+		KnowledgeID:  "k-1",
+		TenantID:     80,
+		KBID:         "kb-team",
+		Title:        "手册",
+		Content:      "第一版内容",
+		Tags:         types.JSON([]byte(`["tag-a"]`)),
+		Status:       "publish",
+		ContentHash:  "hash-1",
+		ChangeReason: "restore",
+		ActorID:      "u-owner",
+	})
+	require.NoError(t, err)
+
+	var count int64
+	require.NoError(t, db.Model(&types.WikaKnowledgeVersion{}).Where("knowledge_id = ?", "k-1").Count(&count).Error)
+	if count != 1 || second.ID != first.ID || second.VersionNo != first.VersionNo {
+		t.Fatalf("expected duplicate snapshot to reuse first version, count=%d first=%+v second=%+v", count, first, second)
+	}
+}
+
 func TestGormVersionStoreListVersionsNewestFirst(t *testing.T) {
 	db := setupVersionStoreTestDB(t)
 	store := NewGormStore(db)

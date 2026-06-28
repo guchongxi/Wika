@@ -34,6 +34,10 @@ func (s *GormStore) RecordVersion(ctx context.Context, input RecordVersionInput)
 		if err != nil && err != gorm.ErrRecordNotFound {
 			return err
 		}
+		if last.ID != 0 && sameVersionSnapshot(last, input) {
+			created = last
+			return nil
+		}
 		now := input.Now
 		if now.IsZero() {
 			now = time.Now()
@@ -60,6 +64,18 @@ func (s *GormStore) RecordVersion(ctx context.Context, input RecordVersionInput)
 		return nil, err
 	}
 	return &created, nil
+}
+
+func sameVersionSnapshot(last types.WikaKnowledgeVersion, input RecordVersionInput) bool {
+	inputHash := input.ContentHash
+	if inputHash == "" {
+		inputHash = hashContent(input.Content)
+	}
+	return last.Title == input.Title &&
+		last.ContentHash == inputHash &&
+		string(jsonOrDefault(last.Tags, `[]`)) == string(jsonOrDefault(input.Tags, `[]`)) &&
+		last.Status == input.Status &&
+		last.ReviewStatus == input.ReviewStatus
 }
 
 func (s *GormStore) ListVersions(ctx context.Context, input ListVersionsInput) ([]*types.WikaKnowledgeVersion, error) {
