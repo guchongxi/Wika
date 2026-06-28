@@ -93,7 +93,11 @@ func TestWikaP1cSuggestionMigrationContract(t *testing.T) {
 	required := []string{
 		"CREATE TABLE IF NOT EXISTS knowledge_suggestions",
 		"CREATE TABLE IF NOT EXISTS knowledge_lineage",
+		"source_content_hash VARCHAR(128) NOT NULL",
 		"ai_decision VARCHAR(32) NOT NULL",
+		"human_decision VARCHAR(32)",
+		"human_reviewer_id VARCHAR(64)",
+		"human_comment TEXT",
 		"status VARCHAR(32) NOT NULL",
 		"policy_version INT NOT NULL DEFAULT 1",
 		"ux_knowledge_suggestions_open",

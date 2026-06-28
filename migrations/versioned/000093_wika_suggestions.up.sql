@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS knowledge_suggestions (
     target_kb_id VARCHAR(36) NOT NULL REFERENCES knowledge_bases(id) ON DELETE RESTRICT,
     submitter_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     idempotency_key VARCHAR(128),
+    source_content_hash VARCHAR(128) NOT NULL,
     reason TEXT,
     ai_decision VARCHAR(32) NOT NULL
         CHECK (ai_decision IN ('approved', 'needs_confirmation', 'rejected')),
@@ -22,6 +23,10 @@ CREATE TABLE IF NOT EXISTS knowledge_suggestions (
     corrected_content TEXT,
     corrected_tags JSONB NOT NULL DEFAULT '[]'::jsonb,
     change_summary JSONB NOT NULL DEFAULT '[]'::jsonb,
+    human_decision VARCHAR(32)
+        CHECK (human_decision IS NULL OR human_decision IN ('approved', 'needs_confirmation', 'rejected')),
+    human_reviewer_id VARCHAR(64) REFERENCES users(id) ON DELETE RESTRICT,
+    human_comment TEXT,
     final_decision VARCHAR(32) NOT NULL
         CHECK (final_decision IN ('approved', 'needs_confirmation', 'rejected')),
     status VARCHAR(32) NOT NULL
@@ -42,6 +47,10 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_suggestions_target_status
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_suggestions_submitter
     ON knowledge_suggestions(submitter_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_suggestions_human_reviewer
+    ON knowledge_suggestions(human_reviewer_id, reviewed_at DESC)
+    WHERE human_reviewer_id IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_knowledge_suggestions_open
     ON knowledge_suggestions(source_knowledge_id, target_tenant_id)

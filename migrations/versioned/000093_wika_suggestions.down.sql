@@ -11,6 +11,7 @@ DO $$ BEGIN RAISE NOTICE '[Migration 000093] Dropping knowledge_suggestions'; EN
 
 DROP INDEX IF EXISTS ux_knowledge_suggestions_idempotency;
 DROP INDEX IF EXISTS ux_knowledge_suggestions_open;
+DROP INDEX IF EXISTS idx_knowledge_suggestions_human_reviewer;
 DROP INDEX IF EXISTS idx_knowledge_suggestions_submitter;
 DROP INDEX IF EXISTS idx_knowledge_suggestions_target_status;
 DROP INDEX IF EXISTS idx_knowledge_suggestions_source;

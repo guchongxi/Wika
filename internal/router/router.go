@@ -284,6 +284,8 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 		suggestions := wika.Group("/suggestions", viewerGuards...)
 		{
 			suggestions.POST("", suggestionHandler.CreateSuggestion)
+			suggestions.PUT("/:id/human-review", suggestionHandler.HumanReview)
+			suggestions.POST("/:id/apply", suggestionHandler.ApplySuggestion)
 		}
 	}
 }

@@ -16,8 +16,12 @@ import (
 )
 
 type stubWikaSuggestionService struct {
-	input *wikasuggestion.CreateInput
-	resp  *wikasuggestion.SuggestionResult
+	input      *wikasuggestion.CreateInput
+	humanInput *wikasuggestion.HumanReviewInput
+	applyInput *wikasuggestion.ApplyInput
+	resp       *wikasuggestion.SuggestionResult
+	humanResp  *wikasuggestion.SuggestionResult
+	applyResp  *wikasuggestion.ApplyResult
 }
 
 func (s *stubWikaSuggestionService) CreateSuggestion(_ context.Context, input wikasuggestion.CreateInput) (*wikasuggestion.SuggestionResult, error) {
@@ -35,6 +39,28 @@ func (s *stubWikaSuggestionService) CreateSuggestion(_ context.Context, input wi
 	}, nil
 }
 
+func (s *stubWikaSuggestionService) HumanReview(_ context.Context, input wikasuggestion.HumanReviewInput) (*wikasuggestion.SuggestionResult, error) {
+	s.humanInput = &input
+	if s.humanResp != nil {
+		return s.humanResp, nil
+	}
+	return &wikasuggestion.SuggestionResult{
+		SuggestionID:     input.SuggestionID,
+		AIDecision:       wikasuggestion.DecisionNeedsConfirmation,
+		Status:           wikasuggestion.StatusAIReviewed,
+		CorrectedTitle:   input.Title,
+		CorrectedContent: input.Content,
+	}, nil
+}
+
+func (s *stubWikaSuggestionService) ApplySuggestion(_ context.Context, input wikasuggestion.ApplyInput) (*wikasuggestion.ApplyResult, error) {
+	s.applyInput = &input
+	if s.applyResp != nil {
+		return s.applyResp, nil
+	}
+	return &wikasuggestion.ApplyResult{ResultKnowledgeID: "k-team-new", Status: wikasuggestion.StatusApplied}, nil
+}
+
 func newWikaSuggestionTestRouter(service *stubWikaSuggestionService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -46,6 +72,8 @@ func newWikaSuggestionTestRouter(service *stubWikaSuggestionService) *gin.Engine
 	})
 	h := &WikaSuggestionHandler{service: service}
 	r.POST("/api/v1/wika/suggestions", h.CreateSuggestion)
+	r.PUT("/api/v1/wika/suggestions/:id/human-review", h.HumanReview)
+	r.POST("/api/v1/wika/suggestions/:id/apply", h.ApplySuggestion)
 	return r
 }
 
@@ -132,5 +160,62 @@ func TestWikaSuggestionCreateRejectsMissingKnowledgeID(t *testing.T) {
 	}
 	if service.input != nil {
 		t.Fatalf("service should not be called: %+v", service.input)
+	}
+}
+
+func TestWikaSuggestionHumanReviewPassesActorAndPatchToService(t *testing.T) {
+	service := &stubWikaSuggestionService{}
+	r := newWikaSuggestionTestRouter(service)
+
+	body := `{
+		"final_decision":"approved",
+		"title":"团队标题",
+		"content":"团队正文",
+		"tags":["排查","知识"],
+		"target_kb_id":"kb-team-review",
+		"comment":"确认可共享"
+	}`
+	w := doWikaSuggestionJSON(t, r, http.MethodPut, "/api/v1/wika/suggestions/99/human-review", body)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if service.humanInput == nil {
+		t.Fatal("expected HumanReview to be called")
+	}
+	if service.humanInput.ActorID != "u-test" ||
+		service.humanInput.SuggestionID != 99 ||
+		service.humanInput.FinalDecision != wikasuggestion.DecisionApproved ||
+		service.humanInput.Title != "团队标题" ||
+		service.humanInput.Content != "团队正文" ||
+		service.humanInput.TargetKBID != "kb-team-review" ||
+		service.humanInput.Comment != "确认可共享" ||
+		len(service.humanInput.Tags) != 2 {
+		t.Fatalf("unexpected human review input: %+v", service.humanInput)
+	}
+}
+
+func TestWikaSuggestionApplyPassesActorToService(t *testing.T) {
+	service := &stubWikaSuggestionService{}
+	r := newWikaSuggestionTestRouter(service)
+
+	w := doWikaSuggestionJSON(t, r, http.MethodPost, "/api/v1/wika/suggestions/99/apply", `{}`)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if service.applyInput == nil || service.applyInput.ActorID != "u-test" || service.applyInput.SuggestionID != 99 {
+		t.Fatalf("unexpected apply input: %+v", service.applyInput)
+	}
+
+	var resp struct {
+		ResultKnowledgeID string `json:"result_knowledge_id"`
+		Status            string `json:"status"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ResultKnowledgeID != "k-team-new" || resp.Status != string(wikasuggestion.StatusApplied) {
+		t.Fatalf("unexpected apply response: %+v", resp)
 	}
 }

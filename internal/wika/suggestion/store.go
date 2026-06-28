@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // GormStore 使用现有 GORM 连接读写 Wika 团队推荐数据。
@@ -114,6 +116,110 @@ func (s *GormStore) SaveSuggestion(ctx context.Context, item *types.WikaKnowledg
 		return nil, err
 	}
 	return item, nil
+}
+
+// GetSuggestion 按 ID 读取团队推荐。
+func (s *GormStore) GetSuggestion(ctx context.Context, suggestionID uint64) (*types.WikaKnowledgeSuggestion, error) {
+	var item types.WikaKnowledgeSuggestion
+	err := s.db.WithContext(ctx).First(&item, "id = ?", suggestionID).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &item, nil
+}
+
+// SaveHumanReview 保存人工审核和修正结果。
+func (s *GormStore) SaveHumanReview(ctx context.Context, item *types.WikaKnowledgeSuggestion) (*types.WikaKnowledgeSuggestion, error) {
+	if item == nil {
+		return nil, errors.New("suggestion is nil")
+	}
+	err := s.db.WithContext(ctx).Model(&types.WikaKnowledgeSuggestion{}).
+		Where("id = ?", item.ID).
+		Updates(map[string]any{
+			"target_kb_id":      item.TargetKBID,
+			"corrected_title":   item.CorrectedTitle,
+			"corrected_content": item.CorrectedContent,
+			"corrected_tags":    item.CorrectedTags,
+			"human_decision":    item.HumanDecision,
+			"human_reviewer_id": item.HumanReviewerID,
+			"human_comment":     item.HumanComment,
+			"final_decision":    item.FinalDecision,
+			"status":            item.Status,
+			"reviewed_at":       item.ReviewedAt,
+		}).Error
+	if err != nil {
+		return nil, err
+	}
+	return s.GetSuggestion(ctx, item.ID)
+}
+
+// SaveApplyResult 标记 suggestion 已应用，并写入 copy lineage。
+func (s *GormStore) SaveApplyResult(ctx context.Context, suggestionID uint64, resultKnowledgeID, actorID string) (*types.WikaKnowledgeSuggestion, error) {
+	var out *types.WikaKnowledgeSuggestion
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var item types.WikaKnowledgeSuggestion
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&item, "id = ?", suggestionID).Error; err != nil {
+			return err
+		}
+		if item.Status == string(StatusApplied) && item.ResultKnowledgeID != "" {
+			out = &item
+			return nil
+		}
+		now := time.Now()
+		if err := tx.Model(&types.WikaKnowledgeSuggestion{}).
+			Where("id = ?", suggestionID).
+			Updates(map[string]any{
+				"status":              string(StatusApplied),
+				"result_knowledge_id": resultKnowledgeID,
+				"applied_at":          &now,
+			}).Error; err != nil {
+			return err
+		}
+		lineage := &types.WikaKnowledgeLineage{
+			SourceKnowledgeID: item.SourceKnowledgeID,
+			TargetKnowledgeID: resultKnowledgeID,
+			SourceTenantID:    item.SourceTenantID,
+			TargetTenantID:    item.TargetTenantID,
+			Mode:              "copy",
+			SuggestionID:      item.ID,
+			CreatedBy:         actorID,
+			CreatedAt:         now,
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "suggestion_id"}, {Name: "target_knowledge_id"}},
+			DoNothing: true,
+		}).Create(lineage).Error; err != nil {
+			return err
+		}
+		item.Status = string(StatusApplied)
+		item.ResultKnowledgeID = resultKnowledgeID
+		item.AppliedAt = &now
+		out = &item
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return out, nil
+}
+
+// MarkPendingHuman 将安全门禁失败的推荐降级回人工确认。
+func (s *GormStore) MarkPendingHuman(ctx context.Context, suggestionID uint64, reason string) error {
+	now := time.Now()
+	return s.db.WithContext(ctx).Model(&types.WikaKnowledgeSuggestion{}).
+		Where("id = ?", suggestionID).
+		Updates(map[string]any{
+			"status":         string(StatusPendingHuman),
+			"final_decision": string(DecisionNeedsConfirmation),
+			"human_comment":  strings.TrimSpace(reason),
+			"reviewed_at":    &now,
+		}).Error
 }
 
 func risksFromReview(raw types.JSON) []string {

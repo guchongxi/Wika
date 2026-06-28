@@ -27,6 +27,24 @@ type CreateInput struct {
 	IdempotencyKey string
 }
 
+// HumanReviewInput 是团队维护者人工覆盖 AI 预审的输入。
+type HumanReviewInput struct {
+	ActorID       string
+	SuggestionID  uint64
+	FinalDecision Decision
+	Title         string
+	Content       string
+	Tags          []string
+	TargetKBID    string
+	Comment       string
+}
+
+// ApplyInput 是把已通过 suggestion 应用到团队知识库的输入。
+type ApplyInput struct {
+	ActorID      string
+	SuggestionID uint64
+}
+
 // SpacePolicy 是团队推荐策略快照。
 type SpacePolicy struct {
 	AutoApplyApproved bool

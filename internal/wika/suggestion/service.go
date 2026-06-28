@@ -2,6 +2,8 @@ package suggestion
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -13,6 +15,11 @@ import (
 var (
 	ErrSourceKnowledgeNotPersonal = errors.New("source knowledge must belong to personal space")
 	ErrSuggestionPermissionDenied = errors.New("suggestion permission denied")
+	ErrSuggestionNotApproved      = errors.New("suggestion is not approved")
+	ErrSuggestionNotFound         = errors.New("suggestion not found")
+	ErrSourceKnowledgeChanged     = errors.New("source knowledge changed since review")
+	ErrKnowledgeCreatorMissing    = errors.New("knowledge creator not configured")
+	ErrInvalidDecision            = errors.New("invalid suggestion decision")
 )
 
 // Store 隔离 suggest_to_team 需要的数据访问。
@@ -24,16 +31,26 @@ type Store interface {
 	GetSpacePolicy(ctx context.Context, tenantID uint64) (SpacePolicy, error)
 	FindByIdempotencyKey(ctx context.Context, submitterID string, targetTenantID uint64, key string) (*SuggestionResult, error)
 	SaveSuggestion(ctx context.Context, item *types.WikaKnowledgeSuggestion) (*types.WikaKnowledgeSuggestion, error)
+	GetSuggestion(ctx context.Context, suggestionID uint64) (*types.WikaKnowledgeSuggestion, error)
+	SaveHumanReview(ctx context.Context, item *types.WikaKnowledgeSuggestion) (*types.WikaKnowledgeSuggestion, error)
+	SaveApplyResult(ctx context.Context, suggestionID uint64, resultKnowledgeID, actorID string) (*types.WikaKnowledgeSuggestion, error)
+	MarkPendingHuman(ctx context.Context, suggestionID uint64, reason string) error
+}
+
+// KnowledgeCreator 复用现有手动知识创建链路复制团队知识。
+type KnowledgeCreator interface {
+	CreateKnowledgeFromManual(ctx context.Context, kbID string, payload *types.ManualKnowledgePayload, channel string) (*types.Knowledge, error)
 }
 
 // Service 编排个人知识推荐到团队的 AI 预审流程。
 type Service struct {
-	store Store
+	store     Store
+	knowledge KnowledgeCreator
 }
 
 // NewService 创建 suggestion service。
-func NewService(store *GormStore) *Service {
-	return &Service{store: store}
+func NewService(store *GormStore, knowledge KnowledgeCreator) *Service {
+	return &Service{store: store, knowledge: knowledge}
 }
 
 // CreateSuggestion 创建团队推荐并执行确定性的最小预审。
@@ -116,6 +133,7 @@ func (s *Service) CreateSuggestion(ctx context.Context, input CreateInput) (*Sug
 		TargetKBID:        targetKBID,
 		SubmitterID:       input.SubmitterID,
 		IdempotencyKey:    strings.TrimSpace(input.IdempotencyKey),
+		SourceContentHash: sourceContentHash(source.Title, content),
 		Reason:            strings.TrimSpace(input.Reason),
 		AIDecision:        string(review.Decision),
 		AIConfidence:      review.Confidence,
@@ -135,7 +153,166 @@ func (s *Service) CreateSuggestion(ctx context.Context, input CreateInput) (*Sug
 	if err != nil {
 		return nil, err
 	}
-	return resultFromSuggestion(saved, review.Risks), nil
+	result := resultFromSuggestion(saved, review.Risks)
+	if autoApplyEnabled && s.knowledge != nil {
+		applyResult, err := s.applyLoadedSuggestion(ctx, input.SubmitterID, saved, false)
+		if err != nil {
+			return nil, err
+		}
+		result.AutoApplyResult = applyResult
+		result.Status = applyResult.Status
+	}
+	return result, nil
+}
+
+// HumanReview 保存团队维护者对 AI 预审结果的人工覆盖。
+func (s *Service) HumanReview(ctx context.Context, input HumanReviewInput) (*SuggestionResult, error) {
+	if s.store == nil {
+		return nil, errors.New("suggestion store not configured")
+	}
+	item, err := s.store.GetSuggestion(ctx, input.SuggestionID)
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		return nil, ErrSuggestionNotFound
+	}
+	if err := s.requireTeamMaintainer(ctx, input.ActorID, item.TargetTenantID); err != nil {
+		return nil, err
+	}
+	status, err := statusForDecision(input.FinalDecision)
+	if err != nil {
+		return nil, err
+	}
+	item.HumanDecision = string(input.FinalDecision)
+	item.HumanReviewerID = input.ActorID
+	item.HumanComment = strings.TrimSpace(input.Comment)
+	item.FinalDecision = string(input.FinalDecision)
+	item.Status = string(status)
+	if title := strings.TrimSpace(input.Title); title != "" {
+		item.CorrectedTitle = title
+	}
+	if content := strings.TrimSpace(input.Content); content != "" {
+		item.CorrectedContent = content
+	}
+	if targetKBID := strings.TrimSpace(input.TargetKBID); targetKBID != "" {
+		item.TargetKBID = targetKBID
+	}
+	if input.Tags != nil {
+		item.CorrectedTags = mustJSON(normalizeTags(input.Tags))
+	}
+	now := time.Now()
+	item.ReviewedAt = &now
+	saved, err := s.store.SaveHumanReview(ctx, item)
+	if err != nil {
+		return nil, err
+	}
+	return resultFromSuggestion(saved, risksFromReview(saved.AIReview)), nil
+}
+
+// ApplySuggestion 将已通过的推荐复制到目标团队知识库，并写入 lineage。
+func (s *Service) ApplySuggestion(ctx context.Context, input ApplyInput) (*ApplyResult, error) {
+	if s.store == nil {
+		return nil, errors.New("suggestion store not configured")
+	}
+	if s.knowledge == nil {
+		return nil, ErrKnowledgeCreatorMissing
+	}
+	item, err := s.store.GetSuggestion(ctx, input.SuggestionID)
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		return nil, ErrSuggestionNotFound
+	}
+	return s.applyLoadedSuggestion(ctx, input.ActorID, item, true)
+}
+
+func (s *Service) applyLoadedSuggestion(ctx context.Context, actorID string, item *types.WikaKnowledgeSuggestion, requireMaintainer bool) (*ApplyResult, error) {
+	if item == nil {
+		return nil, ErrSuggestionNotFound
+	}
+	if requireMaintainer {
+		if err := s.requireTeamMaintainer(ctx, actorID, item.TargetTenantID); err != nil {
+			return nil, err
+		}
+	}
+	if s.knowledge == nil {
+		return nil, ErrKnowledgeCreatorMissing
+	}
+	if Status(item.Status) == StatusApplied && strings.TrimSpace(item.ResultKnowledgeID) != "" {
+		return &ApplyResult{ResultKnowledgeID: item.ResultKnowledgeID, Status: StatusApplied}, nil
+	}
+	if Decision(item.FinalDecision) != DecisionApproved {
+		return nil, ErrSuggestionNotApproved
+	}
+	source, err := s.store.GetKnowledge(ctx, item.SourceKnowledgeID)
+	if err != nil {
+		return nil, err
+	}
+	if source == nil {
+		return nil, ErrSuggestionNotFound
+	}
+	currentHash := sourceContentHash(source.Title, knowledgeContent(source))
+	if strings.TrimSpace(item.SourceContentHash) != "" && item.SourceContentHash != currentHash {
+		if markErr := s.store.MarkPendingHuman(ctx, item.ID, "source_content_changed"); markErr != nil {
+			return nil, markErr
+		}
+		return nil, ErrSourceKnowledgeChanged
+	}
+	title := strings.TrimSpace(item.CorrectedTitle)
+	if title == "" {
+		title = strings.TrimSpace(source.Title)
+	}
+	content := strings.TrimSpace(item.CorrectedContent)
+	if content == "" {
+		content = knowledgeContent(source)
+	}
+	createCtx := context.WithValue(ctx, types.TenantIDContextKey, item.TargetTenantID)
+	created, err := s.knowledge.CreateKnowledgeFromManual(createCtx, item.TargetKBID, &types.ManualKnowledgePayload{
+		Title:   title,
+		Content: content,
+		Status:  types.ManualKnowledgeStatusPublish,
+		Channel: types.ChannelAPI,
+	}, types.ChannelAPI)
+	if err != nil {
+		return nil, err
+	}
+	if created == nil || strings.TrimSpace(created.ID) == "" {
+		return nil, errors.New("created team knowledge is empty")
+	}
+	applied, err := s.store.SaveApplyResult(ctx, item.ID, created.ID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	return &ApplyResult{ResultKnowledgeID: applied.ResultKnowledgeID, Status: Status(applied.Status)}, nil
+}
+
+func (s *Service) requireTeamMaintainer(ctx context.Context, actorID string, tenantID uint64) error {
+	member, err := s.store.GetTenantMember(ctx, actorID, tenantID)
+	if err != nil {
+		return err
+	}
+	if member == nil || member.Status != types.TenantMemberStatusActive {
+		return ErrSuggestionPermissionDenied
+	}
+	if member.Role != types.TenantRoleOwner && member.Role != types.TenantRoleAdmin {
+		return ErrSuggestionPermissionDenied
+	}
+	return nil
+}
+
+func statusForDecision(decision Decision) (Status, error) {
+	switch decision {
+	case DecisionApproved:
+		return StatusAIReviewed, nil
+	case DecisionNeedsConfirmation:
+		return StatusPendingHuman, nil
+	case DecisionRejected:
+		return StatusRejected, nil
+	default:
+		return "", ErrInvalidDecision
+	}
 }
 
 type reviewResult struct {
@@ -169,6 +346,31 @@ func knowledgeContent(knowledge *types.Knowledge) string {
 		return strings.TrimSpace(meta.Content)
 	}
 	return strings.TrimSpace(knowledge.Description)
+}
+
+func sourceContentHash(title, content string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(title) + "\n" + strings.TrimSpace(content)))
+	return hex.EncodeToString(sum[:])
+}
+
+func normalizeTags(tags []string) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(tags))
+	seen := map[string]struct{}{}
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		out = append(out, tag)
+	}
+	return out
 }
 
 func resultFromSuggestion(item *types.WikaKnowledgeSuggestion, risks []string) *SuggestionResult {

@@ -35,3 +35,34 @@ func TestRegisterWikaRoutesIncludesSuggestions(t *testing.T) {
 		t.Fatalf("expected suggestions route to be registered, got 404")
 	}
 }
+
+func TestRegisterWikaRoutesIncludesSuggestionReviewAndApply(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(middleware.ErrorHandler())
+	engine.Use(func(c *gin.Context) {
+		c.Set(types.UserIDContextKey.String(), "u-test")
+		c.Set(types.TenantIDContextKey.String(), uint64(80))
+		c.Next()
+	})
+	api := engine.Group("/api/v1")
+
+	RegisterWikaRoutes(api, nil, nil, &handler.WikaSuggestionHandler{}, nil)
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodPut, path: "/api/v1/wika/suggestions/99/human-review", body: `{"final_decision":"approved"}`},
+		{method: http.MethodPost, path: "/api/v1/wika/suggestions/99/apply", body: `{}`},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		if w.Code == http.StatusNotFound {
+			t.Fatalf("expected %s %s to be registered, got 404", tc.method, tc.path)
+		}
+	}
+}
