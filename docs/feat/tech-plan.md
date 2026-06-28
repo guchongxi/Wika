@@ -15,6 +15,25 @@ MCP/Web 生产 -> 统一入库 -> 权限感知检索 -> 团队沉淀 -> 评测 -
 
 本方案不以“新增页面数量”为完成标准，而以可验证闭环为完成标准。
 
+### 1.1 实施读法
+
+本文档面向后端、前端、MCP 和测试实现者。进入编码时按以下顺序读取：
+
+1. 先读 P0 ADR，确认不能反向实现的边界。
+2. 再读对应阶段的数据模型、服务设计、API 契约和安全设计。
+3. 最后按“分期实施”和“完成门禁”拆 PR。
+
+每个阶段的最小交付单元必须同时包含：
+
+- migration up/down 或明确说明本阶段不需要 migration。
+- service/repository 层单元测试。
+- handler/API 测试。
+- 权限和越权测试。
+- MCP 或前端真实入口测试，按阶段需要选择。
+- 阶段验收数据，能复现 `requirements.md` 的最小验证路径。
+
+所有实现继续遵循 TDD：先提交或至少先运行失败测试，再写最小实现，最后补重构和回归。没有失败测试的阶段不能进入“完成”状态。
+
 ## 二、当前代码基础
 
 已确认可复用能力：
@@ -1192,6 +1211,32 @@ suggest_to_team(knowledge_id, target_space_id?, reason?)
 
 `dry_run=true` 时只返回规范化、质量分、疑似重复和建议，不入库。
 
+客户端配置约定：
+
+- 日常工具优先读取 `WEKNORA_PAT`，以 `Authorization: Bearer <token>` 调用 Wika API。
+- 兼容期允许 `WEKNORA_API_KEY` 继续服务管理型工具，但日常工具不得把它当作 PAT fallback。
+- `WEKNORA_BASE_URL` 仍指向 API v1 根路径，例如 `http://localhost:8080/api/v1`。
+- MCP server 启动时如配置了 `WEKNORA_PAT`，必须只注册或启用日常工具的用户级鉴权路径。
+
+stdio 示例：
+
+```json
+{
+  "mcpServers": {
+    "wika": {
+      "command": "python",
+      "args": ["-m", "weknora_mcp_server"],
+      "env": {
+        "WEKNORA_BASE_URL": "http://localhost:8080/api/v1",
+        "WEKNORA_PAT": "wika_pat_xxx"
+      }
+    }
+  }
+}
+```
+
+真实验收时必须至少调用一次 `push_knowledge` 和 `search_knowledge`，不能只验证 MCP 进程启动。
+
 ### 7.3 管理工具
 
 现有管理型 MCP tools 保留，但与日常工具在权限和文档上分组展示。
@@ -1465,6 +1510,27 @@ P2-P5 额外威胁门禁：
 
 ## 十一、分期实施
 
+### 通用 TDD 工作规则
+
+每个 PR 按 RED -> GREEN -> REFACTOR 执行：
+
+1. RED：先写一个能表达阶段门禁的失败测试。失败原因必须是“能力不存在或规则未满足”，不是测试环境坏。
+2. GREEN：只写通过当前测试所需的最小实现。
+3. REFACTOR：补齐错误处理、日志、指标和重复代码收敛，再跑阶段回归。
+
+推荐测试落点：
+
+| 层级 | 测试文件位置 | 覆盖重点 |
+|------|--------------|----------|
+| 类型和 migration | `internal/types/*_test.go`、`internal/types/*migration*_test.go` | GORM 映射、DDL 约束、up/down 可回滚 |
+| Wika service | `internal/wika/<module>/*_test.go` | 事务、不变量、幂等、策略决策 |
+| Handler/API | `internal/handler/wika_*_test.go`、`internal/router/*_test.go` | 请求/响应、状态码、scope、错误语义 |
+| Middleware/Auth | `internal/middleware/*_test.go` | PAT、JWT、租户 API key 分组、scope 拒绝 |
+| MCP | `mcp-server/tests/*` 或现有 Python 测试入口 | 工具 schema、PAT header、真实 HTTP 调用 |
+| 前端 | `frontend/src/views/wika/**/__tests__` 或项目现有测试约定 | 主路径表单、队列筛选、权限态 |
+
+阶段内如同时改旧 WeKnora API，必须把旧接口越权测试放在同一个 PR，不能留到后续补。
+
 ### P0 方案校准
 
 交付：
@@ -1678,6 +1744,182 @@ P2-P5 额外威胁门禁：
 4. URLRefreshWorker：SSRF 防护、抓取、diff、人工应用。
 5. EvalScheduler：cron、失败降频、run 复用。
 6. OrganizationShareService：授权、ScopeResolver shared scope、撤销。
+
+### P0-P5 任务卡索引
+
+下表用于把方案直接拆成实现任务。每张任务卡完成前必须先写对应 RED 测试。
+
+| 任务卡 | 首个 RED 测试 | 主要实现落点 | 阶段验收命令或证据 |
+|--------|---------------|--------------|--------------------|
+| P1a-1 Space migration | `tenants.space_type` check 约束、personal mapping 唯一性失败 | `migrations/versioned/000090*`、`internal/types/tenant.go`、`internal/types/wika_space.go` | migration up/down、`go test ./internal/types` |
+| P1a-2 SpaceService | 用户首次访问后存在 personal tenant、Owner 成员、默认 KB | `internal/wika/space` | service 单测覆盖重复调用幂等 |
+| P1a-3 User Token | token 明文只返回一次，GET 不返回 hash，租户 API key 调日常工具被拒绝 | `internal/wika/auth`、`internal/handler/wika_token.go`、`internal/middleware/auth.go` | handler/middleware 测试 |
+| P1a-4 ScopeResolver | A 不能读 B personal KB/knowledge/file/search | `internal/wika/scope`、旧 handler/service 接入点 | 旧 API A/B 越权测试 |
+| P1b-1 Intake | 空 content 400；幂等键重复不重复创建；dry_run 不入库 | `internal/wika/intake`、`internal/handler/wika_knowledge.go` | Web/API push 冒烟 |
+| P1b-2 Search | compact 不返回全文；expand 重新校验 scope；无权 ID 被过滤 | `internal/wika/search`、现有 hybrid search adapter | personal+team 搜索证据、access upsert 证据 |
+| P1b-3 MCP 日常工具 | `WEKNORA_PAT` 走 Bearer，`WEKNORA_API_KEY` 不可调用日常工具 | `mcp-server/weknora_mcp_server.py`、MCP tests | stdio 或 HTTP 真实调用截图/日志 |
+| P1c-1 Suggestion 创建 | 三态 fixture 可构造；AI schema 错误重试后待确认 | `internal/wika/suggestion`、`internal/handler/wika_suggestion.go` | suggestion API 测试 |
+| P1c-2 SafetyGate/Apply | 默认不自动应用；开启后安全门禁失败降级；重复 apply 不复制 | `internal/wika/suggestion/safety_*`、`knowledge_lineage` store | AI fixture、事务幂等、安全测试 |
+| P2-1 Dataset/QA | 无 expected IDs 不能进入正式指标 | `internal/wika/evaluation`、eval migrations | QA CRUD/import/export 测试 |
+| P2-2 Eval run | run 记录 search_config、dataset_version、case 明细 | `internal/wika/evaluation`、metric adapter | 5 条 QA 正式 run + dry-run 证据 |
+| P3-1 Access flush | 搜索热路径不更新 `knowledges`，flush 失败不影响搜索 | `internal/wika/freshness` 或 `internal/wika/search/access` | DB 写入 spy 或 repository 测试 |
+| P3-2 Freshness scanner | 过期、将过期、长期未访问、低质、低置信均生成 item | `internal/wika/freshness`、worker 注册 | scanner fixture 和处理审计 |
+| P4-1 Graph read model | SystemAdmin 不返回个人证据文本 | `internal/wika/graph`、graph migrations | 分页、详情、字段 allowlist 测试 |
+| P4-2 Graph search | 图谱失败时主搜索成功并返回降级标识 | `internal/wika/search`、`internal/wika/graph` | best-effort 降级测试 |
+| P5-1 Conflict | 冲突候选不会自动改知识 | `internal/wika/governance/conflict` | 候选生成、确认/驳回/解决流转 |
+| P5-2 Version | 恢复旧版本生成新版本，不覆盖历史 | `internal/wika/governance/version` | diff/restore/scope 测试 |
+| P5-3 URL refresh | SSRF fixture 阻断内网、metadata、重定向禁用地址 | `internal/wika/governance/urlrefresh` | safe fetcher 单测和 pending_review 流程 |
+| P5-4 Eval schedule | 连续失败后停用或降频 | `internal/wika/governance/evalschedule` | cron 触发、锁、失败计数测试 |
+| P5-5 Org share | revoke 后 ScopeResolver 不再返回 shared scope | `internal/wika/governance/orgshare`、`internal/wika/scope` | 授权、引用检索、撤销回归 |
+
+### P5 子能力实施契约
+
+P5 只能在 P1-P4 门禁通过后开启。所有 P5 API 默认放在功能开关后，或按阶段路由注册，不得在数据模型未完成时暴露空实现。
+
+#### ConflictService
+
+职责：
+
+- 生成冲突检测任务。
+- 将相似、重复、过期覆盖、范围重叠等候选写入 `wika_conflict_items`。
+- 提供人工确认、驳回、解决状态流转。
+
+最小方法：
+
+```text
+CreateCheck(ctx, actor, kbID, trigger) -> checkID
+ListItems(ctx, actor, kbID, filters) -> []ConflictItem
+ResolveItem(ctx, actor, itemID, status, comment) -> ConflictItem
+```
+
+实现规则：
+
+- 候选生成可复用 SearchService 和 source hash，不在 P5 自建检索引擎。
+- `evidence` 默认只存定位、hash 和摘要；返回正文前必须重新做 knowledge read scope。
+- AI 解释只作为辅助字段，不能作为自动覆盖或删除的依据。
+
+必测：
+
+- 无权 KB 不能创建 check。
+- 同一未终态冲突不会重复生成。
+- 确认/驳回/解决只改 conflict item，不改原知识正文。
+
+#### VersionService
+
+职责：
+
+- 在知识标题、正文、标签、状态等关键字段变更前后记录版本。
+- 提供相邻版本 diff。
+- 恢复旧版本。
+
+最小方法：
+
+```text
+RecordVersion(ctx, knowledgeID, snapshot, reason, actorID)
+ListVersions(ctx, actor, knowledgeID)
+Diff(ctx, actor, knowledgeID, fromVersion, toVersion)
+Restore(ctx, actor, knowledgeID, versionID, reason) -> newVersionID
+```
+
+实现规则：
+
+- `version_no` 在事务中按 knowledge 加锁递增。
+- restore 调用现有知识更新链路和索引链路，然后生成新版本。
+- SystemAdmin 对个人知识版本仍只能读元数据。
+
+必测：
+
+- 连续更新形成递增版本。
+- restore 不覆盖历史版本。
+- A 不能读取 B personal knowledge 版本正文。
+
+#### URLRefreshService
+
+职责：
+
+- 对来源 URL 进行安全重抓。
+- 生成新旧内容 diff 和待确认更新。
+- 人工确认后写入知识并形成新版本。
+
+最小方法：
+
+```text
+CreateRefreshJob(ctx, actor, knowledgeID)
+RunRefreshJob(ctx, jobID)
+ReviewRefresh(ctx, actor, jobID, decision, comment)
+```
+
+SSRF 防护必须包含：
+
+- 仅允许 `http` 和 `https`。
+- DNS 解析后的所有 IP 都不能是 private、loopback、link-local、multicast、reserved、云元数据地址。
+- 每次重定向后重新校验 URL、协议、host 和解析 IP。
+- 限制响应大小、总耗时、content-type。
+- 抓取失败不改变原知识。
+
+必测 fixture：
+
+- `http://127.0.0.1`、`http://169.254.169.254`、内网域名、重定向到内网、超大响应、非 HTML/文本类型全部被拒绝。
+- 正常 URL 成功后状态为 `pending_review`，不会直接覆盖知识正文。
+
+#### EvalScheduleService
+
+职责：
+
+- 为 P2 评测 run 增加定时触发。
+- 记录最近运行、下一次运行、连续失败次数。
+- 失败达到阈值后停用或降频。
+
+最小方法：
+
+```text
+CreateSchedule(ctx, actor, kbID, datasetID, cronExpr)
+UpdateSchedule(ctx, actor, scheduleID, payload)
+RunDueSchedules(ctx, now)
+```
+
+实现规则：
+
+- 同一 `kb_id + dataset_id` 只能有一个启用计划。
+- worker 必须使用 DB 锁或等价机制避免多实例重复触发。
+- schedule 只创建 eval run，不复制评测逻辑。
+
+必测：
+
+- cron 解析错误返回 400。
+- 连续失败达到阈值后状态变化和 audit log 存在。
+- 禁用 schedule 不会触发新 run。
+
+#### OrganizationShareService
+
+职责：
+
+- 管理 Organization、成员团队和跨团队 KB 引用共享。
+- 将 active share 暴露给 ScopeResolver。
+- 撤销后阻止新搜索命中。
+
+最小方法：
+
+```text
+CreateOrganization(ctx, actor, payload)
+AddOrgMember(ctx, actor, orgID, tenantID, role)
+CreateShare(ctx, actor, orgID, sourceKBID, targetTenantID, allowedFields)
+RevokeShare(ctx, actor, shareID)
+ListSharedScopes(ctx, actor, tenantID)
+```
+
+实现规则：
+
+- P5 默认 `mode=reference`，不复制正文。
+- `allowed_fields` 默认只允许 ID、标题、来源团队、质量分、保鲜状态，不含正文、chunk、证据、文件。
+- SearchService 命中 shared scope 后仍要用 ScopeResolver 输出的 `allowed_fields` 裁剪结果。
+- revoke 后 ScopeResolver 不能再返回该 share；历史访问日志和 lineage metadata 保留。
+
+必测：
+
+- 未加入接收团队的用户不能通过 org share 搜索。
+- revoke 后同一 query 不再返回共享结果。
+- SystemAdmin 不因 Organization 共享获得个人或团队正文读取权。
 
 ## 十二、迁移计划
 

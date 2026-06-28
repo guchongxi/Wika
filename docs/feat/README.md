@@ -14,6 +14,15 @@ Wika 是从 [WeKnora](https://github.com/Tencent/WeKnora) fork 的知识闭环�
 | [requirements.md](./requirements.md) | 改造需求方案：知识生产、评测、存储、消费、团队流转与保鲜闭环 |
 | [tech-plan.md](./tech-plan.md) | 技术实现方案：Space、MCP、混合检索、AI 预审、评测与保鲜分期实现 |
 
+## 阅读路径
+
+本文档面向准备实现 Wika 改造的开发者和后续 AI 代码代理。读完后应能判断当前该做哪个阶段、先写哪些测试、哪些边界不能突破。
+
+1. 先读 [requirements.md](./requirements.md) 的目标、阶段范围和“阶段实施故事与验证数据”，确认每期用户价值和验收样例。
+2. 再读 [tech-plan.md](./tech-plan.md) 的 P0 ADR、数据模型、服务设计、API 契约和分期实施。
+3. 编码时只进入当前阶段任务卡，不提前实现后续阶段能力。
+4. 每期完成前按 [tech-plan.md](./tech-plan.md) 的“完成门禁”提交验证证据。
+
 ## 当前实施边界
 
 当前文档已补齐到 P0-P5 均可拆分实施的状态。实现仍必须按阶段推进，不能因为后续阶段已有方案就跳过前置安全和数据门禁。
@@ -24,6 +33,14 @@ Wika 是从 [WeKnora](https://github.com/Tencent/WeKnora) fork 的知识闭环�
 2. P1 拆成 P1a/P1b/P1c：先做空间、默认 KB、用户级 token 和旧 API scope；再做入库/检索；最后做 `suggest_to_team`。
 3. P2-P5 每期都有独立数据模型、API、权限、安全和验收门禁；只有上一期门禁通过，下一期才能进入编码。
 4. 所有阶段都必须满足：个人正文不被 SystemAdmin 读取、旧 WeKnora API 不绕过 personal scope、AI 输出不绕过确定性安全规则。
+
+实施前检查：
+
+- 当前 PR 属于 P1a/P1b/P1c/P2/P3/P4/P5 中哪一张任务卡。
+- 已写出对应 RED 测试，且失败原因符合预期。
+- 需要改旧 WeKnora API 时，同 PR 包含旧接口越权测试。
+- MCP 日常工具使用用户级 PAT，不复用租户 API key。
+- P5 能力默认不在 P1-P4 暗中开启。
 
 关键前置决策：
 
