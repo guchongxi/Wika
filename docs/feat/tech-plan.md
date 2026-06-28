@@ -66,10 +66,13 @@ MCP/Web 生产 -> 统一入库 -> 权限感知检索 -> 团队沉淀 -> 评测 -
 | ADR-01 | Space 复用 Tenant，`tenants.space_type` 表达 `personal/team` | 复用现有 tenant_members、RBAC、审计和上下文切换能力 |
 | ADR-02 | 一人一个个人空间的不变量由 `user_personal_spaces` 唯一表承载 | 减少直接在上游 `tenants` 表上添加复杂唯一约束的合并风险 |
 | ADR-03 | 个人/团队边界不通过 `knowledge_bases.visibility` 表达 | 避免 KB 级可见性与 Tenant/RBAC 双重语义冲突 |
-| ADR-04 | 日常 MCP 工具使用用户级 PAT/OAuth | 不能用租户 API key 伪装 Admin 写入个人知识 |
+| ADR-04 | 日常 MCP 工具使用用户级 PAT，OAuth 后置 | 不能用租户 API key 伪装 Admin 写入个人知识 |
 | ADR-05 | `search_knowledge` 使用 scope-aware fan-out hybrid search | 先解析用户可访问 scope，再复用现有 KB hybrid-search 能力 |
 | ADR-06 | `suggest_to_team` 默认不自动发布到团队 | 默认进入可应用结果；只有团队策略开启且确定性安全门禁通过才自动应用 |
 | ADR-07 | 旧 KB/knowledge/search/download/preview API 必须接入 personal scope | 只保护 Wika 新 API 会留下 IDOR |
+| ADR-08 | P5 Governance 使用独立读写模型，写入仍走现有知识链路 | 冲突、版本、URL 重抓等治理能力不能绕过知识更新、索引和审计 |
+| ADR-09 | P5 异步任务统一使用 DB lease + 幂等 worker | 避免多实例重复触发 URL 重抓、评测计划和冲突检测 |
+| ADR-10 | Organization 共享默认 reference + allowed_fields + ScopeResolver shared scope | 跨团队共享不能复制正文，也不能绕过接收团队权限 |
 
 ### 3.1 ADR 详述
 
@@ -99,10 +102,10 @@ MCP/Web 生产 -> 统一入库 -> 权限感知检索 -> 团队沉淀 -> 评测 -
 - **决策**：个人/团队是 Space 属性；KB 只属于某个 Space。
 - **影响**：所有 KB、knowledge、search、download、preview 必须先解析 space scope。
 
-#### ADR-04 日常 MCP 使用用户级 PAT/OAuth
+#### ADR-04 日常 MCP 使用用户级 PAT，OAuth 后置
 
 - **背景**：租户 API key 面向管理型集成，不能代表某个用户写入个人知识。
-- **决策**：新增用户级 token，绑定 user、默认 tenant、scope、过期和撤销状态；日常 MCP tools 拒绝租户 API key。
+- **决策**：P1-P5 当前只实现用户级 PAT，绑定 user、默认 tenant、scope、过期和撤销状态；日常 MCP tools 拒绝租户 API key。OAuth 作为后续同等身份形态，只有补齐 PKCE、refresh、scope 映射和撤销策略后才启用。
 - **影响**：MCP server 需区分管理型 tools 和日常 tools；审计日志记录真实 user_id。
 - **回滚/迁移**：保留原管理型 API key；日常 tools 可整体关闭。
 
@@ -124,6 +127,27 @@ MCP/Web 生产 -> 统一入库 -> 权限感知检索 -> 团队沉淀 -> 评测 -
 - **决策**：KB/knowledge/search/download/preview/hybrid-search 等旧接口必须接入统一 ScopeResolver。
 - **影响**：这是 P1a 安全门禁，不通过不得进入 P1b/P1c。
 
+#### ADR-08 P5 Governance 使用独立读写模型，写入仍走现有知识链路
+
+- **背景**：P5 的冲突、版本、URL 重抓和跨团队共享都需要自己的状态机，但最终影响的是已有 `knowledges`、chunk、embedding 和审计链路。
+- **决策**：P5 新增独立治理表承载候选、版本、任务和共享授权；任何会修改知识正文、标题、标签或状态的动作必须调用现有知识更新链路，并触发索引和版本记录。
+- **影响**：ConflictService 只能生成候选；URLRefreshService 只能在人工确认后调用知识更新；VersionService 的 restore 本身也生成新版本。
+- **回滚/迁移**：关闭 P5 功能开关后，治理表保留为只读，不删除历史审计和 lineage。
+
+#### ADR-09 P5 异步任务统一使用 DB lease + 幂等 worker
+
+- **背景**：URL 重抓、定时评测和冲突检测会由 worker 执行，多实例部署时容易重复触发或无限重试。
+- **决策**：P5 worker 必须通过数据库锁、lease 或等价机制领取任务；任务状态、`attempts`、`next_run_at`、`locked_until`、`locked_by` 和幂等键由 repository 事务维护。
+- **影响**：worker crash 后任务可被重新领取；连续失败达到阈值后停用或降频；重复调用 apply/review/revoke 返回已有终态或 409。
+- **回滚/迁移**：可单独停用 worker，不影响人工查看已生成的治理项。
+
+#### ADR-10 Organization 共享默认 reference + allowed_fields + ScopeResolver shared scope
+
+- **背景**：Organization 跨团队共享如果复制正文，会扩大数据爆炸半径；如果直接把源 KB 暴露给接收团队，会绕过来源团队治理。
+- **决策**：P5 默认只做 `reference` 共享，`allowed_fields` 服务端白名单裁剪，active share 通过 ScopeResolver 输出 shared scope；撤销后 resolver 不再返回该 scope。
+- **影响**：SearchService 命中 shared scope 后仍必须按 `allowed_fields` 裁剪；个人 KB 默认禁止 Organization share；SystemAdmin 不因 share 获得正文读取权。
+- **回滚/迁移**：停用 shared scope 后，历史访问日志和 lineage metadata 保留，新搜索不再命中共享内容。
+
 ## 四、总体架构
 
 保持模块化单体，不拆微服务。
@@ -133,7 +157,7 @@ MCP/Web 生产 -> 统一入库 -> 权限感知检索 -> 团队沉淀 -> 评测 -
 ```text
 internal/wika/
   space/          # Space 门面，封装 Tenant/tenant_members
-  auth/           # 用户级 MCP PAT/OAuth scope
+  auth/           # 用户级 MCP PAT scope，OAuth 后置映射到同一 scope
   intake/         # MCP/Web 统一知识生产入口
   search/         # scope-aware hybrid search
   suggestion/     # suggest_to_team AI 预审与人工覆盖
@@ -685,6 +709,12 @@ wika_graph_edges
 - SystemAdmin 不返回 `summary` 和 `evidence_text`，只返回统计字段。
 - 图谱增强检索只把 allowed KB 内的实体/边加入召回。
 
+图谱检索配置落点：
+
+- 开关、权重和降级策略进入 `wika_space_policies.safety_policy.search.graph`，P4 默认 `enabled=false`、`weight=0.15`、`fail_open=true`。
+- SystemAdmin 可以在系统默认设置里给新团队提供只读默认值，但运行时以团队 policy 为准。
+- SearchService 每次返回 `graph_contribution` 和 `graph_degraded`，用于判断开启后是否影响主搜索。
+
 ### 5.11 P5 高级治理模型
 
 #### 冲突检测
@@ -696,6 +726,9 @@ wika_conflict_checks
   kb_id
   trigger
   status
+  attempts
+  locked_until
+  locked_by
   created_by
   started_at
   completed_at
@@ -736,6 +769,8 @@ wika_knowledge_versions
   title
   content
   tags jsonb
+  status
+  review_status
   metadata jsonb
   content_hash
   change_reason
@@ -748,12 +783,14 @@ wika_knowledge_versions
 - `(knowledge_id, version_no)` unique。
 - 恢复旧版本时创建新的 `version_no`，不修改历史版本。
 - 版本内容按 knowledge read scope 控制；SystemAdmin 不可读取个人版本正文。
+- `status` 和 `review_status` 记录知识关键状态快照；其他非核心字段进入 `metadata`。
 
 #### URL 重抓
 
 ```text
 wika_url_refresh_jobs
   id
+  schedule_id
   knowledge_id
   tenant_id
   kb_id
@@ -765,12 +802,30 @@ wika_url_refresh_jobs
   diff_summary jsonb
   ssrf_check jsonb
   error_msg
+  attempts
+  locked_until
+  locked_by
   created_by
   started_at
   completed_at
   reviewed_by
   reviewed_at
   created_at
+
+wika_url_refresh_schedules
+  id
+  tenant_id
+  kb_id
+  knowledge_id
+  source_url
+  enabled
+  cron_expr
+  next_run_at
+  last_job_id
+  consecutive_failures
+  created_by
+  created_at
+  updated_at
 ```
 
 约束：
@@ -779,6 +834,9 @@ wika_url_refresh_jobs
 - 禁止 private、loopback、link-local、multicast、云元数据地址和重定向后的禁用地址。
 - 限制响应大小、超时、content-type；抓取失败不改变原知识。
 - `pending_review` 经人工确认后才写入知识并生成新版本。
+- schedule 只负责生成 job，不直接抓取或写知识。
+- 同一 `knowledge_id + source_url` 最多一个启用 schedule。
+- worker 使用 `locked_until/locked_by` 领取 job；连续失败达到阈值后停用 schedule 或延长 `next_run_at`。
 
 #### 定时评测
 
@@ -958,7 +1016,7 @@ actor:
   default_tenant_id
 
 resource:
-  kind                   # tenant | kb | knowledge | chunk | file | suggestion | eval | freshness | graph
+  kind                   # tenant | kb | knowledge | chunk | file | suggestion | eval | freshness | graph | conflict_check | conflict_item | knowledge_version | url_refresh_job | eval_schedule | org | org_share
   id
   parent_id?
 
@@ -996,6 +1054,20 @@ decision:
 - SystemAdmin 默认只能 `metadata_read`，`allowed_fields` 使用字段级 allowlist。
 - `tenant_api_key` 不允许执行日常 personal action，例如 `knowledge:push/search/read/suggestion:create`。
 - `expand_knowledge_result`、download、preview 必须重新解析资源 scope，不能信任搜索 compact 结果。
+- P5 direct-id 资源必须先回溯父 KB 或 knowledge，再按父资源执行 scope，不能只校验 ID 存在。
+- Organization shared scope 只由 active share 产生，且必须带 `allowed_fields`；revoke 后新 resolver 结果不得包含该 scope。
+
+P5 direct-id 回溯规则：
+
+| resource kind | 回溯路径 | 允许动作 | 无权响应 |
+|---------------|----------|----------|----------|
+| `conflict_check` | check -> kb_id -> tenant_id | read/admin | 404 |
+| `conflict_item` | item -> check/kb_id -> tenant_id | read/review/admin | 404 |
+| `knowledge_version` | version -> knowledge_id -> kb_id -> tenant_id | read/restore | 404 |
+| `url_refresh_job` | job -> knowledge_id -> kb_id -> tenant_id | read/review/apply/admin | 404 |
+| `eval_schedule` | schedule -> kb_id/dataset_id -> tenant_id | read/admin | 404 |
+| `org` | org -> org_members.tenant_id + actor tenant role | read/admin | 403 或 404，按是否会暴露个人资源决定 |
+| `org_share` | share -> source_kb_id + target_tenant_id + org membership | read/admin/search | 404 |
 
 旧 API 接入点：
 
@@ -1008,6 +1080,24 @@ decision:
 | Knowledge search | 先解析 readable scopes，再拼查询 | 不跨 personal space |
 | download/preview | 按 knowledge 回溯 KB scope | 文件内容不泄露 |
 | eval/freshness/graph | 按 KB 和字段 allowlist 校验 | SystemAdmin 不读正文 |
+
+旧 API 精确 inventory：
+
+| method/path | handler/service 接入点 | resource/action | 无权语义 | P1a RED 测试 |
+|-------------|------------------------|-----------------|----------|--------------|
+| `GET /api/v1/knowledge-bases` | `KnowledgeBaseHandler.ListKnowledgeBases` | readable KB scopes | 过滤无权 KB | `TestWikaScopeFiltersPersonalKBList` |
+| `GET /api/v1/knowledge-bases/:id` | `KnowledgeBaseHandler.GetKnowledgeBase` | `kb/read` | personal 越权 404 | `TestWikaScopeRejectsPersonalKBDetail` |
+| `GET/POST /api/v1/knowledge-bases/:id/hybrid-search` | `KnowledgeBaseHandler.HybridSearch` | `kb/search` | 404 或空结果，不返回 snippet | `TestWikaScopeRejectsHybridSearch` |
+| `GET /api/v1/knowledge-bases/:id/knowledge` | `KnowledgeHandler.ListKnowledge` | `kb/read` | 404 或空列表 | `TestWikaScopeRejectsKnowledgeList` |
+| `POST /api/v1/knowledge-bases/:id/knowledge/manual` | `KnowledgeHandler.CreateManualKnowledge` | `kb/write` | 404 或 403，personal 只允许 Owner | `TestWikaScopeRejectsManualCreateIntoOtherPersonal` |
+| `POST /api/v1/knowledge-bases/:id/knowledge/file` | `KnowledgeHandler.CreateFileKnowledge` | `kb/write` | 404 或 403 | `TestWikaScopeRejectsFileCreateIntoOtherPersonal` |
+| `POST /api/v1/knowledge-bases/:id/knowledge/url` | `KnowledgeHandler.CreateURLKnowledge` | `kb/write` | 404 或 403 | `TestWikaScopeRejectsURLCreateIntoOtherPersonal` |
+| `GET /api/v1/knowledge/batch` | `KnowledgeHandler.GetKnowledgeBatch` | `knowledge/read` per ID | 逐条过滤，不暴露无权 ID | `TestWikaScopeFiltersKnowledgeBatch` |
+| `GET /api/v1/knowledge/search` | `KnowledgeHandler.SearchKnowledge` | search readable scopes | 不跨 personal space | `TestWikaScopeRejectsLegacyKnowledgeSearchLeak` |
+| `GET /api/v1/knowledge/:id/download` | `KnowledgeHandler.DownloadKnowledgeFile` | `knowledge/download` | personal 越权 404 | `TestWikaScopeRejectsDownload` |
+| `GET /api/v1/knowledge/:id/preview` | `KnowledgeHandler.PreviewKnowledgeFile` | `knowledge/preview` | personal 越权 404 | `TestWikaScopeRejectsPreview` |
+| `POST /api/v1/knowledge/batch-delete` | `KnowledgeHandler.BatchDeleteKnowledge` | `knowledge/write` per ID | 任一无权项拒绝或过滤并审计 | `TestWikaScopeRejectsBatchDeletePersonal` |
+| `POST /api/v1/knowledge/batch-reparse` | `KnowledgeHandler.BatchReparseKnowledge` | `knowledge/write` per ID | 任一无权项拒绝或过滤并审计 | `TestWikaScopeRejectsBatchReparsePersonal` |
 
 ### 6.4 SuggestionService
 
@@ -1136,7 +1226,7 @@ MVP 不做自动外部 URL 重抓。
 
 日常 MCP 工具必须使用用户级凭证。
 
-新增 PAT/OAuth 能力：
+新增 PAT 能力，OAuth 后置：
 
 ```text
 wika_user_tokens
@@ -1390,6 +1480,11 @@ POST /api/v1/wika/kb/:id/eval/schedules
 PUT  /api/v1/wika/kb/:id/eval/schedules/:schedule_id
 DELETE /api/v1/wika/kb/:id/eval/schedules/:schedule_id
 
+GET  /api/v1/wika/orgs
+POST /api/v1/wika/orgs
+GET  /api/v1/wika/orgs/:org_id
+POST /api/v1/wika/orgs/:org_id/members
+DELETE /api/v1/wika/orgs/:org_id/members/:tenant_id
 GET  /api/v1/wika/orgs/:org_id/shares
 POST /api/v1/wika/orgs/:org_id/shares
 DELETE /api/v1/wika/orgs/:org_id/shares/:share_id
@@ -1400,6 +1495,129 @@ DELETE /api/v1/wika/orgs/:org_id/shares/:share_id
 - conflict/version/url-refresh 属于 P5，不得在 P1-P3 暗中开启。
 - URL refresh 的抓取结果默认进入待确认，不直接覆盖知识正文。
 - Organization share 默认 `mode=reference`，撤销后新搜索不能命中；历史 lineage 和 audit metadata 保留。
+- P5 不新增 MCP 工具；只回归 `search_knowledge` 对 Organization shared scope 的命中、字段裁剪和撤销后不命中。
+
+P5 权限矩阵：
+
+| 能力/动作 | Team Viewer | Team Contributor | Team Admin/Owner | SystemAdmin | Organization role |
+|-----------|-------------|------------------|------------------|-------------|-------------------|
+| Conflict list/read | 允许团队内读取 | 允许 | 允许 | 仅元数据 | 无额外权限 |
+| Conflict create check | 禁止 | 允许 | 允许 | 禁止绕过团队角色 | 无额外权限 |
+| Conflict resolve | 禁止 | 禁止 | 允许 | 禁止绕过团队角色 | 无额外权限 |
+| Version list/diff | 按 knowledge read | 按 knowledge read | 按 knowledge read | 仅元数据，个人正文不可读 | 无额外权限 |
+| Version restore | 禁止 | 按团队策略可写 | 允许 | 禁止绕过团队角色 | 无额外权限 |
+| URL refresh create/review/apply | 禁止 | 创建待确认 job | 允许 review/apply | 禁止绕过团队角色 | 无额外权限 |
+| Eval schedule CRUD | 禁止 | 只读或 dry-run | 允许 | 仅元数据 | 无额外权限 |
+| Org create/member manage | 禁止 | 禁止 | 源/目标团队 Admin/Owner 才可代表团队 | 禁止绕过团队角色 | org owner/admin 可管理 org 成员 |
+| Org share create/revoke | 只能搜索已授权 shared scope | 禁止创建/revoke | 源团队 Admin/Owner 创建；源或 org admin revoke | 仅元数据 | org owner/admin 只能管理授权关系，不能越过团队 Admin/Owner |
+
+P5 错误语义：
+
+| 场景 | 状态码 | 说明 |
+|------|--------|------|
+| 请求体格式、cron、status、decision 非法 | 400 | 返回字段级错误，不返回内部栈 |
+| 未登录或 PAT 无效 | 401 | 不区分 token 不存在、过期或 hash 不匹配 |
+| scope 不足且不会泄露个人资源存在性 | 403 | 例如团队 Viewer 尝试创建 eval schedule |
+| personal 或 direct-id 资源无权读 | 404 | 不暴露资源存在性 |
+| 状态非法转换、重复 active schedule/share、重复 open conflict | 409 | 返回稳定错误码，例如 `STATE_CONFLICT` |
+| SSRF、allowed_fields、内容类型等安全策略阻断 | 422 | 返回脱敏策略原因，不返回敏感原文 |
+| 限流或 worker 领取冲突 | 429 | API 层限流；worker 内部冲突不暴露给用户 |
+
+P5 状态机：
+
+| 对象 | 状态 | 合法转换 | 非法转换测试 |
+|------|------|----------|--------------|
+| conflict item | `open -> confirmed/dismissed/resolved`，`confirmed -> resolved` | 终态只允许添加 comment，不再改回 open | resolved 后再次 resolve 返回 409 或幂等终态 |
+| knowledge version | 递增 `version_no`，无终态 | restore 生成新版本 | restore 不修改历史 version 内容 |
+| url refresh job | `pending -> running -> pending_review -> applied/rejected`，任意抓取失败到 `failed` | `pending_review` 前不可 apply | running 直接 review/apply 返回 409 |
+| eval schedule | `enabled=true/false` + `consecutive_failures` | 连续失败达到阈值后 disable 或降频 | disabled 不触发 run |
+| org share | `active -> revoked` | revoke 后不可重新 active；新建 share 生成新记录 | revoked share 不进入 ScopeResolver |
+
+P5 API 明细：
+
+```text
+GET /api/v1/wika/kb/:id/conflicts?status=open&limit=20&cursor=...
+response: { items: [{ id, conflict_type, confidence_score, status, source_knowledge_id, target_knowledge_id, evidence_summary, ai_explanation }], next_cursor? }
+权限: 团队成员按 KB read；SystemAdmin 只返回元数据。
+
+POST /api/v1/wika/kb/:id/conflicts/checks
+request: { trigger: "manual|knowledge_updated|suggestion_applied", knowledge_ids?: [] }
+response: { check_id, status: "pending" }
+权限: Team Contributor+；创建后由 worker 执行。
+幂等/并发: 同一 KB 同一 trigger 的 running check 返回已有 check 或 409。
+
+PUT /api/v1/wika/conflicts/:id
+request: { status: "confirmed|dismissed|resolved", comment? }
+response: { id, status, resolved_by?, resolved_at? }
+权限: Team Admin/Owner。
+
+GET /api/v1/wika/knowledge/:id/versions
+response: { versions: [{ id, version_no, title, content_hash, change_reason, created_by, created_at }] }
+权限: knowledge read；SystemAdmin 对 personal 仅元数据。
+
+GET /api/v1/wika/knowledge/:id/versions/:version_id/diff?to_version_id=...
+response: { from_version, to_version, title_diff, content_diff, tag_diff, metadata_diff }
+权限: knowledge read；无权正文时 diff 字段省略，仅返回元数据。
+
+POST /api/v1/wika/knowledge/:id/versions/:version_id/restore
+request: { reason }
+response: { restored_from_version_id, new_version_id, knowledge_id, status }
+权限: knowledge write；restore 调用现有知识更新和索引链路。
+
+GET /api/v1/wika/knowledge/:id/url-refresh
+response: { jobs: [{ id, status, source_url, diff_summary, error_msg?, created_at, reviewed_at? }], schedules: [{ id, enabled, cron_expr, next_run_at, consecutive_failures }] }
+权限: knowledge read；SystemAdmin 对 personal 仅元数据。
+
+POST /api/v1/wika/knowledge/:id/url-refresh
+request: { source_url?, schedule?: { enabled, cron_expr } }
+response: { job_id?, schedule_id?, status }
+权限: Team Contributor+ 可创建手动 job；Team Admin/Owner 可创建/更新 schedule。
+
+PUT /api/v1/wika/url-refresh/:refresh_id/review
+request: { decision: "apply|reject", comment? }
+response: { refresh_id, status, result_version_id?, result_knowledge_id? }
+权限: Team Admin/Owner；apply 必须生成新版本。
+
+GET /api/v1/wika/kb/:id/eval/schedules
+response: { schedules: [{ id, dataset_id, cron_expr, enabled, next_run_at, last_run_id, consecutive_failures }] }
+权限: KB read。
+
+POST /api/v1/wika/kb/:id/eval/schedules
+request: { dataset_id, cron_expr, enabled? }
+response: { schedule_id, enabled, next_run_at }
+权限: Team Admin/Owner。
+幂等/并发: 同一 kb_id + dataset_id 只能有一个 enabled schedule。
+
+PUT /api/v1/wika/kb/:id/eval/schedules/:schedule_id
+request: { cron_expr?, enabled? }
+response: { schedule_id, enabled, next_run_at, consecutive_failures }
+权限: Team Admin/Owner。
+
+DELETE /api/v1/wika/kb/:id/eval/schedules/:schedule_id
+response: { schedule_id, enabled: false }
+权限: Team Admin/Owner；软删除或 disable，不删除 run 历史。
+
+POST /api/v1/wika/orgs
+request: { name, member_tenant_ids?: [] }
+response: { org_id, name }
+权限: 创建者必须是至少一个成员团队 Admin/Owner。
+
+POST /api/v1/wika/orgs/:org_id/members
+request: { tenant_id, role: "owner|admin|member" }
+response: { org_id, tenant_id, role }
+权限: org owner/admin 且该 tenant 的 Team Admin/Owner 确认；personal tenant 禁止加入。
+
+POST /api/v1/wika/orgs/:org_id/shares
+request: { source_kb_id, target_tenant_id, mode?: "reference", allowed_fields?: [] }
+response: { share_id, status: "active", allowed_fields }
+权限: source team Admin/Owner 创建；target team Admin/Owner 或 org admin 确认接收。
+约束: allowed_fields 只能是服务端白名单；默认不含 content/chunk/evidence/file。
+
+DELETE /api/v1/wika/orgs/:org_id/shares/:share_id
+response: { share_id, status: "revoked", revoked_at }
+权限: source team Admin/Owner、target team Admin/Owner 或 org owner/admin。
+幂等: 已 revoked 返回 revoked 终态。
+```
 
 ### Admin Defaults
 
@@ -1488,6 +1706,39 @@ P2-P5 额外威胁门禁：
 | P5 版本恢复 | 恢复旧敏感内容、绕过审核 | 恢复前 scope 校验、恢复生成新版本、审计 |
 | P5 Organization | 跨团队共享越权、撤销后仍可搜索 | share scope 显式授权、撤销后 resolver 不返回 |
 
+P5 AI 输出门禁：
+
+- 冲突检测的 `ai_explanation`、URL diff 摘要、共享推荐说明都只作为辅助说明，不得直接驱动状态转换。
+- 所有 AI 输出必须 schema 校验；schema 失败时状态降级为 `needs_confirmation`、`pending_review` 或 `failed`，不能自动 apply。
+- 输入给 AI 的知识正文、URL 抓取正文、图谱证据、评测 case 全部标注为不可信资料，不得作为系统指令。
+- P5 prompt injection fixture 必须覆盖：要求忽略系统指令、泄露密钥、自动 approve、访问内网 URL、绕过 allowed_fields。
+- AI 输出、风险命中原文、抓取正文不得写入审计日志；审计只写脱敏摘要和 hash。
+
+URL safe fetcher 细则：
+
+- 只允许 `http` 和 `https`，禁用代理环境变量和用户自定义 header/cookie。
+- URL 必须做 IDNA、IPv6、十进制/八进制 IP、混合大小写协议和尾点域名规范化后再校验。
+- DNS 解析后的所有 IP 都必须通过 public 地址校验；连接时使用校验后的 IP pinning，防 DNS rebinding。
+- 每次重定向后重新校验协议、host、解析 IP；最大重定向 3 次。
+- 同时限制响应头声明大小、实际读取大小、解压后大小、总耗时和 content-type。
+- HTML、diff 和错误摘要只按 inert text 渲染，不执行脚本，不加载远程资源。
+
+P5 audit event taxonomy：
+
+| event | 必备字段 | 禁止字段 |
+|-------|----------|----------|
+| `wika.conflict.check_created` | actor_id, auth_type, tenant_id, kb_id, check_id, trigger, request_id | 正文、snippet |
+| `wika.conflict.item_resolved` | actor_id, tenant_id, kb_id, item_id, old_status, new_status, request_id | evidence 原文 |
+| `wika.version.recorded` | actor_id, tenant_id, kb_id, knowledge_id, version_id, version_no, reason, request_id | content |
+| `wika.version.restored` | actor_id, tenant_id, kb_id, knowledge_id, restored_from_version_id, new_version_id, request_id | content diff |
+| `wika.url_refresh.job_created` | actor_id, tenant_id, kb_id, knowledge_id, job_id, source_url_hash, request_id | source_url 明文 |
+| `wika.url_refresh.job_failed` | actor_id/system, tenant_id, kb_id, job_id, failure_code, request_id | 抓取正文、内网地址明文 |
+| `wika.url_refresh.reviewed` | actor_id, tenant_id, kb_id, job_id, decision, old_status, new_status, result_version_id, request_id | fetched_content |
+| `wika.eval_schedule.updated` | actor_id, tenant_id, kb_id, schedule_id, enabled, cron_expr_hash, request_id | QA 正文 |
+| `wika.eval_schedule.run_failed` | actor_id/system, tenant_id, kb_id, schedule_id, run_id, failure_code, consecutive_failures | expected_answer |
+| `wika.org_share.created` | actor_id, org_id, source_tenant_id, source_kb_id, target_tenant_id, share_id, allowed_fields, request_id | 正文、证据 |
+| `wika.org_share.revoked` | actor_id, org_id, share_id, source_tenant_id, target_tenant_id, request_id | 正文、证据 |
+
 旧接口必须接入 personal scope：
 
 | 区域 | 典型接口 | 要求 |
@@ -1548,7 +1799,7 @@ P2-P5 额外威胁门禁：
 
 门禁：
 
-- ADR-01 到 ADR-07 全部确认，任何反向实现必须先改 ADR。
+- ADR-01 到 ADR-10 全部确认，任何反向实现必须先改 ADR。
 - migration 编号、旧 API inventory、ScopeResolver 契约、P1a 测试矩阵已确认。
 - 不能在 P0 后直接进入 `push_knowledge` 或前端页面开发。
 
@@ -1745,6 +1996,30 @@ P2-P5 额外威胁门禁：
 5. EvalScheduler：cron、失败降频、run 复用。
 6. OrganizationShareService：授权、ScopeResolver shared scope、撤销。
 
+P5 Implementation Map：
+
+| 子阶段 | 稳定锚点 | 表 | Service | API | 前端 | feature flag | 完成证据 |
+|--------|----------|----|---------|-----|------|--------------|----------|
+| P5a Conflict | `WIKA-P5-CONFLICT` | `wika_conflict_checks/items` | `governance/conflict` | `/wika/kb/:id/conflicts*`、`/wika/conflicts/:id` | 冲突队列、详情抽屉 | `wika.governance.conflict.enabled` | 候选生成、状态流转、AI 不改正文 |
+| P5b Version | `WIKA-P5-VERSION` | `wika_knowledge_versions` | `governance/version` | `/wika/knowledge/:id/versions*` | diff/restore | `wika.governance.version.enabled` | 关键写路径记录版本，restore 新版本 |
+| P5c URL Refresh | `WIKA-P5-URL-REFRESH` | `wika_url_refresh_jobs/schedules` | `governance/urlrefresh` | `/wika/knowledge/:id/url-refresh*`、`/wika/url-refresh/:id/review` | 待确认更新队列 | `wika.governance.url_refresh.enabled` | SSRF fixture、pending review、apply 生成版本 |
+| P5d Eval Schedule | `WIKA-P5-EVAL-SCHEDULE` | `wika_eval_schedules` | `governance/evalschedule` | `/wika/kb/:id/eval/schedules*` | 评测计划 | `wika.governance.eval_schedule.enabled` | DB lease、失败降频、run 明细 |
+| P5e Org Share | `WIKA-P5-ORG-SHARE` | `wika_organizations/org_members/org_shares` | `governance/orgshare`、`scope` | `/wika/orgs*`、`/wika/orgs/:id/shares*` | Organization 和共享管理 | `wika.governance.org_share.enabled` | allowed_fields 裁剪、revoke 后不命中 |
+
+P5 命名词汇表：
+
+| 术语 | 含义 |
+|------|------|
+| check | 一次治理扫描任务，例如一次冲突检测 |
+| item | check 产生的可处理候选项 |
+| reference | 共享检索引用，默认不复制正文 |
+| snapshot | 未来可选的只读快照共享；P5 默认不启用 |
+| Organization | 跨团队共享容器，不替代 team space |
+| org member | 加入 Organization 的团队空间及其 org role |
+| share | 从源 KB 授权到目标团队的引用共享记录 |
+| shared scope | ScopeResolver 根据 active share 输出的可搜索范围 |
+| allowed_fields | 共享命中可返回字段的服务端白名单 |
+
 ### P0-P5 任务卡索引
 
 下表用于把方案直接拆成实现任务。每张任务卡完成前必须先写对应 RED 测试。
@@ -1766,11 +2041,24 @@ P2-P5 额外威胁门禁：
 | P3-2 Freshness scanner | 过期、将过期、长期未访问、低质、低置信均生成 item | `internal/wika/freshness`、worker 注册 | scanner fixture 和处理审计 |
 | P4-1 Graph read model | SystemAdmin 不返回个人证据文本 | `internal/wika/graph`、graph migrations | 分页、详情、字段 allowlist 测试 |
 | P4-2 Graph search | 图谱失败时主搜索成功并返回降级标识 | `internal/wika/search`、`internal/wika/graph` | best-effort 降级测试 |
-| P5-1 Conflict | 冲突候选不会自动改知识 | `internal/wika/governance/conflict` | 候选生成、确认/驳回/解决流转 |
-| P5-2 Version | 恢复旧版本生成新版本，不覆盖历史 | `internal/wika/governance/version` | diff/restore/scope 测试 |
-| P5-3 URL refresh | SSRF fixture 阻断内网、metadata、重定向禁用地址 | `internal/wika/governance/urlrefresh` | safe fetcher 单测和 pending_review 流程 |
-| P5-4 Eval schedule | 连续失败后停用或降频 | `internal/wika/governance/evalschedule` | cron 触发、锁、失败计数测试 |
-| P5-5 Org share | revoke 后 ScopeResolver 不再返回 shared scope | `internal/wika/governance/orgshare`、`internal/wika/scope` | 授权、引用检索、撤销回归 |
+| P5a-1 Conflict migration | open conflict 唯一约束失败 | `migrations/versioned/000097*`、`internal/types/wika_governance*.go` | migration up/down、`go test ./internal/types` |
+| P5a-2 Conflict check worker | 同一 running check 不重复领取 | `internal/wika/governance/conflict` | DB lease、候选生成 fixture |
+| P5a-3 Conflict API | resolved 后再次修改返回 409 或幂等终态 | `internal/handler/wika_governance_conflict.go` | API 状态流转、审计事件 |
+| P5b-1 Version migration | `(knowledge_id, version_no)` unique | `migrations/versioned/000098*`、`internal/types/wika_version.go` | migration up/down |
+| P5b-2 Version hooks | 手动更新、旧 API 更新、suggestion apply、URL apply、restore 均记录版本 | `internal/wika/governance/version`、知识更新链路适配点 | 写路径 fixture |
+| P5b-3 Version API | restore 生成新版本，不覆盖历史 | `internal/handler/wika_governance_version.go` | diff/restore/scope 测试 |
+| P5c-0 URL refresh migration | job 状态 check、schedule 启用唯一、lease 字段存在 | `migrations/versioned/000098*`、`internal/types/wika_url_refresh.go` | migration up/down |
+| P5c-1 Safe fetcher | 内网、metadata、重定向、DNS rebinding、超大响应均阻断 | `internal/wika/governance/urlrefresh/safefetch` | SSRF fixture |
+| P5c-2 URL refresh job | 正常 URL 进入 pending_review，不改知识 | `internal/wika/governance/urlrefresh` | job 状态机、worker lease |
+| P5c-3 URL review/apply | apply 生成新版本；reject 不改知识 | `internal/handler/wika_governance_urlrefresh.go`、`VersionService` | API 冒烟、审计 |
+| P5c-4 URL schedule | 连续失败后 disable 或延后 next_run_at | `wika_url_refresh_schedules`、worker 注册 | cron/失败计数测试 |
+| P5d-1 Eval schedule migration | 同一 `kb_id + dataset_id` 只能一个 enabled schedule | `migrations/versioned/000099*` | migration up/down |
+| P5d-2 Eval scheduler worker | 多实例不会重复创建 run | `internal/wika/governance/evalschedule` | DB lock、失败降频 |
+| P5d-3 Eval schedule API | cron 非法 400，disabled 不触发 | `internal/handler/wika_eval_schedule.go` | handler/API 测试 |
+| P5e-1 Org model migration | org/member/share 约束和 revoke 状态 | `migrations/versioned/000099*`、`internal/types/wika_org_share.go` | migration up/down |
+| P5e-2 Org/member API | personal tenant 禁止加入 Organization | `internal/handler/wika_org.go` | 角色和接收方确认测试 |
+| P5e-3 Share authorization | allowed_fields 只能服务端白名单 | `internal/wika/governance/orgshare` | share/create/revoke 测试 |
+| P5e-4 Shared scope search | revoke 后 ScopeResolver 不再返回 shared scope | `internal/wika/scope`、`internal/wika/search` | `search_knowledge` shared scope 回归 |
 
 ### P5 子能力实施契约
 
@@ -1827,6 +2115,15 @@ Restore(ctx, actor, knowledgeID, versionID, reason) -> newVersionID
 - restore 调用现有知识更新链路和索引链路，然后生成新版本。
 - SystemAdmin 对个人知识版本仍只能读元数据。
 
+必须版本化的写路径：
+
+- Web 手动更新知识标题、正文、标签、状态。
+- 旧 WeKnora 知识更新 API。
+- `suggest_to_team` apply 复制或更新团队知识。
+- URL refresh review decision 为 `apply`。
+- freshness 处理动作导致知识正文、状态或有效期变化。
+- restore 本身。
+
 必测：
 
 - 连续更新形成递增版本。
@@ -1845,21 +2142,33 @@ Restore(ctx, actor, knowledgeID, versionID, reason) -> newVersionID
 
 ```text
 CreateRefreshJob(ctx, actor, knowledgeID)
+CreateOrUpdateSchedule(ctx, actor, knowledgeID, cronExpr, enabled)
 RunRefreshJob(ctx, jobID)
 ReviewRefresh(ctx, actor, jobID, decision, comment)
+RunDueSchedules(ctx, now)
 ```
 
 SSRF 防护必须包含：
 
 - 仅允许 `http` 和 `https`。
+- 禁用代理环境变量、用户 cookie 和用户自定义 header。
+- URL 做 IDNA、IPv6、十进制/八进制 IP、尾点域名、大小写协议规范化。
 - DNS 解析后的所有 IP 都不能是 private、loopback、link-local、multicast、reserved、云元数据地址。
+- 连接时使用校验后的 IP pinning，防 DNS rebinding。
 - 每次重定向后重新校验 URL、协议、host 和解析 IP。
-- 限制响应大小、总耗时、content-type。
+- 限制响应头声明大小、实际读取大小、解压后大小、总耗时、content-type。
 - 抓取失败不改变原知识。
+- HTML 和 diff 只按 inert text 渲染，不执行脚本或加载远程资源。
+
+实现规则：
+
+- 手动 job 和 schedule job 使用同一 `wika_url_refresh_jobs` 状态机。
+- schedule 只生成 job；job runner 负责抓取；review apply 负责调用知识更新链路和 VersionService。
+- worker 使用 DB lease 领取 job；同一 job 重复领取必须被拒绝。
 
 必测 fixture：
 
-- `http://127.0.0.1`、`http://169.254.169.254`、内网域名、重定向到内网、超大响应、非 HTML/文本类型全部被拒绝。
+- `http://127.0.0.1`、`http://[::1]`、`http://169.254.169.254`、内网域名、重定向到内网、DNS rebinding、超大响应、解压炸弹、非 HTML/文本类型全部被拒绝。
 - 正常 URL 成功后状态为 `pending_review`，不会直接覆盖知识正文。
 
 #### EvalScheduleService
@@ -1914,6 +2223,10 @@ ListSharedScopes(ctx, actor, tenantID)
 - `allowed_fields` 默认只允许 ID、标题、来源团队、质量分、保鲜状态，不含正文、chunk、证据、文件。
 - SearchService 命中 shared scope 后仍要用 ScopeResolver 输出的 `allowed_fields` 裁剪结果。
 - revoke 后 ScopeResolver 不能再返回该 share；历史访问日志和 lineage metadata 保留。
+- personal tenant 禁止加入 Organization，personal KB 禁止作为 Organization share source。
+- `allowed_fields` 只能从服务端白名单枚举中选择，客户端传入未知字段返回 400。
+- `CreateShare` 要求 source team Admin/Owner；target team Admin/Owner 或 org owner/admin 必须确认接收。
+- `RevokeShare` 允许 source team Admin/Owner、target team Admin/Owner 或 org owner/admin 执行。
 
 必测：
 
@@ -1935,10 +2248,20 @@ ListSharedScopes(ctx, actor, tenantID)
 | 000095 | freshness checks / items |
 | 000096 | graph entities / graph edges 读模型 |
 | 000097 | conflict checks / conflict items |
-| 000098 | knowledge versions / url refresh jobs |
-| 000099 | eval schedules / organization shares |
+| 000098 | knowledge versions / url refresh jobs / url refresh schedules |
+| 000099 | eval schedules / organizations / org members / org shares |
 
 当前上游迁移已到 `000063`，`000090+` 仍留有缓冲。
+
+P5 migration 必测约束：
+
+- `wika_conflict_items` 同一 `source_knowledge_id + target_knowledge_id + conflict_type` 未终态唯一。
+- `wika_knowledge_versions(knowledge_id, version_no)` 唯一。
+- `wika_url_refresh_schedules(knowledge_id, source_url)` 启用状态唯一。
+- `wika_eval_schedules(kb_id, dataset_id)` 启用状态唯一。
+- `wika_org_members(org_id, tenant_id)` 唯一。
+- `wika_org_shares` active 状态下同一 `source_kb_id + target_tenant_id` 唯一。
+- down migration 必须按 share/member/org、schedule/job、version、conflict 的依赖顺序回滚。
 
 ## 十三、冲突风险
 
@@ -1954,6 +2277,13 @@ ListSharedScopes(ctx, actor, tenantID)
 | `frontend/src/router/index.ts` | 新增路由 | 低 | 末尾追加 |
 | `frontend/src/views/wika/**` | 新增页面 | 低 | 独立页面 |
 | 现有 KB/knowledge/search/download/preview API | 接入 personal scope | 高 | 必须防旧接口越权 |
+| 现有知识更新链路 | P5b Version hook | 高 | 必须覆盖 Web、旧 API、suggestion apply、URL apply、restore |
+| `internal/wika/search` | P4 图谱贡献、P5e shared scope 字段裁剪 | 高 | SearchService 必须按 ScopeResolver allowed_fields 输出 |
+| `internal/wika/scope` | P5 direct-id 和 Organization shared scope | 高 | direct-id 必须回溯父 KB/knowledge；revoke 后不可命中 |
+| P5 worker 注册 | conflict/url-refresh/eval schedule worker | 中 | 必须有 feature flag、DB lease 和停用路径 |
+| URL fetcher 网络边界 | safe fetcher | 高 | 禁代理、IP pinning、重定向重校验和大小限制必须有 fixture |
+| `internal/router/router.go` / DI | Governance API 注册 | 中 | P5 API 按子阶段注册，不能暴露空实现 |
+| `frontend/src/views/wika/**` | P5 队列、diff、schedule、org share 页面 | 中 | 前端只消费 API 状态机，不在前端拼权限 |
 
 ## 十四、完成门禁
 
@@ -1962,7 +2292,7 @@ ListSharedScopes(ctx, actor, tenantID)
 - 数据库迁移 up/down。
 - Go 单元测试。
 - API 冒烟。
-- MCP stdio 或 HTTP 真实调用。
+- 涉及 MCP 的阶段必须提供 stdio 或 HTTP 真实调用；P5 不新增 MCP 工具，只回归 `search_knowledge` shared scope。
 - A/B 越权安全测试。
 - 前端主路径 E2E。
 - 对应指标或状态可查。
@@ -1996,3 +2326,13 @@ ListSharedScopes(ctx, actor, tenantID)
 | P3 | scanner 构造 4 类问题、处理动作审计、检索热路径无主表写入 |
 | P4 | 图谱读模型分页、实体详情、图谱检索降级、SystemAdmin 字段 allowlist |
 | P5 | 冲突处理、版本恢复、SSRF fixture、定时评测失败降频、Organization 撤销后 resolver 不返回 |
+
+P5 每卡证据模板：
+
+| 任务卡 | 测试命令 | fixture / API 冒烟 | 审计证据 |
+|--------|----------|--------------------|----------|
+| P5a-1/P5a-2/P5a-3 Conflict | `go test ./internal/wika/governance/conflict ./internal/handler` | `POST /wika/kb/:id/conflicts/checks`、`PUT /wika/conflicts/:id` | `wika.conflict.check_created`、`wika.conflict.item_resolved` |
+| P5b-1/P5b-2/P5b-3 Version | `go test ./internal/wika/governance/version ./internal/handler` | `GET /wika/knowledge/:id/versions`、`POST /restore` | `wika.version.recorded`、`wika.version.restored` |
+| P5c-0/P5c-1/P5c-2/P5c-3/P5c-4 URL refresh | `go test ./internal/types ./internal/wika/governance/urlrefresh ./internal/handler` | migration up/down、SSRF fixture；`POST /url-refresh`、`PUT /url-refresh/:id/review` | `wika.url_refresh.job_created`、`job_failed`、`reviewed` |
+| P5d-1/P5d-2/P5d-3 Eval schedule | `go test ./internal/wika/governance/evalschedule ./internal/handler` | cron fixture；`POST /eval/schedules`、disable 后 worker 不触发 | `wika.eval_schedule.updated`、`run_failed` |
+| P5e-1/P5e-2/P5e-3/P5e-4 Org share | `go test ./internal/wika/governance/orgshare ./internal/wika/scope ./internal/wika/search ./internal/handler` | share/revoke fixture；`search_knowledge` shared scope 回归 | `wika.org_share.created`、`wika.org_share.revoked` |

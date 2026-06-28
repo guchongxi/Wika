@@ -29,14 +29,14 @@ Wika 是从 [WeKnora](https://github.com/Tencent/WeKnora) fork 的知识闭环�
 
 实施入口：
 
-1. 先完成 [tech-plan.md](./tech-plan.md) 的 P0 ADR，并把 ADR-01 到 ADR-07 作为编码前不可变决策。
+1. 先完成 [tech-plan.md](./tech-plan.md) 的 P0 ADR，并把 ADR-01 到 ADR-10 作为编码前不可变决策。
 2. P1 拆成 P1a/P1b/P1c：先做空间、默认 KB、用户级 token 和旧 API scope；再做入库/检索；最后做 `suggest_to_team`。
 3. P2-P5 每期都有独立数据模型、API、权限、安全和验收门禁；只有上一期门禁通过，下一期才能进入编码。
 4. 所有阶段都必须满足：个人正文不被 SystemAdmin 读取、旧 WeKnora API 不绕过 personal scope、AI 输出不绕过确定性安全规则。
 
 实施前检查：
 
-- 当前 PR 属于 P1a/P1b/P1c/P2/P3/P4/P5 中哪一张任务卡。
+- 当前 PR 属于 P1a/P1b/P1c/P2/P3/P4/P5a-P5e 中哪一张任务卡。
 - 已写出对应 RED 测试，且失败原因符合预期。
 - 需要改旧 WeKnora API 时，同 PR 包含旧接口越权测试。
 - MCP 日常工具使用用户级 PAT，不复用租户 API key。
@@ -45,7 +45,7 @@ Wika 是从 [WeKnora](https://github.com/Tencent/WeKnora) fork 的知识闭环�
 关键前置决策：
 
 - Space 复用 Tenant，个人空间不通过 KB visibility 表达。
-- 日常 MCP 使用用户级 PAT/OAuth，不复用租户 API key。
+- 日常 MCP 当前实现使用用户级 PAT，不复用租户 API key；OAuth 是后续同等身份形态。
 - `search_knowledge` 先做权限 scope，再做跨 KB 混合检索。
 - `suggest_to_team` 默认不自动发布到团队；只有团队策略显式开启且通过确定性安全门禁时，AI 通过结果才可自动应用。
 - 旧 WeKnora KB/knowledge/search/download/preview API 必须接入 personal scope，不能只保护 Wika 新 API。

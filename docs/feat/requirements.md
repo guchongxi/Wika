@@ -109,7 +109,7 @@ Wika 分两层验收：
 
 | 阶段 | 用户故事 | 最小验证数据 | 完成判定 |
 |------|----------|--------------|----------|
-| P0 | 作为开发者，我要知道哪些架构决策不可反向实现 | ADR-01 到 ADR-07、旧 API 清单、迁移编号规划 | 文档能直接回答 Space、PAT、scope、suggestion、评测、保鲜的实现边界 |
+| P0 | 作为开发者，我要知道哪些架构决策不可反向实现 | ADR-01 到 ADR-10、旧 API 清单、迁移编号规划 | 文档能直接回答 Space、PAT、scope、suggestion、评测、保鲜的实现边界 |
 | P1a | 作为用户 A，我注册后自动有个人空间，且用户 B 无法通过新旧 API 读到 A 的个人知识 | 用户 A/B、A personal tenant、B personal tenant、团队 T、A/B 各一条个人知识 | 新旧 KB/knowledge/search/download/preview 路径对越权访问返回 404 或空结果 |
 | P1b | 作为开发者，我能用 Web 或 MCP 写入个人知识，并用 AI 工具搜到个人和团队知识 | A 的个人知识 2 条、团队 T 知识 2 条、幂等键 1 个、无效 token 1 个 | `push_knowledge`、`search_knowledge`、`expand_knowledge_result`、`get_my_knowledge` 可真实调用并留下访问聚合 |
 | P1c | 作为团队维护者，我主要处理 AI 无法确定的知识，必要时可覆盖所有 AI 结论 | 高质量知识、敏感知识、重复知识、过期知识、prompt injection 样式知识各 1 条 | `suggest_to_team` 可构造通过、待确认、不通过；默认不自动发布；开启自动应用也必须过安全门禁 |
@@ -117,6 +117,25 @@ Wika 分两层验收：
 | P3 | 作为维护者，我能发现和处理过期、低质、长期未复用知识 | 过期、将过期、低质量、低置信、90 天无访问知识各 1 条 | scanner 可生成保鲜项；处理动作有审计；检索热路径不写 `knowledges` 主表 |
 | P4 | 作为团队成员，我能通过图谱理解知识关系，且图谱失败不影响搜索 | 团队实体 3 个、关系 3 条、个人实体 1 个、模拟图谱服务失败 | 团队图谱可分页；个人图谱受 Owner 限制；搜索返回图谱贡献或降级标识 |
 | P5 | 作为团队维护者，我能处理冲突、恢复版本、确认 URL 更新、运行定时评测、授权跨团队引用 | 冲突候选、两个知识版本、URL 重抓 fixture、评测计划、Organization share/revoke 各 1 组 | 每个高级治理动作都有状态流转、回滚或撤销路径、scope 校验和审计记录 |
+
+### 阶段发布矩阵
+
+阶段完成不是“代码合并”或“页面出现”，而是 Alpha 受控可用、GA 可放大、失败可回滚。下表是每期进入实现前必须写进测试和发布检查清单的产品口径。
+
+| 阶段 | 非目标 | 成功指标目标值 | Alpha 门禁 | GA 门禁 | 回滚触发 | 回滚动作 |
+|------|--------|----------------|------------|---------|----------|----------|
+| P0 | 不写业务代码 | ADR-01 到 ADR-10 全部签准；旧 API inventory 100% 有 owner | 方案经产品、架构、安全确认 | P1a RED 测试清单可直接创建 | ADR 互相冲突或旧 API 清单缺失 | 停止进入 P1a，回到方案修订 |
+| P1a | 不开放 AI 入库和团队推荐 | A/B IDOR 0 漏洞；旧 API 越权 0 漏洞；token 创建/撤销成功率 100% | 本地 A/B fixture 通过；租户 API key 调日常工具被拒绝 | 新旧 API scope 回归全绿；个人空间幂等创建通过 | 任一旧接口可读他人 personal 内容 | 关闭 Wika 日常入口，保留数据，修 scope |
+| P1b | 不自动推荐团队；不做图谱增强 | MCP push/search 成功率 >= 99%；search P95 <= 1500ms；push 后 60s 内可检索 | Web 和 MCP 各完成 1 条真实入库/检索 | compact/expand/access 记录全链路通过 | 检索泄露无权 snippet 或入库重复失控 | 关闭 MCP 日常工具或只读 search |
+| P1c | 默认不自动应用团队知识 | 三态 fixture 100% 可构造；自动应用误放行 0；人工覆盖成功率 100% | `approved/needs_confirmation/rejected` fixture 通过 | 默认关闭自动应用；开启后安全门禁全绿 | 敏感/prompt injection 内容自动进入团队 | 关闭自动应用策略，suggestion 保持人工队列 |
+| P2 | 不用小样本指标代表整体质量 | 正式 run 100% 记录 case 明细；无 expected IDs 0 次进入正式指标 | 5 条 smoke QA 跑通导入、dry-run、正式 run | pilot dataset >= 30 条或团队确认样本代表性；趋势可追溯 | 越权导出 expected answer 或指标不可复现 | 停止正式 run 写趋势，只保留 dry-run |
+| P3 | 不做自动 URL 重抓；不自动删除知识 | scanner 命中 5 类 fixture；处理动作 100% 有审计；热路径 0 主表写 | 单 KB 手动扫描通过 | worker 可停用；误报处理路径可用 | scanner 写放大影响搜索或误报率不可接受 | 停用 scanner/worker，保留 items 待人工清理 |
+| P4 | 图谱不替代主搜索；图谱失败不阻断搜索 | 图谱增强开启后 search P95 退化 <= 20%；图谱故障主搜索成功率 100% | 实体详情和搜索降级 fixture 通过 | 图谱贡献率可观测；一键关闭增强有效 | 图谱泄露个人证据或导致搜索 500 | 关闭图谱增强开关，保留图谱读模型 |
+| P5a Conflict | 不自动删除、覆盖、合并知识 | 冲突候选确认/驳回/解决全链路通过；同一未终态候选 0 重复 | 1 组冲突 fixture 通过 | 队列筛选、审计和人工处理可用 | AI 建议直接改变知识正文 | 关闭冲突检测 worker，只保留已生成候选 |
+| P5b Version | 不覆盖历史版本 | restore 100% 生成新版本；版本正文越权 0 泄露 | 两个版本 diff/restore 通过 | 所有知识写路径均记录版本 | restore 覆盖历史或绕过 scope | 禁用 restore API，保留版本列表只读 |
+| P5c URL Refresh | 不直接覆盖正文；不抓取非 HTTP(S) | SSRF fixture 100% 阻断；成功抓取 100% 进入待确认 | safe fetcher fixture 全绿 | 定时/手动 job 可停用，review/apply 有审计 | 内网/metadata/重定向绕过或恶意 HTML 执行 | 停用 URL refresh worker 和 schedule |
+| P5d Eval Schedule | 不复制评测逻辑 | due schedule 触发成功率 >= 99%；连续失败后 100% 降频或停用 | 单 schedule cron 触发 run | 多实例锁验证通过；失败告警可查 | 重复触发 run 或无限失败重试 | 停用 schedule worker，保留手动评测 |
+| P5e Org Share | 不共享个人正文、证据、文件；默认不复制 | revoke 后新 search 0 命中；allowed fields 裁剪 100% 生效 | share/revoke fixture 通过 | 接收团队权限和 shared scope 回归全绿 | 撤销后仍命中或字段越权 | 停用 shared scope，保留审计和 lineage 元数据 |
 
 ## 五、功能需求
 
@@ -446,6 +465,23 @@ P4 需求：
 
 P5 覆盖高治理成本能力，只在 P1-P4 稳定后进入。
 
+P5 按 5 个独立子阶段实施和发布：
+
+| 子阶段 | 能力 | 稳定锚点 | 进入条件 |
+|--------|------|----------|----------|
+| P5a | 冲突检测 | `WIKA-P5-CONFLICT` | P1b search 和 P3 freshness state 可用 |
+| P5b | 版本 diff 和恢复 | `WIKA-P5-VERSION` | 关键知识写路径已统一到可插 hook 的 service |
+| P5c | 自动 URL 重抓 | `WIKA-P5-URL-REFRESH` | P5b version 已可记录 URL apply 后的新版本 |
+| P5d | 定时评测 | `WIKA-P5-EVAL-SCHEDULE` | P2 evaluation run 已稳定可复用 |
+| P5e | Organization 跨团队共享 | `WIKA-P5-ORG-SHARE` | P1a ScopeResolver 和 P1b search shared scope 已可回归 |
+
+P5 总体非目标：
+
+- 不让 AI 自动修改、删除、覆盖或合并知识。
+- 不让 URL 重抓直接覆盖正文。
+- 不让 Organization 共享个人正文、证据、chunk 或文件内容。
+- 不在 P5 内重写 P1-P4 的入库、搜索、评测和保鲜主链路。
+
 #### 冲突检测
 
 - 用户创建、更新或推荐知识时，系统可以生成疑似冲突候选。
@@ -490,8 +526,8 @@ P5 默认安全边界：
 
 ## 六、安全需求
 
-1. 日常 MCP 工具必须使用用户级 PAT/OAuth，不得复用租户级 API key 伪装 Admin。
-2. PAT/OAuth 必须绑定 `user_id`、`tenant_id`、scope、过期时间和撤销状态。
+1. 日常 MCP 工具必须使用用户级身份令牌，不得复用租户级 API key 伪装 Admin；P1-P5 先实现 PAT，OAuth 后置。
+2. PAT 必须绑定 `user_id`、`tenant_id`、scope、过期时间和撤销状态；未来 OAuth 必须映射到同一套 scope。
 3. 个人知识正文、chunk、文件、图谱详情和评测内容仅 Owner 可读。
 4. SystemAdmin 可以看元数据和统计，不得读取个人知识正文。
 5. 个人知识越权访问返回 404，不暴露存在性。
