@@ -86,6 +86,7 @@ type RouterParams struct {
 	DataSourceCredentialsHandler *handler.DataSourceCredentialsHandler
 	WeKnoraCloudHandler          *handler.WeKnoraCloudHandler
 	WikiPageHandler              *handler.WikiPageHandler
+	WikaTokenHandler             *handler.WikaTokenHandler
 }
 
 // NewRouter 创建新的路由
@@ -231,6 +232,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterWeKnoraCloudRoutes(v1, params.WeKnoraCloudHandler, rbacGuards)
 		RegisterWikiPageRoutes(v1, params.WikiPageHandler, rbacGuards)
 		RegisterChunkerDebugRoutes(v1, rbacGuards)
+		RegisterWikaRoutes(v1, params.WikaTokenHandler, rbacGuards)
 	}
 
 	return r
@@ -245,6 +247,24 @@ func NewRouter(params RouterParams) *gin.Engine {
 // rest of the RBAC matrix in this file.
 func RegisterChunkerDebugRoutes(r *gin.RouterGroup, g *rbacGuards) {
 	r.POST("/chunker/preview", g.Viewer(), handler.PreviewChunking)
+}
+
+// RegisterWikaRoutes 注册 Wika 产品化接口。
+func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, g *rbacGuards) {
+	if tokenHandler == nil {
+		return
+	}
+	wika := r.Group("/wika")
+	tokenGuards := []gin.HandlerFunc{}
+	if g != nil {
+		tokenGuards = append(tokenGuards, g.Viewer())
+	}
+	tokens := wika.Group("/tokens", tokenGuards...)
+	{
+		tokens.GET("", tokenHandler.ListTokens)
+		tokens.POST("", tokenHandler.CreateToken)
+		tokens.DELETE("/:id", tokenHandler.RevokeToken)
+	}
 }
 
 // RegisterChunkRoutes 注册分块相关的路由

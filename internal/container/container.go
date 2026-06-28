@@ -83,6 +83,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
+	wikaauth "github.com/Tencent/WeKnora/internal/wika/auth"
 	"github.com/tencent/vectordatabase-sdk-go/tcvectordb"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/auth"
@@ -169,6 +170,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(repository.NewWikiLogEntryRepository))
 	must(container.Provide(repository.NewTaskPendingOpsRepository))
 	must(container.Provide(repository.NewTaskDeadLetterRepository))
+	must(container.Provide(wikaauth.NewGormTokenStore))
 
 	// MCP manager for managing MCP client connections
 	logger.Debugf(ctx, "[Container] Registering MCP manager...")
@@ -197,6 +199,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewUserService))
 	must(container.Provide(service.NewSystemSettingService))
 	must(container.Provide(service.NewWeKnoraCloudService))
+	must(container.Provide(initWikaTokenService))
 
 	// Extract services - register individual extracters with names
 	must(container.Provide(service.NewChunkExtractService, dig.Name("chunkExtractor")))
@@ -340,6 +343,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewSkillService))
 	must(container.Provide(handler.NewSkillHandler))
 	must(container.Provide(handler.NewOrganizationHandler))
+	must(container.Provide(handler.NewWikaTokenHandler))
 
 	// Data source handler
 	must(container.Provide(handler.NewDataSourceHandler))
@@ -415,6 +419,15 @@ func must(err error) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func initWikaTokenService(store *wikaauth.GormTokenStore) *wikaauth.TokenService {
+	pepper := strings.TrimSpace(os.Getenv("WIKA_TOKEN_PEPPER"))
+	if pepper == "" {
+		logger.Warn(context.Background(), "[Container] WIKA_TOKEN_PEPPER is empty; using development fallback for Wika PAT hashing")
+		pepper = "wika-dev-token-pepper"
+	}
+	return wikaauth.NewTokenService(store, pepper)
 }
 
 // initLangfuse initializes the Langfuse ingestion client.
