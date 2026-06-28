@@ -34,6 +34,14 @@ Wika 是从 [WeKnora](https://github.com/Tencent/WeKnora) fork 的知识闭环�
 3. P2-P5 每期都有独立数据模型、API、权限、安全和验收门禁；P5 子阶段也必须独立 feature flag、独立回滚、独立验收。
 4. 所有阶段都必须满足：个人正文不被 SystemAdmin 读取、旧 WeKnora API 不绕过 personal scope、AI 输出不绕过确定性安全规则。
 
+P5 快速开工入口：
+
+- 先确认 P1-P4 门禁已通过，再按 [tech-plan.md](./tech-plan.md) 的“P5 Implementation Map”“P0-P5 任务卡索引”“P5 RED 测试包”拆 PR。
+- 每个 P5 子阶段先写 migration/type 约束 RED 测试，再写 store/service 状态机和权限测试，最后补 handler/router/container 测试。
+- P5b Version 是 P5c URL Refresh apply 的前置；P5c 不得绕过 VersionService 直接改正文。
+- P5e 必须先让 ScopeResolver 输出 `shared scope` 和 `allowed_fields`，再接 SearchService、expand、download、preview 和 direct-id 读取。
+- P5a/P5c/P5d worker 必须先通过 feature flag fail-closed、DB lease、schedule slot 幂等和停用路径测试，不能先上线单实例假设。
+
 实施前检查：
 
 - 当前 PR 属于 P1a/P1b/P1c/P2/P3/P4/P5a-P5e 中哪一张任务卡。
