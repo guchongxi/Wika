@@ -38,6 +38,7 @@ func TestContainerRegistersWikaSuggestionComponents(t *testing.T) {
 		"wikaorgshare.NewGormStore",
 		"wikaorgshare.NewTenantMemberAdminChecker",
 		"initWikaOrgShareService",
+		"handler.NewWikaOrgShareHandler",
 		"wikagraph.NewGormStore",
 		"wikagraph.NewService",
 		"handler.NewWikaGraphHandler",

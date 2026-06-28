@@ -97,6 +97,7 @@ type RouterParams struct {
 	WikaVersionHandler           *handler.WikaVersionHandler
 	WikaURLRefreshHandler        *handler.WikaURLRefreshHandler
 	WikaEvalScheduleHandler      *handler.WikaEvalScheduleHandler
+	WikaOrgShareHandler          *handler.WikaOrgShareHandler
 	WikaTokenService             *wikaauth.TokenService
 }
 
@@ -243,7 +244,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterWeKnoraCloudRoutes(v1, params.WeKnoraCloudHandler, rbacGuards)
 		RegisterWikiPageRoutes(v1, params.WikiPageHandler, rbacGuards)
 		RegisterChunkerDebugRoutes(v1, rbacGuards)
-		RegisterWikaRoutes(v1, params.WikaTokenHandler, params.WikaKnowledgeHandler, params.WikaSuggestionHandler, params.WikaEvaluationHandler, params.WikaFreshnessHandler, params.WikaGraphHandler, params.WikaConflictHandler, params.WikaVersionHandler, params.WikaURLRefreshHandler, params.WikaEvalScheduleHandler, rbacGuards)
+		RegisterWikaRoutes(v1, params.WikaTokenHandler, params.WikaKnowledgeHandler, params.WikaSuggestionHandler, params.WikaEvaluationHandler, params.WikaFreshnessHandler, params.WikaGraphHandler, params.WikaConflictHandler, params.WikaVersionHandler, params.WikaURLRefreshHandler, params.WikaEvalScheduleHandler, params.WikaOrgShareHandler, rbacGuards)
 	}
 
 	return r
@@ -261,8 +262,8 @@ func RegisterChunkerDebugRoutes(r *gin.RouterGroup, g *rbacGuards) {
 }
 
 // RegisterWikaRoutes 注册 Wika 产品化接口。
-func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, knowledgeHandler *handler.WikaKnowledgeHandler, suggestionHandler *handler.WikaSuggestionHandler, evaluationHandler *handler.WikaEvaluationHandler, freshnessHandler *handler.WikaFreshnessHandler, graphHandler *handler.WikaGraphHandler, conflictHandler *handler.WikaConflictHandler, versionHandler *handler.WikaVersionHandler, urlRefreshHandler *handler.WikaURLRefreshHandler, evalScheduleHandler *handler.WikaEvalScheduleHandler, g *rbacGuards) {
-	if tokenHandler == nil && knowledgeHandler == nil && suggestionHandler == nil && evaluationHandler == nil && freshnessHandler == nil && graphHandler == nil && conflictHandler == nil && versionHandler == nil && urlRefreshHandler == nil && evalScheduleHandler == nil {
+func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandler, knowledgeHandler *handler.WikaKnowledgeHandler, suggestionHandler *handler.WikaSuggestionHandler, evaluationHandler *handler.WikaEvaluationHandler, freshnessHandler *handler.WikaFreshnessHandler, graphHandler *handler.WikaGraphHandler, conflictHandler *handler.WikaConflictHandler, versionHandler *handler.WikaVersionHandler, urlRefreshHandler *handler.WikaURLRefreshHandler, evalScheduleHandler *handler.WikaEvalScheduleHandler, orgShareHandler *handler.WikaOrgShareHandler, g *rbacGuards) {
+	if tokenHandler == nil && knowledgeHandler == nil && suggestionHandler == nil && evaluationHandler == nil && freshnessHandler == nil && graphHandler == nil && conflictHandler == nil && versionHandler == nil && urlRefreshHandler == nil && evalScheduleHandler == nil && orgShareHandler == nil {
 		return
 	}
 	wika := r.Group("/wika")
@@ -353,6 +354,14 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 			urlRefresh.DELETE("/schedules/:schedule_id", urlRefreshHandler.DisableSchedule)
 		}
 		wika.PUT("/url-refresh/:id/review", append(viewerGuards, urlRefreshHandler.ReviewJob)...)
+	}
+	if orgShareHandler != nil {
+		orgShares := wika.Group("/orgs/:org_id/shares", viewerGuards...)
+		{
+			orgShares.POST("", orgShareHandler.CreateShare)
+			orgShares.PUT("/:share_id/accept", orgShareHandler.AcceptShare)
+			orgShares.DELETE("/:share_id", orgShareHandler.RevokeShare)
+		}
 	}
 }
 
