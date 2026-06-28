@@ -52,6 +52,59 @@ MCP/Web 生产 -> 统一入库 -> 权限感知检索 -> 团队沉淀 -> 评测 -
 | ADR-06 | `suggest_to_team` 默认不自动发布到团队 | 默认进入可应用结果；只有团队策略开启且确定性安全门禁通过才自动应用 |
 | ADR-07 | 旧 KB/knowledge/search/download/preview API 必须接入 personal scope | 只保护 Wika 新 API 会留下 IDOR |
 
+### 3.1 ADR 详述
+
+#### ADR-01 Space 复用 Tenant
+
+- **背景**：WeKnora 已经用 Tenant、`tenant_members`、RBAC 和审计承载多租户边界。Wika 需要个人/团队空间，但不需要再造一套资源归属体系。
+- **备选方案**：
+  - 新建 `spaces` 表并映射到 tenant：语义干净，但所有现有 KB、Agent、评测、审计都要双写或 join，合并上游风险高。
+  - 复用 Tenant 并新增 `space_type`：侵入点少，能直接复用现有权限链，但需要给旧 API 补 personal scope。
+- **决策**：复用 Tenant，新增 `tenants.space_type`，取值 `personal/team`。
+- **影响**：所有空间切换本质仍是 tenant 切换；代码和 UI 统一展示为 Space。旧 tenant 默认迁移为 `team`。
+- **回滚/迁移**：`space_type` 默认 `team`，回滚时可忽略 personal 相关表；已创建 personal tenant 不删除，只停止入口创建。
+
+#### ADR-02 一人一个个人空间由 `user_personal_spaces` 承载
+
+- **背景**：需要强约束“一人一个个人空间”和“一个 personal tenant 只属于一个用户”。
+- **备选方案**：
+  - 在 `tenants` 增加 `owner_user_id` 并做复杂唯一约束：查询直接，但改上游核心表更多。
+  - 独立映射表：约束清晰，合并冲突低。
+- **决策**：新增 `user_personal_spaces(user_id, tenant_id)`，二者均唯一。
+- **影响**：注册和首次访问必须在事务内创建 tenant、tenant_members Owner、默认 KB、映射记录。
+- **回滚/迁移**：不自动删除个人空间数据；回滚入口只停止创建和展示。
+
+#### ADR-03 个人/团队边界不使用 KB visibility
+
+- **背景**：KB visibility 表达知识库可见性，不适合表达个人空间身份。用它表达个人知识会和 Tenant/RBAC 出现双重权限语义。
+- **决策**：个人/团队是 Space 属性；KB 只属于某个 Space。
+- **影响**：所有 KB、knowledge、search、download、preview 必须先解析 space scope。
+
+#### ADR-04 日常 MCP 使用用户级 PAT/OAuth
+
+- **背景**：租户 API key 面向管理型集成，不能代表某个用户写入个人知识。
+- **决策**：新增用户级 token，绑定 user、默认 tenant、scope、过期和撤销状态；日常 MCP tools 拒绝租户 API key。
+- **影响**：MCP server 需区分管理型 tools 和日常 tools；审计日志记录真实 user_id。
+- **回滚/迁移**：保留原管理型 API key；日常 tools 可整体关闭。
+
+#### ADR-05 `search_knowledge` 使用 scope-aware fan-out hybrid search
+
+- **背景**：agentmemory 的 `search_knowledge` 可借鉴 BM25、向量、图谱、RRF 和 compact 返回，但 Wika 的第一约束是空间权限。
+- **决策**：先用 ScopeResolver 得到可读 KB 集合，再并发调用现有单 KB hybrid search，最后跨 KB RRF 合并和 rerank。
+- **影响**：底层检索引擎 P1 不重写；Wika 层负责跨空间编排、权限过滤、访问记录和 AI 安全边界。
+
+#### ADR-06 `suggest_to_team` 默认不自动发布
+
+- **背景**：个人知识可能包含临时经验、敏感内容或低质量内容，直接进入团队会污染团队资产。
+- **决策**：AI 预审输出三态；团队策略默认关闭自动应用。只有策略开启、AI 通过、确定性安全门禁通过时才由系统自动应用。
+- **影响**：人工仍可覆盖所有结果；自动应用必须可审计、可追溯、可回滚。
+
+#### ADR-07 旧 API 必须接入 personal scope
+
+- **背景**：只保护 Wika 新 API 会留下旧 WeKnora API 的 IDOR 通道。
+- **决策**：KB/knowledge/search/download/preview/hybrid-search 等旧接口必须接入统一 ScopeResolver。
+- **影响**：这是 P1a 安全门禁，不通过不得进入 P1b/P1c。
+
 ## 四、总体架构
 
 保持模块化单体，不拆微服务。
@@ -316,9 +369,11 @@ eval_qa_items
   dataset_id
   question
   expected_answer
+  expected_knowledge_ids jsonb
   expected_chunk_ids jsonb
   tags jsonb
   enabled
+  version
   created_at
   updated_at
 
@@ -327,12 +382,14 @@ eval_runs
   tenant_id
   kb_id
   dataset_id
+  dataset_version
   trigger
   status
   mrr
   recall_at_5
   ndcg_at_5
   metrics jsonb
+  search_config jsonb
   total
   failed
   error_msg
@@ -346,8 +403,11 @@ eval_run_items
   qa_item_id
   rank
   score
+  hit
+  first_hit_rank
   retrieved_chunk_ids jsonb
   retrieved_knowledge_ids jsonb
+  failure_reason
   error_msg
   created_at
 ```
@@ -387,6 +447,379 @@ freshness_check_items
 ```
 
 不要把扫描明细塞进一个大 JSON 数组。
+
+### 5.9 DDL 级约束补充
+
+以下约束必须在 migration、repository 事务和测试中同时体现。数据库不能表达的跨表不变量，必须由 service 事务和回归测试兜底。
+
+#### `tenants.space_type`
+
+```sql
+ALTER TABLE tenants
+  ADD COLUMN space_type varchar(16) NOT NULL DEFAULT 'team',
+  ADD CONSTRAINT chk_tenants_space_type CHECK (space_type IN ('personal', 'team'));
+
+CREATE INDEX idx_tenants_space_type ON tenants(space_type);
+```
+
+迁移策略：
+
+- 历史 tenant 全部保持默认 `team`。
+- personal tenant 只通过 `SpaceService.GetOrCreatePersonalSpace` 创建。
+- 回滚时先删除 CHECK 和索引，再删除字段；不自动删除 tenant 数据。
+
+#### `user_personal_spaces`
+
+```sql
+CREATE TABLE user_personal_spaces (
+  user_id varchar(64) PRIMARY KEY,
+  tenant_id varchar(64) NOT NULL UNIQUE REFERENCES tenants(id) ON DELETE RESTRICT,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_user_personal_spaces_tenant_id ON user_personal_spaces(tenant_id);
+```
+
+跨表不变量：
+
+- `tenant_id` 指向的 tenant 必须是 `space_type='personal'`。
+- personal tenant 在 `tenant_members` 中只能有一个 Owner，且必须是 `user_id`。
+- 该不变量由创建事务、成员变更拦截和测试保证；如后续需要更强保护，可加 trigger。
+
+#### `wika_space_defaults`
+
+```sql
+CREATE TABLE wika_space_defaults (
+  id bigserial PRIMARY KEY,
+  tenant_id varchar(64) NOT NULL UNIQUE REFERENCES tenants(id) ON DELETE CASCADE,
+  default_kb_id varchar(64) NOT NULL REFERENCES knowledge_bases(id) ON DELETE RESTRICT,
+  created_by varchar(64) NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_wika_space_defaults_default_kb_id ON wika_space_defaults(default_kb_id);
+```
+
+同租户约束：
+
+- `default_kb_id` 必须属于同一 `tenant_id`。
+- PostgreSQL 不能用普通 FK 表达 `knowledge_bases(id, tenant_id)` 时，由 `SetDefaultKB` 事务 `SELECT ... FOR UPDATE` 校验，并用 repository 测试覆盖跨 tenant 拒绝。
+
+#### `wika_knowledge_state`
+
+```sql
+CREATE TABLE wika_knowledge_state (
+  knowledge_id varchar(64) PRIMARY KEY REFERENCES knowledges(id) ON DELETE CASCADE,
+  tenant_id varchar(64) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  kb_id varchar(64) NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+  quality_score int NOT NULL DEFAULT 0 CHECK (quality_score BETWEEN 0 AND 100),
+  quality_breakdown jsonb NOT NULL DEFAULT '{}'::jsonb,
+  freshness_status varchar(24) NOT NULL DEFAULT 'fresh'
+    CHECK (freshness_status IN ('fresh', 'expiring', 'expired', 'stale', 'low_quality', 'needs_review')),
+  confidence_score numeric(4,3) CHECK (confidence_score IS NULL OR confidence_score BETWEEN 0 AND 1),
+  expires_at timestamptz,
+  source_hash varchar(128),
+  source_updated_at timestamptz,
+  idempotency_key varchar(128),
+  last_access_rollup_at timestamptz,
+  review_status varchar(24) NOT NULL DEFAULT 'none'
+    CHECK (review_status IN ('none', 'needs_review', 'reviewed', 'deprecated')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_wika_knowledge_state_tenant_kb_freshness
+  ON wika_knowledge_state(tenant_id, kb_id, freshness_status);
+CREATE INDEX idx_wika_knowledge_state_kb_expires
+  ON wika_knowledge_state(kb_id, expires_at)
+  WHERE expires_at IS NOT NULL;
+CREATE UNIQUE INDEX ux_wika_knowledge_state_idempotency
+  ON wika_knowledge_state(tenant_id, kb_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+```
+
+#### `knowledge_access_daily`
+
+```sql
+CREATE TABLE knowledge_access_daily (
+  tenant_id varchar(64) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  kb_id varchar(64) NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+  knowledge_id varchar(64) NOT NULL REFERENCES knowledges(id) ON DELETE CASCADE,
+  day date NOT NULL,
+  access_count bigint NOT NULL DEFAULT 0 CHECK (access_count >= 0),
+  last_accessed_at timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id, kb_id, knowledge_id, day)
+);
+
+CREATE INDEX idx_knowledge_access_daily_kb_day
+  ON knowledge_access_daily(kb_id, day DESC);
+CREATE INDEX idx_knowledge_access_daily_knowledge_day
+  ON knowledge_access_daily(knowledge_id, day DESC);
+```
+
+写入策略：
+
+- 搜索热路径只写入内存队列、Redis stream 或批量 buffer。
+- flush worker 每 1-5 秒批量 upsert，单批建议 100-1000 条。
+- upsert 只更新 `access_count = access_count + excluded.access_count` 和 `last_accessed_at = greatest(...)`。
+- flush 失败记录指标和日志，不影响搜索响应。
+
+#### `knowledge_suggestions`
+
+必须补充：
+
+```sql
+CREATE UNIQUE INDEX ux_knowledge_suggestions_open
+  ON knowledge_suggestions(source_knowledge_id, target_tenant_id, target_kb_id)
+  WHERE status IN ('ai_reviewed', 'pending_human');
+
+CREATE UNIQUE INDEX ux_knowledge_suggestions_idempotency
+  ON knowledge_suggestions(submitter_id, target_tenant_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+```
+
+事务要求：
+
+- `Apply` 使用 `SELECT ... FOR UPDATE` 锁定 suggestion。
+- 应用前重算 `source_content_hash`，变化则降级为 `pending_human`。
+- 复制知识、写 `knowledge_lineage`、写 audit log 必须在同一事务或可补偿工作流内完成。
+
+#### `wika_user_tokens`
+
+```sql
+CREATE TABLE wika_user_tokens (
+  id bigserial PRIMARY KEY,
+  user_id varchar(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  tenant_id varchar(64) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name varchar(128) NOT NULL,
+  token_prefix varchar(32) NOT NULL,
+  token_hash varchar(128) NOT NULL UNIQUE,
+  hash_alg varchar(32) NOT NULL DEFAULT 'sha256_pepper',
+  scopes jsonb NOT NULL DEFAULT '[]'::jsonb,
+  expires_at timestamptz NOT NULL,
+  revoked_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by_ip inet,
+  last_used_at timestamptz
+);
+
+CREATE INDEX idx_wika_user_tokens_user_tenant_active
+  ON wika_user_tokens(user_id, tenant_id)
+  WHERE revoked_at IS NULL;
+CREATE INDEX idx_wika_user_tokens_expires_at ON wika_user_tokens(expires_at);
+```
+
+安全要求：
+
+- token 明文只在创建响应返回一次。
+- 日志、审计、错误响应只允许出现 `token_prefix`。
+- 创建、撤销、列表接口必须限流；token 校验失败不返回 token 是否存在。
+
+### 5.10 P4 图谱读模型
+
+P4 不要求重写 Neo4j 抽取链路，但需要在关系库保留可分页、可鉴权、可降级的读模型。
+
+新增：
+
+```text
+wika_graph_entities
+  id
+  tenant_id
+  kb_id
+  entity_key
+  name
+  entity_type
+  summary
+  source_knowledge_ids jsonb
+  confidence_score
+  last_extracted_at
+  created_at
+  updated_at
+
+wika_graph_edges
+  id
+  tenant_id
+  kb_id
+  source_entity_id
+  target_entity_id
+  relation_type
+  evidence_knowledge_id
+  evidence_chunk_id
+  evidence_text
+  confidence_score
+  created_at
+  updated_at
+```
+
+索引：
+
+- `wika_graph_entities(tenant_id, kb_id, entity_type, name)`
+- `wika_graph_entities(tenant_id, kb_id, entity_key)` unique
+- `wika_graph_edges(tenant_id, kb_id, source_entity_id)`
+- `wika_graph_edges(tenant_id, kb_id, target_entity_id)`
+- `wika_graph_edges(evidence_knowledge_id)`
+
+权限：
+
+- API 返回前必须用 KB scope 过滤。
+- SystemAdmin 不返回 `summary` 和 `evidence_text`，只返回统计字段。
+- 图谱增强检索只把 allowed KB 内的实体/边加入召回。
+
+### 5.11 P5 高级治理模型
+
+#### 冲突检测
+
+```text
+wika_conflict_checks
+  id
+  tenant_id
+  kb_id
+  trigger
+  status
+  created_by
+  started_at
+  completed_at
+  error_msg
+
+wika_conflict_items
+  id
+  check_id
+  tenant_id
+  kb_id
+  source_knowledge_id
+  target_knowledge_id
+  conflict_type              # contradiction | duplicate | outdated | scope_overlap
+  confidence_score
+  evidence jsonb
+  ai_explanation
+  status                     # open | confirmed | dismissed | resolved
+  resolved_by
+  resolved_at
+  created_at
+  updated_at
+```
+
+约束：
+
+- 同一 `source_knowledge_id + target_knowledge_id + conflict_type` 未终态只能存在一条。
+- `evidence` 只存片段定位和 hash；API 返回证据正文前重新做 scope。
+
+#### 知识版本
+
+```text
+wika_knowledge_versions
+  id
+  knowledge_id
+  tenant_id
+  kb_id
+  version_no
+  title
+  content
+  tags jsonb
+  metadata jsonb
+  content_hash
+  change_reason
+  created_by
+  created_at
+```
+
+约束：
+
+- `(knowledge_id, version_no)` unique。
+- 恢复旧版本时创建新的 `version_no`，不修改历史版本。
+- 版本内容按 knowledge read scope 控制；SystemAdmin 不可读取个人版本正文。
+
+#### URL 重抓
+
+```text
+wika_url_refresh_jobs
+  id
+  knowledge_id
+  tenant_id
+  kb_id
+  source_url
+  status                     # pending | running | pending_review | applied | rejected | failed
+  fetched_hash
+  fetched_title
+  fetched_content
+  diff_summary jsonb
+  ssrf_check jsonb
+  error_msg
+  created_by
+  started_at
+  completed_at
+  reviewed_by
+  reviewed_at
+  created_at
+```
+
+约束：
+
+- 只允许 HTTP/HTTPS。
+- 禁止 private、loopback、link-local、multicast、云元数据地址和重定向后的禁用地址。
+- 限制响应大小、超时、content-type；抓取失败不改变原知识。
+- `pending_review` 经人工确认后才写入知识并生成新版本。
+
+#### 定时评测
+
+```text
+wika_eval_schedules
+  id
+  tenant_id
+  kb_id
+  dataset_id
+  cron_expr
+  enabled
+  next_run_at
+  last_run_id
+  consecutive_failures
+  created_by
+  created_at
+  updated_at
+```
+
+约束：
+
+- 同一 `kb_id + dataset_id` 最多一个启用计划。
+- 连续失败达到阈值后自动停用或降频，并写 audit log。
+
+#### Organization 共享
+
+```text
+wika_organizations
+  id
+  name
+  created_by
+  created_at
+  updated_at
+
+wika_org_members
+  org_id
+  tenant_id
+  role                       # owner | admin | member
+  created_at
+
+wika_org_shares
+  id
+  org_id
+  source_tenant_id
+  source_kb_id
+  target_tenant_id
+  mode                       # reference | snapshot
+  allowed_fields jsonb
+  status                     # active | revoked
+  created_by
+  revoked_by
+  revoked_at
+  created_at
+```
+
+约束：
+
+- P5 默认 `mode=reference`，不复制正文。
+- `allowed_fields` 默认不含个人正文和证据；共享搜索命中后仍要校验接收团队成员权限。
+- revoke 后新 ScopeResolver 不再返回该 share scope。
 
 ## 六、核心服务设计
 
@@ -491,6 +924,71 @@ expand_knowledge_result(ids[])
 ```
 
 如果不想新增第二个 MCP 工具，也可以让 `search_knowledge` 支持 `format=full`，但默认必须是 compact。
+
+### 6.3.1 ScopeResolver 契约
+
+ScopeResolver 是 Wika 权限边界的唯一入口。Wika 新 API 和旧 WeKnora API 都必须调用它，不能在 handler 内各自拼权限条件。
+
+输入：
+
+```text
+actor:
+  user_id
+  is_system_admin
+  auth_type              # jwt | user_pat | tenant_api_key | embed_token
+  default_tenant_id
+
+resource:
+  kind                   # tenant | kb | knowledge | chunk | file | suggestion | eval | freshness | graph
+  id
+  parent_id?
+
+action:
+  read | write | search | download | preview | review | apply | admin | metadata_read
+
+options:
+  include_team
+  include_shared
+  allow_metadata_only
+  batch_mode
+```
+
+输出：
+
+```text
+decision:
+  allowed: bool
+  not_found: bool
+  metadata_only: bool
+  scopes:
+    - tenant_id
+      kb_id?
+      source: personal | team | shared | organization
+      role
+      allowed_fields
+  denial_reason_for_log
+```
+
+语义：
+
+- 无权限访问个人资源时，对外返回 404；日志记录 `denial_reason_for_log`。
+- batch 查询逐条过滤，不能因为部分无权整体 403，也不能返回无权 ID 的占位错误。
+- search 查询只返回 allowed scopes；无 scope 返回空结果。
+- SystemAdmin 默认只能 `metadata_read`，`allowed_fields` 使用字段级 allowlist。
+- `tenant_api_key` 不允许执行日常 personal action，例如 `knowledge:push/search/read/suggestion:create`。
+- `expand_knowledge_result`、download、preview 必须重新解析资源 scope，不能信任搜索 compact 结果。
+
+旧 API 接入点：
+
+| 区域 | 接入方式 | P1a 测试 |
+|------|----------|----------|
+| KB 列表/详情 | 列表按 `ListReadableKBScopes` 过滤；详情按 `Resolve(kb, read)` | A 看不到 B personal KB |
+| HybridSearch | 请求 KB 前 `Resolve(kb, search)` | A 搜 B personal KB 返回 404 或空 |
+| Knowledge 详情 | `Resolve(knowledge, read)` 需回溯 KB/tenant | A 读 B personal knowledge 返回 404 |
+| Knowledge batch | 对每个 ID 调 resolver 后过滤 | batch 不泄露 B 的 ID 存在 |
+| Knowledge search | 先解析 readable scopes，再拼查询 | 不跨 personal space |
+| download/preview | 按 knowledge 回溯 KB scope | 文件内容不泄露 |
+| eval/freshness/graph | 按 KB 和字段 allowlist 校验 | SystemAdmin 不读正文 |
 
 ### 6.4 SuggestionService
 
@@ -664,6 +1162,24 @@ Scope：
 - token 中的 `tenant_id` 表示默认当前空间，不代表只能访问该空间；可访问范围仍由 `SpaceService.ListUserSpaces` 和 RBAC 解析。
 - 管理型 MCP tools 与日常 tools 分组展示；日常 tools 拒绝 `X-API-Key`。
 
+Token 管理 API：
+
+```text
+GET    /api/v1/wika/tokens
+POST   /api/v1/wika/tokens
+DELETE /api/v1/wika/tokens/:id
+```
+
+契约：
+
+- `POST` 请求：`{ name, tenant_id?, scopes[], expires_at }`。
+- `POST` 响应：`{ id, name, token, token_prefix, scopes, expires_at }`，`token` 只出现一次。
+- `GET` 响应不返回 `token_hash`、明文 token、pepper 信息。
+- `DELETE` 是撤销，写 `revoked_at`，不是物理删除。
+- 默认过期时间最长 90 天；SystemAdmin 不能替用户读取或生成明文 token。
+- 创建、撤销、鉴权失败均写 audit log；日志只记录 `token_prefix`。
+- API 和 MCP token 校验都要做限流，失败响应不区分 token 不存在、过期或 hash 不匹配。
+
 ### 7.2 日常工具
 
 ```text
@@ -793,6 +1309,53 @@ GET  /api/v1/wika/kb/:id/freshness/items
 PUT  /api/v1/wika/freshness/items/:id
 ```
 
+### Graph
+
+```text
+GET  /api/v1/wika/kb/:id/graph/overview
+GET  /api/v1/wika/kb/:id/graph/entities
+GET  /api/v1/wika/kb/:id/graph/entities/:entity_id
+GET  /api/v1/wika/kb/:id/graph/edges
+POST /api/v1/wika/kb/:id/graph/search
+```
+
+契约：
+
+- 所有接口先按 KB 做 `read` scope。
+- personal KB 只允许 Owner；SystemAdmin 只返回统计，不返回证据文本。
+- `graph/search` 返回图谱召回贡献和降级状态，不能绕过主搜索 scope。
+
+### Governance
+
+```text
+GET  /api/v1/wika/kb/:id/conflicts
+POST /api/v1/wika/kb/:id/conflicts/checks
+PUT  /api/v1/wika/conflicts/:id
+
+GET  /api/v1/wika/knowledge/:id/versions
+GET  /api/v1/wika/knowledge/:id/versions/:version_id/diff
+POST /api/v1/wika/knowledge/:id/versions/:version_id/restore
+
+GET  /api/v1/wika/knowledge/:id/url-refresh
+POST /api/v1/wika/knowledge/:id/url-refresh
+PUT  /api/v1/wika/url-refresh/:refresh_id/review
+
+GET  /api/v1/wika/kb/:id/eval/schedules
+POST /api/v1/wika/kb/:id/eval/schedules
+PUT  /api/v1/wika/kb/:id/eval/schedules/:schedule_id
+DELETE /api/v1/wika/kb/:id/eval/schedules/:schedule_id
+
+GET  /api/v1/wika/orgs/:org_id/shares
+POST /api/v1/wika/orgs/:org_id/shares
+DELETE /api/v1/wika/orgs/:org_id/shares/:share_id
+```
+
+契约：
+
+- conflict/version/url-refresh 属于 P5，不得在 P1-P3 暗中开启。
+- URL refresh 的抓取结果默认进入待确认，不直接覆盖知识正文。
+- Organization share 默认 `mode=reference`，撤销后新搜索不能命中；历史 lineage 和 audit metadata 保留。
+
 ### Admin Defaults
 
 ```text
@@ -817,6 +1380,9 @@ frontend/src/views/wika/
   SuggestionQueue.vue
   EvaluationDashboard.vue
   FreshnessPanel.vue
+  GraphExplorer.vue
+  KnowledgeVersions.vue
+  GovernanceQueue.vue
   AdminKbDefaults.vue
 ```
 
@@ -827,6 +1393,8 @@ frontend/src/views/wika/
 - 高级配置折叠。
 - 知识详情增加“推荐到团队”入口。
 - 团队维护者首页突出 `待确认` 队列。
+- P4 增加图谱浏览、实体详情和图谱召回贡献说明。
+- P5 增加冲突队列、版本 diff/恢复、URL 重抓待确认、定时评测计划、Organization 共享管理。
 
 ## 十、安全设计
 
@@ -843,6 +1411,37 @@ frontend/src/views/wika/
 9. AI 输出必须 schema 校验，不能直接执行非结构化结果。
 10. 自动应用必须经过确定性安全门禁。
 11. 所有关键动作写 audit log。
+
+字段级数据分类：
+
+| 字段/内容 | 普通成员 | 团队维护者 | SystemAdmin | 说明 |
+|-----------|----------|------------|-------------|------|
+| space/kb/knowledge ID、标题、状态、时间、质量分 | 按 scope | 按 scope | 可读元数据 | 个人正文不可通过标题外字段泄露 |
+| 知识正文、chunk、文件、snippet、证据 | 按 scope | 按 scope | 不可读 | SystemAdmin 不能越权排障读取 |
+| AI 修正文、评测 expected_answer、失败 case 文本 | 按 scope | 按 scope | 不可读 | 视为知识正文同级 |
+| 图谱实体名称、关系类型 | 按 scope | 按 scope | 可读统计/团队元数据 | 个人图谱只给统计 |
+| 图谱证据文本、边证据 chunk | 按 scope | 按 scope | 不可读 | 返回前重新校验 knowledge scope |
+| token_prefix | 本人 | 不可读 | 可读脱敏前缀 | 明文和 hash 永不返回 |
+| token_hash、pepper、密钥检测命中原文 | 不可读 | 不可读 | 不可读 | 仅日志脱敏摘要 |
+
+自动应用确定性门禁版本化：
+
+- 每次 AI 预审记录 `policy_version`、检测器版本和团队策略快照。
+- 检测器至少包含：敏感词、密钥样式、token 样式、PII、prompt injection 样式、AI 修正幅度、重复风险、过期风险、团队相关性。
+- 每个检测器要有 fixture 测试集；新增规则必须补阳性、阴性和边界 case。
+- 任一阻断级检测命中时，`approved` 降级为 `needs_confirmation` 或 `rejected`。
+- 误判处理只能由团队维护者人工覆盖，覆盖原因写 audit log。
+
+P2-P5 额外威胁门禁：
+
+| 阶段 | 威胁 | 必测控制 |
+|------|------|----------|
+| P2 评测 | 导入文件注入、导出越权、expected answer 泄露 | 文件大小/格式校验、scope 过滤、SystemAdmin 不读正文 |
+| P3 保鲜 | 访问统计写放大、越权处理保鲜项 | 异步聚合、item 处理前回溯 KB scope |
+| P4 图谱 | 图谱边泄露个人证据、图谱服务失败拖垮搜索 | 字段 allowlist、best-effort 降级 |
+| P5 URL 重抓 | SSRF、超大响应、恶意 HTML/脚本 | URL allowlist/denylist、IP 校验、大小/类型/超时限制 |
+| P5 版本恢复 | 恢复旧敏感内容、绕过审核 | 恢复前 scope 校验、恢复生成新版本、审计 |
+| P5 Organization | 跨团队共享越权、撤销后仍可搜索 | share scope 显式授权、撤销后 resolver 不返回 |
 
 旧接口必须接入 personal scope：
 
@@ -881,7 +1480,15 @@ frontend/src/views/wika/
   - 团队自动应用默认关闭，开启后仍需确定性安全门禁。
   - 旧 API 必须接入 personal scope。
 
-### P1 闭环 MVP
+门禁：
+
+- ADR-01 到 ADR-07 全部确认，任何反向实现必须先改 ADR。
+- migration 编号、旧 API inventory、ScopeResolver 契约、P1a 测试矩阵已确认。
+- 不能在 P0 后直接进入 `push_knowledge` 或前端页面开发。
+
+### P1a 安全与空间底座
+
+目标：先建立不可绕过的空间、默认 KB、用户 token 和旧 API scope。
 
 交付：
 
@@ -890,36 +1497,82 @@ frontend/src/views/wika/
 - 默认 KB。
 - 空间策略 `wika_space_policies`，团队自动应用默认关闭。
 - 用户级 MCP token。
+- ScopeResolver。
+- 旧 KB/knowledge/search/download/preview API personal scope 改造。
+
+验证：
+
+- A/B 个人空间互相 404 或空结果。
+- 租户 API key 不能调用日常 MCP tools。
+- SystemAdmin 只能读取个人空间元数据。
+- 旧 API 的列表、详情、batch、search、download、preview、hybrid-search 全部通过越权测试。
+
+建议 PR 序列：
+
+1. migration：space、personal mapping、defaults、policies、tokens。
+2. SpaceService：注册/首次访问创建个人空间、默认 KB、空间列表。
+3. TokenService：创建、列表、撤销、scope 校验、MCP 鉴权分组。
+4. ScopeResolver：KB/knowledge/file/search 资源解析。
+5. 旧 API scope 接入和 A/B 安全测试。
+
+### P1b 生产与检索闭环
+
+目标：让用户通过 Web/MCP 写入个人知识，并能从个人+团队 scope 检索。
+
+交付：
+
 - `wika_knowledge_state` 最小字段。
 - `knowledge_access_daily`。
 - `push_knowledge`。
 - `search_knowledge` compact。
 - `expand_knowledge_result`。
 - `get_my_knowledge`。
-- `suggest_to_team` AI 预审和人工覆盖。
-- 团队复制入库。
-- 旧 KB/knowledge/search/download/preview API personal scope 改造。
 
 验证：
 
-- A/B 个人隔离。
 - Web 和 MCP 都能写入。
 - 个人 + 团队检索可用。
+- compact 默认不返回过长正文，expand 重新做 scope。
+- 搜索命中写入访问聚合；聚合失败不影响响应。
+- 幂等键重复调用不重复创建知识。
+
+建议 PR 序列：
+
+1. migration：knowledge state、access daily。
+2. IntakeService：Normalize、Score、DuplicateCheck、Persist、Index。
+3. SearchService：scope fan-out、RRF merge、quality/freshness rerank、compact/expand。
+4. MCP 日常 tools：`push_knowledge`、`search_knowledge`、`expand_knowledge_result`、`get_my_knowledge`。
+5. 前端：个人知识列表、手动创建、空间切换最小入口。
+
+### P1c 团队推荐与 AI 预审
+
+目标：完成个人到团队的治理流转。
+
+交付：
+
+- `knowledge_suggestions`。
+- `knowledge_lineage`。
+- `suggest_to_team` AI 修正、质量审核、风险审核、团队适配判断。
+- 人工覆盖和应用。
+- 团队复制入库。
+- 团队自动应用策略入口。
+
+验证：
+
 - `通过 / 待确认 / 不通过` 三态可构造。
 - 默认不开启自动应用时，AI 通过不会自动进入团队。
 - 开启自动应用且安全门禁通过时，AI 通过可自动复制到团队。
 - 恶意知识、敏感内容、旧接口越权访问均被阻断。
+- 重复调用 `suggest_to_team` 不重复复制团队知识。
+- AI 结构化输出 schema 校验失败会重试一次，仍失败进入 `needs_confirmation`。
 
 建议实施顺序：
 
-1. 迁移和类型：space 类型、personal space 表、默认 KB、空间策略、用户 token、knowledge state、access daily、suggestion/lineage。
-2. SpaceService：注册/首次访问创建个人空间，空间列表和切换。
-3. Auth：用户级 token 创建、撤销、scope 校验，MCP 日常工具拒绝租户 API key。
-4. 旧 API scope 改造：KB/knowledge/search/download/preview/hybrid-search 先通过 A/B 越权测试。
-5. Intake：Web/MCP 共用 `push_knowledge`，幂等、质量分、默认 KB。
-6. Search：scope resolver、fan-out hybrid-search、compact/expand、access daily。
-7. Suggestion：AI 修正、schema 校验、三态、人工覆盖、幂等 apply。
-8. Frontend：空间切换、个人知识、推荐队列、团队自动应用策略入口。
+1. migration：suggestion、lineage、部分唯一索引。
+2. SuggestionService：创建、AI review、schema 校验、三态决策。
+3. DeterministicSafetyGate：检测器、策略版本、fixture。
+4. Apply：事务锁、source hash 校验、复制知识、lineage、audit。
+5. 前端：推荐队列、人工覆盖、团队策略。
 
 ### P2 质量闭环
 
@@ -931,11 +1584,24 @@ frontend/src/views/wika/
 - eval run items。
 - 趋势接口。
 - 单条 dry-run。
+- CSV/JSON 导入导出。
+- 替换现有 `internal/application/service/evaluation.go` 中仅内存保存任务的语义：Wika 评测 run/case 必须以 DB 为 source of truth。
 
 验证：
 
 - 5 条 QA 可评测。
 - 指标和 case 明细可复查。
+- 缺少 `expected_knowledge_ids` 和 `expected_chunk_ids` 的 QA 只能 dry-run。
+- 导入非法格式、超大文件、越权导出均被拒绝。
+- run 记录检索参数、模型版本、索引策略和 dataset_version。
+
+建议 PR 序列：
+
+1. migration：eval dataset、qa items、runs、run items。
+2. EvaluationService：CRUD、import/export、dry-run、run worker。
+3. metric adapter：复用现有 metric 包，统一 MRR/Recall@5/NDCG@5 口径。
+4. API 和前端趋势面板。
+5. 权限、安全、导入导出测试。
 
 ### P3 保鲜闭环
 
@@ -945,10 +1611,23 @@ frontend/src/views/wika/
 - 保鲜面板。
 - 手动处理动作。
 - 访问聚合驱动的长期未访问扫描。
+- freshness scanner worker。
+- 访问聚合 flush worker。
 
 验证：
 
 - 过期、将过期、长期未访问、低质量均可构造和处理。
+- 检索热路径不直接更新 `knowledges` 主表。
+- scanner 失败不影响搜索和知识读取。
+- 处理动作写操作者、处理前后状态和 audit log。
+
+建议 PR 序列：
+
+1. migration：freshness checks/items。
+2. AccessFlushWorker：批量 upsert `knowledge_access_daily`。
+3. FreshnessScanner：按阈值生成 items，更新 `wika_knowledge_state`。
+4. API：overview、checks、items、处理动作。
+5. 前端：保鲜面板和处理流。
 
 ### P4 发现增强
 
@@ -957,6 +1636,21 @@ frontend/src/views/wika/
 - 图谱浏览。
 - 图谱详情。
 - 图谱增强检索权重调优。
+- 图谱读模型和同步任务。
+
+验证：
+
+- 团队图谱实体、关系、证据来源可分页查看。
+- 个人图谱只允许 Owner；SystemAdmin 不返回个人证据文本。
+- 图谱检索开启后能看到召回贡献；关闭后主搜索不受影响。
+- 图谱服务失败时搜索返回降级状态。
+
+建议 PR 序列：
+
+1. migration：graph entities/edges 读模型。
+2. GraphReadService：同步抽取结果、分页、详情、证据 scope。
+3. SearchService：图谱召回权重配置和降级指标。
+4. 前端：图谱浏览和实体详情。
 
 ### P5 高级治理
 
@@ -967,6 +1661,23 @@ frontend/src/views/wika/
 - 自动 URL 重抓。
 - 定时评测。
 - Organization 跨团队引用共享。
+
+验证：
+
+- 冲突候选可生成、确认、驳回、解决，AI 不自动覆盖知识。
+- 每次知识变更形成版本；恢复旧版本生成新版本。
+- URL 重抓 SSRF fixture 全部通过，抓取结果默认进入待确认。
+- 定时评测可启停、失败降频、保留 run/case 明细。
+- Organization share 授权、引用检索、撤销后不再命中。
+
+建议 PR 序列：
+
+1. governance migration：conflicts、versions、url refresh、eval schedules、organization shares。
+2. VersionService：写入 hook、diff、restore。
+3. ConflictService：候选生成、AI 解释、人工状态流转。
+4. URLRefreshWorker：SSRF 防护、抓取、diff、人工应用。
+5. EvalScheduler：cron、失败降频、run 复用。
+6. OrganizationShareService：授权、ScopeResolver shared scope、撤销。
 
 ## 十二、迁移计划
 
@@ -980,6 +1691,10 @@ frontend/src/views/wika/
 | 000093 | knowledge suggestions、lineage、suggestion 幂等约束 |
 | 000094 | eval datasets / qa / runs / run items |
 | 000095 | freshness checks / items |
+| 000096 | graph entities / graph edges 读模型 |
+| 000097 | conflict checks / conflict items |
+| 000098 | knowledge versions / url refresh jobs |
+| 000099 | eval schedules / organization shares |
 
 当前上游迁移已到 `000063`，`000090+` 仍留有缓冲。
 
@@ -1021,3 +1736,21 @@ frontend/src/views/wika/
 - 团队未开启自动应用时，AI 通过结果仍被自动发布。
 - 旧 API 仍可访问他人个人空间内容。
 - `suggest_to_team` 重复调用会重复复制团队知识。
+- 评测只有 run 汇总，没有 case 明细和失败原因。
+- 保鲜只有状态字段，没有扫描任务、处理动作和访问聚合来源。
+- 图谱接口绕过 KB scope 或图谱失败导致主搜索失败。
+- URL 重抓没有 SSRF fixture 和人工确认流程。
+- 版本恢复覆盖历史版本，而不是生成新版本。
+- Organization 撤销共享后，新搜索仍能命中共享内容。
+
+阶段完成证据：
+
+| 阶段 | 必须提供的证据 |
+|------|----------------|
+| P1a | migration up/down、A/B 旧 API 越权测试、token 创建/撤销/拒绝租户 API key |
+| P1b | Web/MCP push、search compact/expand、幂等、access flush 或批量 upsert 证据 |
+| P1c | AI 三态 fixture、自动应用关闭/开启两组测试、人工覆盖、重复 apply 幂等 |
+| P2 | 导入导出、dry-run、正式 run、趋势、case 明细、越权导出阻断 |
+| P3 | scanner 构造 4 类问题、处理动作审计、检索热路径无主表写入 |
+| P4 | 图谱读模型分页、实体详情、图谱检索降级、SystemAdmin 字段 allowlist |
+| P5 | 冲突处理、版本恢复、SSRF fixture、定时评测失败降频、Organization 撤销后 resolver 不返回 |
