@@ -15,6 +15,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	wikaauth "github.com/Tencent/WeKnora/internal/wika/auth"
 	"github.com/gin-gonic/gin"
 )
 
@@ -40,7 +41,7 @@ var noAuthAPI = map[string][]string{
 	// redirects the browser here without a WeKnora bearer token. The request
 	// is authenticated by the opaque, single-use `state` parameter instead.
 	"/api/v1/mcp-oauth/callback": {"GET"},
-	"/api/v1/auth/refresh":            {"POST"},
+	"/api/v1/auth/refresh":       {"POST"},
 	// IM platforms (Feishu, Slack, etc.) commonly issue a HEAD request
 	// before GET to validate Content-Type / Content-Length when rendering
 	// image previews — both verbs must be allowed for image links to work.
@@ -62,13 +63,23 @@ func isNoAuthAPI(path string, method string) bool {
 	return false
 }
 
+// WikaPATVerifier 校验 Wika 用户级 PAT，并检查调用所需 scope。
+type WikaPATVerifier interface {
+	VerifyToken(ctx context.Context, plaintext, requiredScope string) (*types.WikaUserToken, error)
+}
+
 // Auth 认证中间件
 func Auth(
 	tenantService interfaces.TenantService,
 	userService interfaces.UserService,
 	memberService interfaces.TenantMemberService,
 	cfg *config.Config,
+	wikaPATVerifiers ...WikaPATVerifier,
 ) gin.HandlerFunc {
+	var wikaPATVerifier WikaPATVerifier
+	if len(wikaPATVerifiers) > 0 {
+		wikaPATVerifier = wikaPATVerifiers[0]
+	}
 	return func(c *gin.Context) {
 		// ignore OPTIONS request
 		if c.Request.Method == "OPTIONS" {
@@ -86,6 +97,10 @@ func Auth(
 		authHeader := c.GetHeader("Authorization")
 		if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
 			token := strings.TrimPrefix(authHeader, "Bearer ")
+			if strings.HasPrefix(token, "wika_pat_") {
+				authenticateWikaPAT(c, token, tenantService, userService, memberService, cfg, wikaPATVerifier)
+				return
+			}
 			user, jwtTenantID, err := userService.ValidateToken(c.Request.Context(), token)
 			if err == nil && user != nil {
 				// JWT Token认证成功
@@ -274,6 +289,99 @@ func Auth(
 		// 没有提供任何认证信息
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: missing authentication"})
 		c.Abort()
+	}
+}
+
+func authenticateWikaPAT(
+	c *gin.Context,
+	plaintext string,
+	tenantService interfaces.TenantService,
+	userService interfaces.UserService,
+	memberService interfaces.TenantMemberService,
+	cfg *config.Config,
+	verifier WikaPATVerifier,
+) {
+	if verifier == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Wika PAT is not enabled"})
+		c.Abort()
+		return
+	}
+	requiredScope, ok := wikaPATRequiredScope(c.Request.Method, c.Request.URL.Path)
+	if !ok {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: Wika PAT is not allowed for this route"})
+		c.Abort()
+		return
+	}
+	token, err := verifier.VerifyToken(c.Request.Context(), plaintext, requiredScope)
+	if err != nil {
+		if errors.Is(err, wikaauth.ErrTokenScopeDenied) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: insufficient Wika PAT scope"})
+			c.Abort()
+			return
+		}
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: invalid Wika PAT"})
+		c.Abort()
+		return
+	}
+	if token == nil || token.UserID == "" || token.TenantID == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: invalid Wika PAT"})
+		c.Abort()
+		return
+	}
+	user, err := userService.GetUserByID(c.Request.Context(), token.UserID)
+	if err != nil || user == nil || !user.IsActive {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: invalid Wika PAT user"})
+		c.Abort()
+		return
+	}
+	tenant, err := tenantService.GetTenantByID(c.Request.Context(), token.TenantID)
+	if err != nil || tenant == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: invalid Wika PAT tenant"})
+		c.Abort()
+		return
+	}
+	crossTenantSwitch := token.TenantID != user.TenantID
+	role, ok := resolveTenantRole(c.Request.Context(), memberService, user, token.TenantID, crossTenantSwitch, cfg)
+	if !ok {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: not a member of the Wika PAT tenant"})
+		c.Abort()
+		return
+	}
+
+	logger.Infof(c.Request.Context(),
+		"[auth] resolved Wika PAT scope=%s role=%s for user=%s in tenant=%d",
+		requiredScope, role, user.ID, token.TenantID)
+	c.Set(types.TenantIDContextKey.String(), token.TenantID)
+	c.Set(types.TenantInfoContextKey.String(), tenant)
+	c.Set(types.UserContextKey.String(), user)
+	c.Set(types.UserIDContextKey.String(), user.ID)
+	c.Set(types.TenantRoleContextKey.String(), role)
+	c.Set(types.SystemAdminContextKey.String(), false)
+	ctx := c.Request.Context()
+	ctx = context.WithValue(ctx, types.TenantIDContextKey, token.TenantID)
+	ctx = context.WithValue(ctx, types.TenantInfoContextKey, tenant)
+	ctx = context.WithValue(ctx, types.UserContextKey, user)
+	ctx = context.WithValue(ctx, types.UserIDContextKey, user.ID)
+	ctx = context.WithValue(ctx, types.TenantRoleContextKey, role)
+	ctx = context.WithValue(ctx, types.SystemAdminContextKey, false)
+	c.Request = c.Request.WithContext(ctx)
+	c.Next()
+}
+
+func wikaPATRequiredScope(method, path string) (string, bool) {
+	switch {
+	case method == http.MethodPost && path == "/api/v1/wika/knowledge/push":
+		return "knowledge:push", true
+	case method == http.MethodPost && path == "/api/v1/wika/knowledge/search":
+		return "knowledge:search", true
+	case method == http.MethodPost && path == "/api/v1/wika/knowledge/expand":
+		return "knowledge:read", true
+	case method == http.MethodGet && path == "/api/v1/wika/knowledge/mine":
+		return "knowledge:read", true
+	case method == http.MethodPost && path == "/api/v1/wika/suggestions":
+		return "suggestion:create", true
+	default:
+		return "", false
 	}
 }
 

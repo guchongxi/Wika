@@ -27,6 +27,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
+	wikaauth "github.com/Tencent/WeKnora/internal/wika/auth"
 
 	_ "github.com/Tencent/WeKnora/docs" // swagger docs
 )
@@ -87,6 +88,7 @@ type RouterParams struct {
 	WeKnoraCloudHandler          *handler.WeKnoraCloudHandler
 	WikiPageHandler              *handler.WikiPageHandler
 	WikaTokenHandler             *handler.WikaTokenHandler
+	WikaTokenService             *wikaauth.TokenService
 }
 
 // NewRouter 创建新的路由
@@ -158,7 +160,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 	RegisterEmbedPublicRoutes(r, params.EmbedChannelHandler, params.EmbedChannelService, params.TenantService, params.RedisClient, params.FileService)
 
 	// 认证中间件
-	r.Use(middleware.Auth(params.TenantService, params.UserService, params.TenantMemberService, params.Config))
+	r.Use(middleware.Auth(params.TenantService, params.UserService, params.TenantMemberService, params.Config, params.WikaTokenService))
 
 	// 文件服务：统一代理本地/MinIO/COS/TOS存储后端（需要认证）
 	serveFiles(r, params.FileService)
