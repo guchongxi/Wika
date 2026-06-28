@@ -224,3 +224,41 @@ func TestWikaP5ConflictMigrationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestWikaP5URLRefreshMigrationContract(t *testing.T) {
+	path := filepath.Join("..", "..", "migrations", "versioned", "000099_wika_url_refresh.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected Wika P5 URL refresh migration to exist: %v", err)
+	}
+
+	sql := string(raw)
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS wika_url_refresh_jobs",
+		"CREATE TABLE IF NOT EXISTS wika_url_refresh_schedules",
+		"status VARCHAR(24) NOT NULL DEFAULT 'pending'",
+		"CHECK (status IN ('pending', 'running', 'pending_review', 'applied', 'rejected', 'failed'))",
+		"source_url TEXT NOT NULL",
+		"scheduled_for TIMESTAMPTZ",
+		"idempotency_key VARCHAR(128)",
+		"fetched_hash VARCHAR(128)",
+		"diff_summary JSONB NOT NULL DEFAULT '{}'::jsonb",
+		"ssrf_check JSONB NOT NULL DEFAULT '{}'::jsonb",
+		"attempts INT NOT NULL DEFAULT 0",
+		"locked_until TIMESTAMPTZ",
+		"locked_by VARCHAR(128)",
+		"consecutive_failures INT NOT NULL DEFAULT 0",
+		"last_failure_code VARCHAR(64)",
+		"ux_wika_url_refresh_jobs_schedule_slot",
+		"WHERE schedule_id IS NOT NULL",
+		"ux_wika_url_refresh_schedules_enabled",
+		"WHERE enabled = TRUE",
+		"idx_wika_url_refresh_jobs_worker",
+		"idx_wika_url_refresh_schedules_due",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("expected migration to contain %q", fragment)
+		}
+	}
+}
