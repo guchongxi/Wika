@@ -2090,6 +2090,13 @@ P5 Implementation Map：
 | P5d Eval Schedule | `WIKA-P5-EVAL-SCHEDULE` | `wika_eval_schedules` | `governance/evalschedule` | `/wika/kb/:id/eval/schedules*` | 评测计划 | `wika.governance.eval_schedule.enabled` | DB lease、失败降频、run 明细 |
 | P5e Org Share | `WIKA-P5-ORG-SHARE` | 复用 `organizations/organization_tenant_members`，新增 `wika_org_shares` | `governance/orgshare`、`scope` | `/wika/orgs*`、`/wika/orgs/:id/shares*` | Organization 和共享管理 | `wika.governance.org_share.enabled` | allowed_fields 裁剪、revoke 后不命中 |
 
+当前仓库 P5 实现状态：
+
+| 子阶段 | 已落地 | 继续实现时的下一张卡 |
+|--------|--------|----------------------|
+| P5d Eval Schedule | `000100_wika_eval_schedule` migration、`internal/types/wika_eval_schedule.go`、`internal/wika/governance/evalschedule` service/store 已存在；已有测试覆盖 cron 下限、schedule slot 幂等、禁用后不触发、连续失败三次禁用 | 先补 handler/router/container RED，再接 API；随后补 worker lifecycle/DI 不自动启动和 API 冒烟 |
+| P5e Org Share | `000101_wika_org_share` migration、`internal/types/wika_org_share.go`、`internal/wika/governance/orgshare` service/store 已存在；已有测试覆盖 `allowed_fields` 白名单、pending/active、accept/revoke 权限 | 先补 share handler/router/container RED，再接 `shared scope`、SearchService 字段裁剪、expand/download/preview/direct-id 回归 |
+
 P5 依赖顺序：
 
 ```text
@@ -2321,7 +2328,7 @@ P5 RED 测试包：
 | P5b Version | `internal/types/wika_version_test.go`、`internal/wika/governance/version/{store,service,diff}_test.go`、`internal/handler/wika_governance_version_test.go` | `(knowledge_id, version_no)` 唯一；既有知识首次写入先 baseline 再新版本；连续写路径递增；restore 调用知识更新链路并产生新版本；SystemAdmin 读 personal 只有元数据；无权 diff 不返回正文；flag off 禁止 restore |
 | P5c URL Refresh | `internal/types/wika_url_refresh_test.go`、`internal/wika/governance/urlrefresh/safefetch/fetcher_test.go`、`internal/wika/governance/urlrefresh/{store,service,worker}_test.go`、`internal/handler/wika_governance_urlrefresh_test.go` | 内网/metadata hostname/CNAME/重定向/DNS rebinding/编码绕过/超大响应阻断；正常抓取进入 `pending_review`；apply 前状态不符返回 409；schedule slot 幂等；低于最小 cron 返回 400；flag off 禁止新 job 且 worker 不 lease；apply 生成版本和审计 |
 | P5d Eval Schedule | `internal/types/wika_eval_schedule_test.go`、`internal/wika/governance/evalschedule/{cron,store,worker}_test.go`、`internal/handler/wika_eval_schedule_test.go` | cron 非法 400；enabled 唯一；两个 scheduler 只创建一个 run；同一 `schedule_id + scheduled_for` 不重复创建 run；连续失败后 disable 或延后；flag off worker 不创建 run；run 创建复用 P2 service |
-| P5e Org Share | `internal/types/wika_org_share_test.go`、`internal/wika/governance/orgshare/{store,service}_test.go`、`internal/wika/scope/shared_scope_test.go`、`internal/wika/search/shared_scope_test.go`、`internal/handler/wika_org_test.go` | 复用现有 org/member；personal tenant/KB 禁止；allowed_fields 白名单；pending 不可搜索；org admin 不是 target team Admin 时 accept 返回 403；accept 后可裁剪命中；expand/download/preview/direct read 仍裁剪；revoke 后同 query 和 direct-id 都不命中；flag off 禁止 create/accept/revoke |
+| P5e Org Share | `internal/types/wika_org_share_test.go`、`internal/wika/governance/orgshare/{store,service}_test.go`、`internal/wika/scope/shared_scope_test.go`、`internal/wika/search/shared_scope_test.go`、`internal/handler/wika_org_share_test.go`、`internal/handler/wika_org_test.go` | 复用现有 org/member；personal tenant/KB 禁止；allowed_fields 白名单；pending 不可搜索；org admin 不是 target team Admin 时 accept 返回 403；accept 后可裁剪命中；expand/download/preview/direct read 仍裁剪；revoke 后同 query 和 direct-id 都不命中；flag off 禁止 create/accept/revoke |
 
 RED 测试顺序：
 
@@ -2680,7 +2687,8 @@ P5 迁移落地状态：
 - `000097` 必须补齐或确认：`failure_code`、`max_attempts`、`next_run_at`、canonical pair 唯一约束；worker runnable 索引不得把终态 `failed` 当作可领取状态。
 - `000098` 的 `status/review_status` 是知识快照字段，可作为 DDL CHECK 例外；写入 hook 必须保证来自当前知识状态枚举或空值。
 - `000099` 必须补齐或确认：`wika_url_refresh_jobs(schedule_id, scheduled_for)` slot 唯一、job 状态 check、schedule enabled 唯一、due schedule 索引、`schedule_id` 引用关系、失败计数和 down migration 不影响已生成知识版本。
-- `000100`、`000101` 当前视为待建迁移；实现时必须同时补 `internal/types/wika_eval_schedule.go`、`internal/types/wika_org_share.go`。
+- `000100` 已存在：继续 P5d 前先确认 `wika_eval_schedules` enabled 唯一、due schedule 索引、`eval_runs(schedule_id, scheduled_for)` slot 唯一和 down migration 均与本文档一致；不要重复新建迁移，缺口用追加迁移或修正测试驱动补齐。
+- `000101` 已存在：继续 P5e 前先确认 `wika_org_shares` 状态 check、open share 唯一、target/source 查询索引和 down migration 均与本文档一致；不要新建平行 Organization 或成员迁移。
 
 P5 migration 建议索引：
 
