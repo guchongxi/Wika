@@ -6,24 +6,65 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/wika/governance/urlrefresh/safefetch"
+	"github.com/Tencent/WeKnora/internal/wika/governance/version"
 )
 
 type Fetcher interface {
 	Fetch(ctx context.Context, raw string) (*safefetch.FetchResult, error)
 }
 
-type Service struct {
-	store   Store
-	fetcher Fetcher
+type KnowledgeUpdater interface {
+	UpdateManualKnowledge(ctx context.Context, knowledgeID string, payload *types.ManualKnowledgePayload) (*types.Knowledge, error)
 }
 
-func NewService(store Store, fetcher Fetcher) *Service {
-	return &Service{store: store, fetcher: fetcher}
+type VersionRecorder interface {
+	RecordVersion(ctx context.Context, input version.RecordVersionInput) (*types.WikaKnowledgeVersion, error)
+}
+
+type AuditLogger interface {
+	Log(ctx context.Context, entry *types.AuditLog) error
+}
+
+type Service struct {
+	store     Store
+	fetcher   Fetcher
+	knowledge KnowledgeUpdater
+	versions  VersionRecorder
+	audit     AuditLogger
+}
+
+type ServiceOption func(*Service)
+
+func WithKnowledgeUpdater(knowledge KnowledgeUpdater) ServiceOption {
+	return func(s *Service) {
+		s.knowledge = knowledge
+	}
+}
+
+func WithVersionRecorder(recorder VersionRecorder) ServiceOption {
+	return func(s *Service) {
+		s.versions = recorder
+	}
+}
+
+func WithAuditLogger(audit AuditLogger) ServiceOption {
+	return func(s *Service) {
+		s.audit = audit
+	}
+}
+
+func NewService(store Store, fetcher Fetcher, opts ...ServiceOption) *Service {
+	svc := &Service{store: store, fetcher: fetcher}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 func (s *Service) CreateJob(ctx context.Context, input CreateJobInput) (*types.WikaURLRefreshJob, error) {
@@ -72,6 +113,116 @@ func (s *Service) RunJob(ctx context.Context, input RunJobInput) error {
 		FetchedContent: result.Text,
 		DiffSummary:    types.JSON([]byte(`{}`)),
 		SSRFCheck:      types.JSON(ssrfCheck),
+	})
+}
+
+func (s *Service) ReviewJob(ctx context.Context, input ReviewJobInput) (*ReviewJobResult, error) {
+	if s.store == nil {
+		return nil, ErrJobNotFound
+	}
+	now := input.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	switch input.Decision {
+	case ReviewDecisionApply:
+		return s.applyJob(ctx, input, now)
+	case ReviewDecisionReject:
+		job, err := s.store.GetJob(ctx, input.JobID)
+		if err != nil {
+			return nil, err
+		}
+		if job.Status != JobStatusPendingReview {
+			return nil, ErrInvalidJobState
+		}
+		if err := s.store.MarkReviewed(ctx, MarkReviewedInput{
+			JobID:      input.JobID,
+			Status:     JobStatusRejected,
+			ActorID:    input.ActorID,
+			Comment:    input.Comment,
+			ReviewedAt: now,
+		}); err != nil {
+			return nil, err
+		}
+		if err := s.logReviewed(ctx, input.ActorID, job.TenantID, input.JobID); err != nil {
+			return nil, err
+		}
+		return &ReviewJobResult{JobID: input.JobID, Status: JobStatusRejected}, nil
+	default:
+		return nil, ErrInvalidReviewDecision
+	}
+}
+
+func (s *Service) applyJob(ctx context.Context, input ReviewJobInput, now time.Time) (*ReviewJobResult, error) {
+	if s.knowledge == nil {
+		return nil, fmt.Errorf("knowledge updater unavailable")
+	}
+	if s.versions == nil {
+		return nil, fmt.Errorf("version recorder unavailable")
+	}
+	job, err := s.store.GetJob(ctx, input.JobID)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != JobStatusPendingReview {
+		return nil, ErrInvalidJobState
+	}
+	title := strings.TrimSpace(job.FetchedTitle)
+	if title == "" {
+		title = job.KnowledgeID
+	}
+	if _, err := s.knowledge.UpdateManualKnowledge(ctx, job.KnowledgeID, &types.ManualKnowledgePayload{
+		Title:   title,
+		Content: job.FetchedContent,
+		Status:  types.ManualKnowledgeStatusPublish,
+		Channel: types.ChannelWeb,
+	}); err != nil {
+		return nil, err
+	}
+	recorded, err := s.versions.RecordVersion(ctx, version.RecordVersionInput{
+		KnowledgeID:  job.KnowledgeID,
+		TenantID:     job.TenantID,
+		KBID:         job.KBID,
+		Title:        title,
+		Content:      job.FetchedContent,
+		Status:       types.ManualKnowledgeStatusPublish,
+		ChangeReason: "url_refresh_apply",
+		ActorID:      input.ActorID,
+		Now:          now,
+		ContentHash:  job.FetchedHash,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.MarkReviewed(ctx, MarkReviewedInput{
+		JobID:      job.ID,
+		Status:     JobStatusApplied,
+		ActorID:    input.ActorID,
+		Comment:    input.Comment,
+		ReviewedAt: now,
+	}); err != nil {
+		return nil, err
+	}
+	if err := s.logReviewed(ctx, input.ActorID, job.TenantID, job.ID); err != nil {
+		return nil, err
+	}
+	var versionID uint64
+	if recorded != nil {
+		versionID = recorded.ID
+	}
+	return &ReviewJobResult{JobID: job.ID, Status: JobStatusApplied, VersionID: versionID}, nil
+}
+
+func (s *Service) logReviewed(ctx context.Context, actorID string, tenantID uint64, jobID uint64) error {
+	if s.audit == nil {
+		return nil
+	}
+	return s.audit.Log(ctx, &types.AuditLog{
+		TenantID:    tenantID,
+		ActorUserID: strings.TrimSpace(actorID),
+		Action:      types.AuditActionWikaURLRefreshReviewed,
+		TargetType:  "wika_url_refresh_job",
+		TargetID:    strconv.FormatUint(jobID, 10),
 	})
 }
 

@@ -67,6 +67,9 @@ const (
 	// AuditActionWikaVersionRestored fires when Wika restores an old
 	// version by creating a new version. Content diff 不进入审计日志。
 	AuditActionWikaVersionRestored AuditAction = "wika.version.restored"
+	// AuditActionWikaURLRefreshReviewed fires when a maintainer applies
+	// or rejects a fetched URL refresh result. Fetched content 不进入审计日志。
+	AuditActionWikaURLRefreshReviewed AuditAction = "wika.url_refresh.reviewed"
 
 	// VectorStore lifecycle actions. Emitted by VectorStoreService.
 	// Cover both env-store-derived (__env_*) and DB store create /

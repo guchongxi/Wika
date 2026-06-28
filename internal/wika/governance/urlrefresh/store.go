@@ -10,8 +10,10 @@ import (
 
 type Store interface {
 	CreateJob(ctx context.Context, input CreateJobInput) (*types.WikaURLRefreshJob, error)
+	GetJob(ctx context.Context, jobID uint64) (*types.WikaURLRefreshJob, error)
 	AcquireJob(ctx context.Context, jobID uint64, workerID string, now time.Time, lease time.Duration) (*types.WikaURLRefreshJob, error)
 	MarkPendingReview(ctx context.Context, input MarkPendingReviewInput) error
+	MarkReviewed(ctx context.Context, input MarkReviewedInput) error
 	FailJob(ctx context.Context, jobID uint64, workerID string, now time.Time, failureCode string, errMsg string) error
 }
 
@@ -47,6 +49,18 @@ func (s *GormStore) CreateJob(ctx context.Context, input CreateJobInput) (*types
 		return nil, err
 	}
 	return job, nil
+}
+
+func (s *GormStore) GetJob(ctx context.Context, jobID uint64) (*types.WikaURLRefreshJob, error) {
+	var job types.WikaURLRefreshJob
+	err := s.db.WithContext(ctx).First(&job, "id = ?", jobID).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrJobNotFound
+		}
+		return nil, err
+	}
+	return &job, nil
 }
 
 func (s *GormStore) AcquireJob(ctx context.Context, jobID uint64, workerID string, now time.Time, lease time.Duration) (*types.WikaURLRefreshJob, error) {
@@ -99,6 +113,25 @@ func (s *GormStore) MarkPendingReview(ctx context.Context, input MarkPendingRevi
 	}
 	if result.RowsAffected == 0 {
 		return ErrJobLeaseUnavailable
+	}
+	return nil
+}
+
+func (s *GormStore) MarkReviewed(ctx context.Context, input MarkReviewedInput) error {
+	result := s.db.WithContext(ctx).Model(&types.WikaURLRefreshJob{}).
+		Where("id = ? AND status = ?", input.JobID, JobStatusPendingReview).
+		Updates(map[string]any{
+			"status":         input.Status,
+			"reviewed_by":    input.ActorID,
+			"reviewed_at":    input.ReviewedAt,
+			"review_comment": input.Comment,
+			"updated_at":     input.ReviewedAt,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrInvalidJobState
 	}
 	return nil
 }
