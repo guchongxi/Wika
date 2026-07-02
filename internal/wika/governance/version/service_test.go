@@ -330,7 +330,7 @@ func TestVersionServiceDiffComparesSnapshots(t *testing.T) {
 		1: {ID: 1, KnowledgeID: "k-1", TenantID: 80, KBID: "kb-team", VersionNo: 1, Title: "旧标题", Content: "旧内容"},
 		2: {ID: 2, KnowledgeID: "k-1", TenantID: 80, KBID: "kb-team", VersionNo: 2, Title: "新标题", Content: "新内容"},
 	}}
-	svc := &Service{store: store}
+	svc := &Service{store: store, flags: fakeFeatureGate{enabled: true}}
 
 	diff, err := svc.Diff(context.Background(), DiffInput{
 		TenantID:    80,
@@ -343,5 +343,23 @@ func TestVersionServiceDiffComparesSnapshots(t *testing.T) {
 	}
 	if diff.FromVersionNo != 1 || diff.ToVersionNo != 2 || !diff.TitleChanged || !diff.ContentChanged {
 		t.Fatalf("unexpected diff: %+v", diff)
+	}
+}
+
+func TestVersionServiceListAndDiffReturnFeatureDisabledBeforeStoreRead(t *testing.T) {
+	store := &fakeVersionStore{versions: map[uint64]*types.WikaKnowledgeVersion{
+		1: {ID: 1, KnowledgeID: "k-1", TenantID: 80, KBID: "kb-team", VersionNo: 1},
+		2: {ID: 2, KnowledgeID: "k-1", TenantID: 80, KBID: "kb-team", VersionNo: 2},
+	}}
+	svc := &Service{store: store, flags: fakeFeatureGate{enabled: false}}
+
+	if _, err := svc.ListVersions(context.Background(), ListVersionsInput{TenantID: 80, KnowledgeID: "k-1"}); err != ErrFeatureDisabled {
+		t.Fatalf("expected list ErrFeatureDisabled, got %v", err)
+	}
+	if _, err := svc.Diff(context.Background(), DiffInput{TenantID: 80, KnowledgeID: "k-1", FromVersion: 1, ToVersion: 2}); err != ErrFeatureDisabled {
+		t.Fatalf("expected diff ErrFeatureDisabled, got %v", err)
+	}
+	if store.getCalls != 0 {
+		t.Fatalf("feature-disabled read should not hit store, getCalls=%d", store.getCalls)
 	}
 }

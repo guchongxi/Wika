@@ -21,6 +21,10 @@ type Fetcher interface {
 	Fetch(ctx context.Context, raw string) (*safefetch.FetchResult, error)
 }
 
+type SourceURLValidator interface {
+	ValidateURL(ctx context.Context, raw string) error
+}
+
 type KnowledgeUpdater interface {
 	UpdateManualKnowledge(ctx context.Context, knowledgeID string, payload *types.ManualKnowledgePayload) (*types.Knowledge, error)
 }
@@ -91,7 +95,20 @@ func (s *Service) CreateJob(ctx context.Context, input CreateJobInput) (*types.W
 	if s.store == nil {
 		return nil, nil
 	}
+	if err := s.validateSourceURL(ctx, input.SourceURL); err != nil {
+		return nil, err
+	}
 	return s.store.CreateJob(ctx, input)
+}
+
+func (s *Service) List(ctx context.Context, input ListInput) (*ListResult, error) {
+	if !s.featureEnabled(ctx) {
+		return nil, ErrFeatureDisabled
+	}
+	if s.store == nil {
+		return &ListResult{}, nil
+	}
+	return s.store.List(ctx, input)
 }
 
 func (s *Service) RunJob(ctx context.Context, input RunJobInput) error {
@@ -151,6 +168,9 @@ func (s *Service) CreateOrUpdateSchedule(ctx context.Context, input CreateOrUpda
 	}
 	if s.store == nil {
 		return nil, nil
+	}
+	if err := s.validateSourceURL(ctx, input.SourceURL); err != nil {
+		return nil, err
 	}
 	now := input.Now
 	if now.IsZero() {
@@ -233,6 +253,30 @@ func (s *Service) RunDueSchedules(ctx context.Context, now time.Time) ([]*types.
 		jobs = append(jobs, job)
 	}
 	return jobs, nil
+}
+
+func (s *Service) RunRunnableJobs(ctx context.Context, now time.Time) ([]*types.WikaURLRefreshJob, error) {
+	if !s.featureEnabled(ctx) {
+		return nil, ErrFeatureDisabled
+	}
+	if s.store == nil {
+		return nil, nil
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	return s.store.ListRunnableJobs(ctx, now, 100)
+}
+
+func (s *Service) validateSourceURL(ctx context.Context, raw string) error {
+	validator, ok := s.fetcher.(SourceURLValidator)
+	if !ok || validator == nil {
+		return nil
+	}
+	if err := validator.ValidateURL(ctx, raw); err != nil {
+		return fmt.Errorf("%w: %v", ErrUnsafeSourceURL, err)
+	}
+	return nil
 }
 
 func (s *Service) UpdateSchedule(ctx context.Context, input UpdateScheduleInput) (*types.WikaURLRefreshSchedule, error) {
@@ -329,10 +373,11 @@ func (s *Service) applyJob(ctx context.Context, input ReviewJobInput, now time.T
 		title = job.KnowledgeID
 	}
 	if _, err := s.knowledge.UpdateManualKnowledge(ctx, job.KnowledgeID, &types.ManualKnowledgePayload{
-		Title:   title,
-		Content: job.FetchedContent,
-		Status:  types.ManualKnowledgeStatusPublish,
-		Channel: types.ChannelWeb,
+		Title:             title,
+		Content:           job.FetchedContent,
+		Status:            types.ManualKnowledgeStatusPublish,
+		Channel:           types.ChannelWeb,
+		SkipVersionRecord: true,
 	}); err != nil {
 		return nil, err
 	}

@@ -69,7 +69,13 @@ func (s *GormStore) GetDefaultKB(ctx context.Context, tenantID uint64) (string, 
 	var defaults types.WikaSpaceDefault
 	err := s.db.WithContext(ctx).Where("tenant_id = ?", tenantID).First(&defaults).Error
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", ErrTargetDefaultKBNotFound
+		}
 		return "", err
+	}
+	if strings.TrimSpace(defaults.DefaultKBID) == "" {
+		return "", ErrTargetDefaultKBNotFound
 	}
 	return defaults.DefaultKBID, nil
 }
@@ -112,7 +118,9 @@ func (s *GormStore) FindByIdempotencyKey(ctx context.Context, submitterID string
 
 // SaveSuggestion 保存团队推荐预审结果。
 func (s *GormStore) SaveSuggestion(ctx context.Context, item *types.WikaKnowledgeSuggestion) (*types.WikaKnowledgeSuggestion, error) {
-	if err := s.db.WithContext(ctx).Create(item).Error; err != nil {
+	if err := s.db.WithContext(ctx).
+		Omit("HumanDecision", "HumanReviewerID", "HumanComment", "ResultKnowledgeID", "AppliedAt").
+		Create(item).Error; err != nil {
 		return nil, err
 	}
 	return item, nil

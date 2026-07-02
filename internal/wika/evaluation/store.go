@@ -43,6 +43,34 @@ func (s *GormStore) ListQAItems(ctx context.Context, datasetID uint64, enabledOn
 	return items, nil
 }
 
+func (s *GormStore) GetDataset(ctx context.Context, tenantID uint64, kbID string, datasetID uint64) (*types.WikaEvalDataset, error) {
+	var dataset types.WikaEvalDataset
+	if err := s.db.WithContext(ctx).
+		Where("tenant_id = ? AND kb_id = ? AND id = ?", tenantID, kbID, datasetID).
+		First(&dataset).Error; err != nil {
+		return nil, err
+	}
+	return &dataset, nil
+}
+
+func (s *GormStore) ListRuns(ctx context.Context, tenantID uint64, kbID string, limit int) ([]*types.WikaEvalRun, error) {
+	var runs []*types.WikaEvalRun
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if err := s.db.WithContext(ctx).
+		Where("tenant_id = ? AND kb_id = ?", tenantID, kbID).
+		Order("created_at DESC, id DESC").
+		Limit(limit).
+		Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	return runs, nil
+}
+
 func (s *GormStore) CreateRun(ctx context.Context, item *types.WikaEvalRun) (*types.WikaEvalRun, error) {
 	if err := s.db.WithContext(ctx).Create(item).Error; err != nil {
 		return nil, err

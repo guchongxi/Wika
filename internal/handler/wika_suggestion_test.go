@@ -20,12 +20,16 @@ type stubWikaSuggestionService struct {
 	humanInput *wikasuggestion.HumanReviewInput
 	applyInput *wikasuggestion.ApplyInput
 	resp       *wikasuggestion.SuggestionResult
+	createErr error
 	humanResp  *wikasuggestion.SuggestionResult
 	applyResp  *wikasuggestion.ApplyResult
 }
 
 func (s *stubWikaSuggestionService) CreateSuggestion(_ context.Context, input wikasuggestion.CreateInput) (*wikasuggestion.SuggestionResult, error) {
 	s.input = &input
+	if s.createErr != nil {
+		return nil, s.createErr
+	}
 	if s.resp != nil {
 		return s.resp, nil
 	}
@@ -160,6 +164,17 @@ func TestWikaSuggestionCreateRejectsMissingKnowledgeID(t *testing.T) {
 	}
 	if service.input != nil {
 		t.Fatalf("service should not be called: %+v", service.input)
+	}
+}
+
+func TestWikaSuggestionCreateReturnsBadRequestWhenTargetDefaultKBMissing(t *testing.T) {
+	service := &stubWikaSuggestionService{createErr: wikasuggestion.ErrTargetDefaultKBNotFound}
+	r := newWikaSuggestionTestRouter(service)
+
+	w := doWikaSuggestionJSON(t, r, http.MethodPost, "/api/v1/wika/suggestions", `{"knowledge_id":"k-personal"}`)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 

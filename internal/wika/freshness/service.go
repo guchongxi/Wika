@@ -10,6 +10,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	wikaversion "github.com/Tencent/WeKnora/internal/wika/governance/version"
 )
 
 var (
@@ -32,14 +33,31 @@ type AuditLogger interface {
 	Log(ctx context.Context, entry *types.AuditLog) error
 }
 
-// Service 负责从知识状态和访问聚合生成保鲜问题。
-type Service struct {
-	store Store
-	audit AuditLogger
+type VersionRecorder interface {
+	RecordVersion(ctx context.Context, input wikaversion.RecordVersionInput) (*types.WikaKnowledgeVersion, error)
 }
 
-func NewService(store *GormStore, audit interfaces.AuditLogService) *Service {
-	return &Service{store: store, audit: audit}
+// Service 负责从知识状态和访问聚合生成保鲜问题。
+type Service struct {
+	store    Store
+	audit    AuditLogger
+	versions VersionRecorder
+}
+
+type ServiceOption func(*Service)
+
+func WithVersionRecorder(recorder VersionRecorder) ServiceOption {
+	return func(s *Service) {
+		s.versions = recorder
+	}
+}
+
+func NewService(store *GormStore, audit interfaces.AuditLogService, opts ...ServiceOption) *Service {
+	svc := &Service{store: store, audit: audit}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // RunCheck 扫描团队 KB 中过期、将过期、低质、低置信和长期未访问知识。
@@ -89,6 +107,45 @@ func (s *Service) ListItems(ctx context.Context, input ListInput) ([]*types.Wika
 	return s.store.ListItems(ctx, input.TenantID, strings.TrimSpace(input.KBID), strings.TrimSpace(input.Status))
 }
 
+// Overview 汇总保鲜面板所需的最新扫描和问题数量。
+func (s *Service) Overview(ctx context.Context, input ListInput) (*OverviewResult, error) {
+	if s.store == nil {
+		return nil, ErrFreshnessStoreNotConfigured
+	}
+	kbID := strings.TrimSpace(input.KBID)
+	checks, err := s.store.ListChecks(ctx, input.TenantID, kbID)
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.store.ListItems(ctx, input.TenantID, kbID, "")
+	if err != nil {
+		return nil, err
+	}
+	result := &OverviewResult{
+		IssueCounts:     map[string]int{},
+		OpenIssueCounts: map[string]int{},
+	}
+	if len(checks) > 0 {
+		result.LatestCheck = checks[0]
+	}
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		result.IssueCounts[item.IssueType]++
+		switch item.Status {
+		case ItemStatusOpen:
+			result.TotalOpen++
+			result.OpenIssueCounts[item.IssueType]++
+		case ItemStatusResolved:
+			result.TotalResolved++
+		case ItemStatusIgnored:
+			result.TotalIgnored++
+		}
+	}
+	return result, nil
+}
+
 // HandleItem 处理单条保鲜问题，并写入审计记录。
 func (s *Service) HandleItem(ctx context.Context, input HandleItemInput) (*types.WikaFreshnessCheckItem, error) {
 	if s.store == nil {
@@ -104,6 +161,9 @@ func (s *Service) HandleItem(ctx context.Context, input HandleItemInput) (*types
 	}
 	item, err := s.store.HandleItem(ctx, update)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.recordFreshnessHandleVersion(ctx, input, update, item); err != nil {
 		return nil, err
 	}
 	s.emitItemHandledAudit(ctx, input, item)
@@ -195,6 +255,26 @@ func (s *Service) emitItemHandledAudit(ctx context.Context, input HandleItemInpu
 		Outcome:     types.AuditOutcomeSuccess,
 		Details:     types.JSON(details),
 	})
+}
+
+func (s *Service) recordFreshnessHandleVersion(ctx context.Context, input HandleItemInput, update ItemUpdate, item *types.WikaFreshnessCheckItem) error {
+	if s.versions == nil || item == nil {
+		return nil
+	}
+	if update.KnowledgeFreshnessStatus == "" && update.KnowledgeReviewStatus == "" && update.ExpiresAt == nil {
+		return nil
+	}
+	_, err := s.versions.RecordVersion(ctx, wikaversion.RecordVersionInput{
+		KnowledgeID:  item.KnowledgeID,
+		TenantID:     input.TenantID,
+		KBID:         item.KBID,
+		Status:       update.KnowledgeFreshnessStatus,
+		ReviewStatus: update.KnowledgeReviewStatus,
+		ChangeReason: "freshness_handle",
+		ActorID:      strings.TrimSpace(input.ActorID),
+		Now:          update.Now,
+	})
+	return err
 }
 
 func newItem(tenantID uint64, kbID, knowledgeID, issueType, severity, action string) *types.WikaFreshnessCheckItem {

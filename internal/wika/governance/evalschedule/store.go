@@ -2,18 +2,22 @@ package evalschedule
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
 type Store interface {
 	CreateSchedule(ctx context.Context, input CreateScheduleInput, nextRunAt time.Time) (*types.WikaEvalSchedule, error)
+	List(ctx context.Context, input ListInput) (*ListResult, error)
 	ListDueSchedules(ctx context.Context, now time.Time, limit int) ([]*types.WikaEvalSchedule, error)
 	AcquireSchedule(ctx context.Context, scheduleID uint64, workerID string, now time.Time, lease time.Duration) (*types.WikaEvalSchedule, error)
 	MarkScheduleTriggered(ctx context.Context, scheduleID uint64, runID uint64, nextRunAt time.Time, now time.Time) error
-	MarkScheduleFailed(ctx context.Context, scheduleID uint64, now time.Time, failureCode string) error
+	MarkScheduleFailed(ctx context.Context, scheduleID uint64, now time.Time, failureCode string) (*types.WikaEvalSchedule, error)
 	UpdateSchedule(ctx context.Context, input UpdateScheduleInput, nextRunAt time.Time) (*types.WikaEvalSchedule, error)
 	DisableSchedule(ctx context.Context, input DisableScheduleInput) (*types.WikaEvalSchedule, error)
 }
@@ -43,10 +47,48 @@ func (s *GormStore) CreateSchedule(ctx context.Context, input CreateScheduleInpu
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	}
-	if err := s.db.WithContext(ctx).Create(schedule).Error; err != nil {
+	if err := s.db.WithContext(ctx).
+		Select("TenantID", "KBID", "DatasetID", "Enabled", "CronExpr", "NextRunAt", "ConsecutiveFailures", "LastFailureCode", "LockedBy", "CreatedBy", "CreatedAt", "UpdatedAt").
+		Create(schedule).Error; err != nil {
+		if isScheduleUniqueConflict(err) {
+			return nil, ErrScheduleConflict
+		}
 		return nil, err
 	}
 	return schedule, nil
+}
+
+func (s *GormStore) List(ctx context.Context, input ListInput) (*ListResult, error) {
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := input.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	query := s.db.WithContext(ctx).
+		Model(&types.WikaEvalSchedule{}).
+		Where("tenant_id = ? AND kb_id = ?", input.TenantID, input.KBID)
+	if input.Enabled != nil {
+		query = query.Where("enabled = ?", *input.Enabled)
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, err
+	}
+	var schedules []*types.WikaEvalSchedule
+	if err := query.
+		Order("enabled DESC, updated_at DESC, id DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&schedules).Error; err != nil {
+		return nil, err
+	}
+	return &ListResult{Schedules: schedules, Total: total}, nil
 }
 
 func (s *GormStore) ListDueSchedules(ctx context.Context, now time.Time, limit int) ([]*types.WikaEvalSchedule, error) {
@@ -94,6 +136,20 @@ func (s *GormStore) AcquireSchedule(ctx context.Context, scheduleID uint64, work
 	return &schedule, nil
 }
 
+func isScheduleUniqueConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505" && pgErr.ConstraintName == "ux_wika_eval_schedules_enabled"
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "wika_eval_schedules") &&
+		(strings.Contains(msg, "ux_wika_eval_schedules_enabled") ||
+			strings.Contains(msg, "unique constraint failed"))
+}
+
 func (s *GormStore) MarkScheduleTriggered(ctx context.Context, scheduleID uint64, runID uint64, nextRunAt time.Time, now time.Time) error {
 	return s.db.WithContext(ctx).Model(&types.WikaEvalSchedule{}).
 		Where("id = ?", scheduleID).
@@ -108,9 +164,9 @@ func (s *GormStore) MarkScheduleTriggered(ctx context.Context, scheduleID uint64
 		}).Error
 }
 
-func (s *GormStore) MarkScheduleFailed(ctx context.Context, scheduleID uint64, now time.Time, failureCode string) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var schedule types.WikaEvalSchedule
+func (s *GormStore) MarkScheduleFailed(ctx context.Context, scheduleID uint64, now time.Time, failureCode string) (*types.WikaEvalSchedule, error) {
+	var schedule types.WikaEvalSchedule
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.First(&schedule, "id = ?", scheduleID).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
 				return ErrScheduleNotFound
@@ -127,11 +183,26 @@ func (s *GormStore) MarkScheduleFailed(ctx context.Context, scheduleID uint64, n
 		}
 		if failures >= 3 {
 			updates["enabled"] = false
+			schedule.Enabled = false
 		} else {
-			updates["next_run_at"] = now.Add(evalScheduleFailureBackoff(failures))
+			nextRunAt := now.Add(evalScheduleFailureBackoff(failures))
+			updates["next_run_at"] = nextRunAt
+			schedule.NextRunAt = nextRunAt
 		}
-		return tx.Model(&types.WikaEvalSchedule{}).Where("id = ?", scheduleID).Updates(updates).Error
+		if err := tx.Model(&types.WikaEvalSchedule{}).Where("id = ?", scheduleID).Updates(updates).Error; err != nil {
+			return err
+		}
+		schedule.ConsecutiveFailures = failures
+		schedule.LastFailureCode = failureCode
+		schedule.LockedBy = ""
+		schedule.LockedUntil = nil
+		schedule.UpdatedAt = now
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return &schedule, nil
 }
 
 func (s *GormStore) UpdateSchedule(ctx context.Context, input UpdateScheduleInput, nextRunAt time.Time) (*types.WikaEvalSchedule, error) {
@@ -150,6 +221,9 @@ func (s *GormStore) UpdateSchedule(ctx context.Context, input UpdateScheduleInpu
 			"updated_at":           now,
 		})
 	if result.Error != nil {
+		if isScheduleUniqueConflict(result.Error) {
+			return nil, ErrScheduleConflict
+		}
 		return nil, result.Error
 	}
 	if result.RowsAffected == 0 {

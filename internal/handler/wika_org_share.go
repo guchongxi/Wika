@@ -16,6 +16,7 @@ import (
 )
 
 type wikaOrgShareService interface {
+	ListShares(ctx context.Context, input wikaorgshare.ListSharesInput) (*wikaorgshare.ListSharesResult, error)
 	CreateShare(ctx context.Context, input wikaorgshare.CreateShareInput) (*types.WikaOrgShare, error)
 	AcceptShare(ctx context.Context, input wikaorgshare.AcceptShareInput) (*types.WikaOrgShare, error)
 	RevokeShare(ctx context.Context, input wikaorgshare.RevokeShareInput) (*types.WikaOrgShare, error)
@@ -34,6 +35,30 @@ type createWikaOrgShareRequest struct {
 	SourceKBID     string   `json:"source_kb_id"`
 	TargetTenantID uint64   `json:"target_tenant_id"`
 	AllowedFields  []string `json:"allowed_fields"`
+}
+
+func (h *WikaOrgShareHandler) ListShares(c *gin.Context) {
+	userID, tenantID, ok := wikaKnowledgeContext(c)
+	if !ok {
+		return
+	}
+	if h.service == nil {
+		c.Error(apperrors.NewInternalServerError("wika org share service unavailable"))
+		return
+	}
+	result, err := h.service.ListShares(c.Request.Context(), wikaorgshare.ListSharesInput{
+		ActorID:  userID,
+		TenantID: tenantID,
+		OrgID:    strings.TrimSpace(c.Param("org_id")),
+		Status:   strings.TrimSpace(c.Query("status")),
+		Limit:    parseOptionalInt(c.Query("limit")),
+		Offset:   parseOptionalInt(c.Query("offset")),
+	})
+	if err != nil {
+		h.handleOrgShareError(c, err, "failed to list org shares")
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func (h *WikaOrgShareHandler) CreateShare(c *gin.Context) {
@@ -131,6 +156,14 @@ func parseOrgShareID(c *gin.Context) (uint64, bool) {
 		return 0, false
 	}
 	return shareID, true
+}
+
+func parseOptionalInt(raw string) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0
+	}
+	return value
 }
 
 func (h *WikaOrgShareHandler) handleOrgShareError(c *gin.Context, err error, fallback string) {

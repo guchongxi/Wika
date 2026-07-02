@@ -132,14 +132,22 @@ func (r *Resolver) resolveKnowledgeBase(ctx context.Context, actor Actor, kbID s
 	if tenant.SpaceType == types.SpaceTypePersonal && member.Role != types.TenantRoleOwner {
 		return Decision{NotFound: true}, nil
 	}
+	scopes := []Scope{{
+		TenantID: tenant.ID,
+		KBID:     kb.ID,
+		Source:   source,
+		Role:     member.Role,
+	}}
+	if tenant.SpaceType != types.SpaceTypePersonal {
+		sharedScopes, sharedErr := r.store.ListSharedKnowledgeBaseScopes(ctx, actor.UserID, kb.ID)
+		if sharedErr != nil {
+			return Decision{}, sharedErr
+		}
+		scopes = append(scopes, sharedScopes...)
+	}
 	return Decision{
 		Allowed: true,
-		Scopes: []Scope{{
-			TenantID: tenant.ID,
-			KBID:     kb.ID,
-			Source:   source,
-			Role:     member.Role,
-		}},
+		Scopes:  scopes,
 	}, nil
 }
 

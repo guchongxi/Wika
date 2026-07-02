@@ -12,6 +12,7 @@ import (
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/types"
 	wikagraph "github.com/Tencent/WeKnora/internal/wika/graph"
+	wikasearch "github.com/Tencent/WeKnora/internal/wika/search"
 )
 
 type wikaGraphService interface {
@@ -24,10 +25,11 @@ type wikaGraphService interface {
 // WikaGraphHandler 暴露 Wika 图谱读模型接口。
 type WikaGraphHandler struct {
 	service wikaGraphService
+	search  wikaSearchService
 }
 
-func NewWikaGraphHandler(service *wikagraph.Service) *WikaGraphHandler {
-	return &WikaGraphHandler{service: service}
+func NewWikaGraphHandler(service *wikagraph.Service, search *wikasearch.Service) *WikaGraphHandler {
+	return &WikaGraphHandler{service: service, search: search}
 }
 
 func (h *WikaGraphHandler) Overview(c *gin.Context) {
@@ -131,6 +133,49 @@ func (h *WikaGraphHandler) ListEdges(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"edges": edges, "total": total})
+}
+
+// Search 复用 Wika 主搜索链路返回图谱贡献和降级状态，避免图谱检索绕过 scope。
+func (h *WikaGraphHandler) Search(c *gin.Context) {
+	userID, tenantID, ok := wikaKnowledgeContext(c)
+	if !ok {
+		return
+	}
+	if h.search == nil {
+		c.Error(apperrors.NewInternalServerError("wika search service unavailable"))
+		return
+	}
+	var req searchWikaKnowledgeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(apperrors.NewBadRequestError("invalid request body").WithDetails(err.Error()))
+		return
+	}
+	query := strings.TrimSpace(req.Query)
+	if query == "" {
+		c.Error(apperrors.NewBadRequestError("query is required"))
+		return
+	}
+	format := strings.TrimSpace(req.Format)
+	if format == "" {
+		format = "compact"
+	}
+	result, err := h.search.SearchKnowledge(c.Request.Context(), wikasearch.SearchInput{
+		UserID:      userID,
+		TenantID:    tenantID,
+		KBID:        strings.TrimSpace(c.Param("id")),
+		Query:       query,
+		Limit:       req.Limit,
+		IncludeTeam: true,
+		Format:      format,
+	})
+	if err != nil {
+		c.Error(apperrors.NewInternalServerError("failed to search graph"))
+		return
+	}
+	if result == nil {
+		result = &wikasearch.SearchResult{Results: []wikasearch.ResultItem{}}
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func parseWikaGraphInt(raw string, fallback int) int {

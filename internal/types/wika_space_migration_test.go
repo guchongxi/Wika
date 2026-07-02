@@ -54,6 +54,29 @@ func TestWikaP1aGovernanceMigrationContract(t *testing.T) {
 	}
 }
 
+func TestWikaTeamDefaultsBackfillMigrationContract(t *testing.T) {
+	path := filepath.Join("..", "..", "migrations", "versioned", "000103_wika_team_defaults_backfill.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected Wika team defaults backfill migration to exist: %v", err)
+	}
+
+	sql := string(raw)
+	required := []string{
+		"INSERT INTO knowledge_bases",
+		"INSERT INTO wika_space_defaults",
+		"INSERT INTO wika_space_policies",
+		"space_type = 'team'",
+		"LEFT JOIN wika_space_defaults",
+		"auto_apply_approved",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("expected migration to contain %q", fragment)
+		}
+	}
+}
+
 func TestWikaP1bKnowledgeMigrationContract(t *testing.T) {
 	path := filepath.Join("..", "..", "migrations", "versioned", "000092_wika_knowledge_state_access.up.sql")
 	raw, err := os.ReadFile(path)
@@ -322,6 +345,35 @@ func TestWikaP5OrgShareMigrationContract(t *testing.T) {
 	for _, fragment := range required {
 		if !strings.Contains(sql, fragment) {
 			t.Fatalf("expected migration to contain %q", fragment)
+		}
+	}
+}
+
+func TestWikaP5OrgShareAllowedFieldsMigrationContract(t *testing.T) {
+	path := filepath.Join("..", "..", "migrations", "versioned", "000102_wika_org_share_allowed_fields_check.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected Wika P5 org share allowed fields migration to exist: %v", err)
+	}
+
+	sql := string(raw)
+	required := []string{
+		"chk_wika_org_shares_allowed_fields",
+		"jsonb_typeof(allowed_fields) = 'array'",
+		`"source_tenant_id"`,
+		`"source_kb_id"`,
+		`"updated_at"`,
+		`"quality_score"`,
+		`"freshness_status"`,
+	}
+	for _, fragment := range required {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("expected migration to contain %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{`"content"`, `"snippet"`, `"chunk"`, `"evidence_text"`, `"file"`, `"metadata"`} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("migration must not allow forbidden field %q", forbidden)
 		}
 	}
 }

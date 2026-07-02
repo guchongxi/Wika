@@ -19,6 +19,7 @@ type wikaFreshnessService interface {
 	RunCheck(ctx context.Context, input wikafreshness.RunCheckInput) (*types.WikaFreshnessCheck, error)
 	ListChecks(ctx context.Context, input wikafreshness.ListInput) ([]*types.WikaFreshnessCheck, error)
 	ListItems(ctx context.Context, input wikafreshness.ListInput) ([]*types.WikaFreshnessCheckItem, error)
+	Overview(ctx context.Context, input wikafreshness.ListInput) (*wikafreshness.OverviewResult, error)
 	HandleItem(ctx context.Context, input wikafreshness.HandleItemInput) (*types.WikaFreshnessCheckItem, error)
 }
 
@@ -112,6 +113,26 @@ func (h *WikaFreshnessHandler) ListItems(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": result})
+}
+
+func (h *WikaFreshnessHandler) Overview(c *gin.Context) {
+	_, tenantID, ok := wikaKnowledgeContext(c)
+	if !ok {
+		return
+	}
+	if h.service == nil {
+		c.Error(apperrors.NewInternalServerError("wika freshness service unavailable"))
+		return
+	}
+	result, err := h.service.Overview(c.Request.Context(), wikafreshness.ListInput{
+		TenantID: tenantID,
+		KBID:     strings.TrimSpace(c.Param("id")),
+	})
+	if err != nil {
+		c.Error(apperrors.NewInternalServerError("failed to load freshness overview"))
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func (h *WikaFreshnessHandler) HandleItem(c *gin.Context) {

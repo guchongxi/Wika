@@ -14,9 +14,9 @@ type WikaKnowledgeSuggestion struct {
 	IdempotencyKey    string     `json:"idempotency_key,omitempty" gorm:"type:varchar(128);index"`
 	SourceContentHash string     `json:"source_content_hash" gorm:"type:varchar(128);not null"`
 	Reason            string     `json:"reason,omitempty" gorm:"type:text"`
-	AIDecision        string     `json:"ai_decision" gorm:"type:varchar(32);not null"`
-	AIConfidence      float64    `json:"ai_confidence" gorm:"type:numeric(4,3);not null;default:0"`
-	AIReview          JSON       `json:"ai_review" gorm:"type:jsonb;not null;default:'{}'"`
+	AIDecision        string     `json:"ai_decision" gorm:"column:ai_decision;type:varchar(32);not null"`
+	AIConfidence      float64    `json:"ai_confidence" gorm:"column:ai_confidence;type:numeric(4,3);not null;default:0"`
+	AIReview          JSON       `json:"ai_review" gorm:"column:ai_review;type:jsonb;not null;default:'{}'"`
 	CorrectedTitle    string     `json:"corrected_title" gorm:"type:text"`
 	CorrectedContent  string     `json:"corrected_content" gorm:"type:text"`
 	CorrectedTags     JSON       `json:"corrected_tags" gorm:"type:jsonb;not null;default:'[]'"`

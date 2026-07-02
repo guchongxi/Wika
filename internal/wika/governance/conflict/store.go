@@ -2,6 +2,7 @@ package conflict
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -89,6 +90,28 @@ func (s *GormStore) ResolveItem(ctx context.Context, input ResolveItemInput) (*t
 	return &item, nil
 }
 
+func (s *GormStore) ListRunnableChecks(ctx context.Context, now time.Time, limit int) ([]*types.WikaConflictCheck, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	var checks []*types.WikaConflictCheck
+	if err := s.db.WithContext(ctx).
+		Where("status IN ?", []string{CheckStatusPending, CheckStatusRunning, CheckStatusFailed}).
+		Where("locked_until IS NULL OR locked_until < ?", now).
+		Order("created_at ASC, id ASC").
+		Limit(limit).
+		Find(&checks).Error; err != nil {
+		return nil, err
+	}
+	return checks, nil
+}
+
 func (s *GormStore) AcquireCheck(ctx context.Context, checkID uint64, workerID string, now time.Time, lease time.Duration) (*types.WikaConflictCheck, error) {
 	if lease <= 0 {
 		lease = time.Minute
@@ -148,12 +171,13 @@ func (s *GormStore) SaveConflictItems(ctx context.Context, check *types.WikaConf
 		if len(evidence) == 0 {
 			evidence = types.JSON([]byte(`{}`))
 		}
+		sourceID, targetID := canonicalKnowledgePair(candidate.SourceKnowledgeID, candidate.TargetKnowledgeID)
 		items = append(items, types.WikaConflictItem{
 			CheckID:           check.ID,
 			TenantID:          check.TenantID,
 			KBID:              check.KBID,
-			SourceKnowledgeID: candidate.SourceKnowledgeID,
-			TargetKnowledgeID: candidate.TargetKnowledgeID,
+			SourceKnowledgeID: sourceID,
+			TargetKnowledgeID: targetID,
 			ConflictType:      candidate.ConflictType,
 			ConfidenceScore:   candidate.ConfidenceScore,
 			Evidence:          evidence,
@@ -162,6 +186,15 @@ func (s *GormStore) SaveConflictItems(ctx context.Context, check *types.WikaConf
 		})
 	}
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&items).Error
+}
+
+func canonicalKnowledgePair(sourceID, targetID string) (string, string) {
+	sourceID = strings.TrimSpace(sourceID)
+	targetID = strings.TrimSpace(targetID)
+	if targetID != "" && (sourceID == "" || targetID < sourceID) {
+		return targetID, sourceID
+	}
+	return sourceID, targetID
 }
 
 func (s *GormStore) CompleteCheck(ctx context.Context, checkID uint64, workerID string, now time.Time) error {

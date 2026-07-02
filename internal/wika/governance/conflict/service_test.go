@@ -44,6 +44,13 @@ func (s *fakeConflictStore) ResolveItem(ctx context.Context, input ResolveItemIn
 	return nil, ErrConflictItemNotFound
 }
 
+func (s *fakeConflictStore) ListRunnableChecks(ctx context.Context, now time.Time, limit int) ([]*types.WikaConflictCheck, error) {
+	if s.check == nil {
+		return nil, nil
+	}
+	return []*types.WikaConflictCheck{s.check}, nil
+}
+
 func (s *fakeConflictStore) AcquireCheck(ctx context.Context, checkID uint64, workerID string, now time.Time, lease time.Duration) (*types.WikaConflictCheck, error) {
 	if s.check == nil || s.check.ID != checkID {
 		return nil, ErrCheckLeaseUnavailable
@@ -89,11 +96,21 @@ func (a *fakeConflictAudit) Log(ctx context.Context, entry *types.AuditLog) erro
 	return nil
 }
 
+type fakeConflictFeatureGate struct {
+	enabled bool
+	key     string
+}
+
+func (g *fakeConflictFeatureGate) GetBool(ctx context.Context, key string, envName string, def bool) bool {
+	g.key = key
+	return g.enabled
+}
+
 func TestConflictServiceCreateCheckWritesAudit(t *testing.T) {
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 	store := &fakeConflictStore{}
 	audit := &fakeConflictAudit{}
-	svc := &Service{store: store, audit: audit}
+	svc := &Service{store: store, audit: audit, flags: &fakeConflictFeatureGate{enabled: true}}
 
 	got, err := svc.CreateCheck(context.Background(), CreateCheckInput{
 		ActorID:  "u-owner",
@@ -121,7 +138,7 @@ func TestConflictServiceResolveItemWritesAudit(t *testing.T) {
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 	store := &fakeConflictStore{resolvedItem: &types.WikaConflictItem{ID: 7, TenantID: 80, KBID: "kb-team", Status: ItemStatusOpen}}
 	audit := &fakeConflictAudit{}
-	svc := &Service{store: store, audit: audit}
+	svc := &Service{store: store, audit: audit, flags: &fakeConflictFeatureGate{enabled: true}}
 
 	got, err := svc.ResolveItem(context.Background(), ResolveItemInput{
 		ActorID:  "u-reviewer",
@@ -146,6 +163,28 @@ func TestConflictServiceResolveItemWritesAudit(t *testing.T) {
 	}
 }
 
+func TestConflictServiceResolveItemWritesStatusSpecificAudit(t *testing.T) {
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	store := &fakeConflictStore{resolvedItem: &types.WikaConflictItem{ID: 7, TenantID: 80, KBID: "kb-team", Status: ItemStatusOpen}}
+	audit := &fakeConflictAudit{}
+	svc := &Service{store: store, audit: audit, flags: &fakeConflictFeatureGate{enabled: true}}
+
+	_, err := svc.ResolveItem(context.Background(), ResolveItemInput{
+		ActorID:  "u-reviewer",
+		TenantID: 80,
+		ItemID:   7,
+		Status:   ItemStatusConfirmed,
+		Comment:  "确认需要处理",
+		Now:      now,
+	})
+	if err != nil {
+		t.Fatalf("ResolveItem returned error: %v", err)
+	}
+	if len(audit.entries) != 1 || audit.entries[0].Action != types.AuditAction("wika.conflict.item_confirmed") {
+		t.Fatalf("expected confirmed audit action, got %+v", audit.entries)
+	}
+}
+
 func TestConflictServiceRunCheckGeneratesCandidatesAndCompletes(t *testing.T) {
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 	store := &fakeConflictStore{check: &types.WikaConflictCheck{ID: 41, TenantID: 80, KBID: "kb-team", Trigger: TriggerManual, Status: CheckStatusPending, CreatedBy: "u-owner"}}
@@ -159,7 +198,7 @@ func TestConflictServiceRunCheckGeneratesCandidatesAndCompletes(t *testing.T) {
 			AIExplanation:     "两条知识结论相反",
 		},
 	}}
-	svc := &Service{store: store, generator: generator}
+	svc := &Service{store: store, generator: generator, flags: &fakeConflictFeatureGate{enabled: true}}
 
 	err := svc.RunCheck(context.Background(), RunCheckInput{
 		CheckID:       41,
@@ -178,5 +217,30 @@ func TestConflictServiceRunCheckGeneratesCandidatesAndCompletes(t *testing.T) {
 	}
 	if store.completedCheck != 41 || store.failedCheck != 0 {
 		t.Fatalf("expected check completed, completed=%d failed=%d", store.completedCheck, store.failedCheck)
+	}
+}
+
+func TestConflictServiceFeatureGateDisabledFailsClosed(t *testing.T) {
+	store := &fakeConflictStore{check: &types.WikaConflictCheck{ID: 41, TenantID: 80, KBID: "kb-team", Trigger: TriggerManual, Status: CheckStatusPending}}
+	gate := &fakeConflictFeatureGate{enabled: false}
+	svc := &Service{store: store, flags: gate}
+
+	if _, err := svc.CreateCheck(context.Background(), CreateCheckInput{TenantID: 80, KBID: "kb-team"}); err != ErrFeatureDisabled {
+		t.Fatalf("expected CreateCheck ErrFeatureDisabled, got %v", err)
+	}
+	if _, _, err := svc.ListItems(context.Background(), ListItemsInput{TenantID: 80, KBID: "kb-team"}); err != ErrFeatureDisabled {
+		t.Fatalf("expected ListItems ErrFeatureDisabled, got %v", err)
+	}
+	if _, err := svc.ResolveItem(context.Background(), ResolveItemInput{TenantID: 80, ItemID: 7, Status: ItemStatusResolved}); err != ErrFeatureDisabled {
+		t.Fatalf("expected ResolveItem ErrFeatureDisabled, got %v", err)
+	}
+	if err := svc.RunCheck(context.Background(), RunCheckInput{CheckID: 41}); err != ErrFeatureDisabled {
+		t.Fatalf("expected RunCheck ErrFeatureDisabled, got %v", err)
+	}
+	if store.createdCheck != nil || store.resolveInput != nil || store.completedCheck != 0 || store.failedCheck != 0 {
+		t.Fatalf("feature disabled should not mutate store: %+v", store)
+	}
+	if gate.key != FeatureFlagKey {
+		t.Fatalf("expected feature flag key %q, got %q", FeatureFlagKey, gate.key)
 	}
 }

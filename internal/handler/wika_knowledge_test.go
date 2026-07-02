@@ -33,9 +33,13 @@ func (s *stubWikaIntakeService) PushKnowledge(_ context.Context, input wikaintak
 		return s.resp, nil
 	}
 	return &wikaintake.PushKnowledgeResult{
-		KnowledgeID:  "k-1",
-		QualityScore: 86,
-		Status:       "created",
+		KnowledgeID:   "k-1",
+		TenantID:      7,
+		KBID:          "kb-personal",
+		SourceChannel: types.ChannelAPI,
+		CreatedAt:     time.Date(2026, 7, 2, 10, 20, 30, 0, time.UTC),
+		QualityScore:  86,
+		Status:        "created",
 		Normalized: wikaintake.NormalizedKnowledge{
 			Title:   input.Title,
 			Content: input.Content,
@@ -178,6 +182,10 @@ func TestWikaKnowledgePushPassesCurrentUserAndDraftToService(t *testing.T) {
 
 	var resp struct {
 		KnowledgeID         string                          `json:"knowledge_id"`
+		TenantID            uint64                          `json:"tenant_id"`
+		KBID                string                          `json:"kb_id"`
+		SourceChannel       string                          `json:"source_channel"`
+		CreatedAt           time.Time                       `json:"created_at"`
 		Normalized          wikaintake.NormalizedKnowledge  `json:"normalized"`
 		QualityScore        int                             `json:"quality_score"`
 		DuplicateCandidates []wikaintake.DuplicateCandidate `json:"duplicate_candidates"`
@@ -189,8 +197,40 @@ func TestWikaKnowledgePushPassesCurrentUserAndDraftToService(t *testing.T) {
 	if resp.KnowledgeID != "k-1" || resp.QualityScore != 86 || resp.Status != "created" {
 		t.Fatalf("unexpected response: %+v body=%s", resp, w.Body.String())
 	}
+	if resp.TenantID != 7 || resp.KBID != "kb-personal" || resp.SourceChannel != types.ChannelAPI || resp.CreatedAt.IsZero() {
+		t.Fatalf("expected intake location fields, got %+v body=%s", resp, w.Body.String())
+	}
 	if resp.Normalized.Title != "排查记录" || len(resp.DuplicateCandidates) != 1 {
 		t.Fatalf("unexpected normalized or duplicates: %+v body=%s", resp, w.Body.String())
+	}
+}
+
+func TestWikaKnowledgePushSetsKnowledgeIDForUsageRecorder(t *testing.T) {
+	service := &stubWikaIntakeService{}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(middleware.ErrorHandler())
+	r.Use(func(c *gin.Context) {
+		c.Set(types.UserIDContextKey.String(), "u-test")
+		c.Set(types.TenantIDContextKey.String(), uint64(7))
+		c.Next()
+	})
+	r.Use(func(c *gin.Context) {
+		c.Next()
+		if got := c.GetString(types.WikaKnowledgeIDContextKey.String()); got != "" {
+			c.Header("X-Wika-Knowledge-ID", got)
+		}
+	})
+	h := &WikaKnowledgeHandler{intake: service}
+	r.POST("/api/v1/wika/knowledge/push", h.PushKnowledge)
+
+	w := doWikaKnowledgeJSON(t, r, http.MethodPost, "/api/v1/wika/knowledge/push", `{"content":"用于统计关联的知识"}`)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-Wika-Knowledge-ID"); got != "k-1" {
+		t.Fatalf("expected knowledge id context for usage recorder, got %q", got)
 	}
 }
 
@@ -407,6 +447,8 @@ func setupWikaKnowledgeExpandIntegrationDB(t *testing.T) *gorm.DB {
 		&types.WikaSpaceDefault{},
 		&types.Tenant{},
 		&types.TenantMember{},
+		&types.Organization{},
+		&types.OrganizationTenantMember{},
 		&types.KnowledgeBase{},
 		&types.WikaOrgShare{},
 		&types.WikaKnowledgeState{},
@@ -421,6 +463,15 @@ func setupWikaKnowledgeExpandIntegrationDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.Create(&types.TenantMember{UserID: "u-test", TenantID: 90, Role: types.TenantRoleViewer, Status: types.TenantMemberStatusActive}).Error; err != nil {
 		t.Fatalf("create target member: %v", err)
+	}
+	if err := db.Create(&types.Organization{ID: "org-1", Name: "org"}).Error; err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := db.Create(&types.OrganizationTenantMember{ID: "otm-source", OrganizationID: "org-1", TenantID: 80, Role: types.OrgRoleAdmin}).Error; err != nil {
+		t.Fatalf("create source org member: %v", err)
+	}
+	if err := db.Create(&types.OrganizationTenantMember{ID: "otm-target", OrganizationID: "org-1", TenantID: 90, Role: types.OrgRoleViewer}).Error; err != nil {
+		t.Fatalf("create target org member: %v", err)
 	}
 	if err := db.Create(&types.KnowledgeBase{ID: "kb-shared", TenantID: 80, Type: types.KnowledgeBaseTypeDocument}).Error; err != nil {
 		t.Fatalf("create source kb: %v", err)

@@ -17,6 +17,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	wikaversion "github.com/Tencent/WeKnora/internal/wika/governance/version"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -60,6 +61,7 @@ type knowledgeService struct {
 	kbShareService  interfaces.KBShareService
 	imageResolver   *docparser.ImageResolver
 	taskPendingRepo interfaces.TaskPendingOpsRepository
+	versionRecorder manualKnowledgeVersionRecorder
 
 	// In-memory fallbacks for Lite mode (no Redis)
 	memFAQProgress      sync.Map // taskID -> *types.FAQImportProgress
@@ -72,6 +74,10 @@ type knowledgeService struct {
 	// handled because the public surface is the SpanTracker interface,
 	// which has a no-op fallback. See knowledge_span_tracker.go.
 	spanTracker SpanTracker
+}
+
+type manualKnowledgeVersionRecorder interface {
+	RecordVersion(ctx context.Context, input wikaversion.RecordVersionInput) (*types.WikaKnowledgeVersion, error)
 }
 
 const (
@@ -106,6 +112,7 @@ func NewKnowledgeService(
 	wikiService interfaces.WikiPageService,
 	taskPendingRepo interfaces.TaskPendingOpsRepository,
 	spanTracker SpanTracker,
+	versionRecorder *wikaversion.Recorder,
 ) (interfaces.KnowledgeService, error) {
 	return &knowledgeService{
 		config:          config,
@@ -132,6 +139,7 @@ func NewKnowledgeService(
 		wikiService:     wikiService,
 		taskPendingRepo: taskPendingRepo,
 		spanTracker:     spanTracker,
+		versionRecorder: versionRecorder,
 	}, nil
 }
 
@@ -489,9 +497,13 @@ func (s *knowledgeService) GetKnowledgeByIDOnly(ctx context.Context, id string) 
 // KB row itself is not returned so callers can't accidentally widen
 // their scope past "needed the creator id".
 func (s *knowledgeService) GetOwningKBCreatorID(ctx context.Context, knowledgeID string) (string, error) {
-	knowledge, err := s.GetKnowledgeByID(ctx, knowledgeID)
+	tenantID := ctx.Value(types.TenantIDContextKey).(uint64)
+	knowledge, err := s.repo.GetKnowledgeByID(ctx, tenantID, knowledgeID)
 	if err != nil {
 		return "", err
+	}
+	if knowledge == nil {
+		return "", repository.ErrKnowledgeNotFound
 	}
 	kb, err := s.kbService.GetKnowledgeBaseByID(ctx, knowledge.KnowledgeBaseID)
 	if err != nil {
@@ -582,6 +594,9 @@ func (s *knowledgeService) UpdateKnowledge(ctx context.Context, knowledge *types
 		logger.Errorf(ctx, "Failed to get knowledge record: %v", err)
 		return err
 	}
+	baselineContent, baselineStatus := manualVersionSnapshot(record)
+	baselineTitle := record.Title
+	baselineMetadata := append(types.JSON(nil), record.Metadata...)
 	// if need other fields update, please add here
 	if knowledge.Title != "" {
 		record.Title = knowledge.Title
@@ -594,6 +609,35 @@ func (s *knowledgeService) UpdateKnowledge(ctx context.Context, knowledge *types
 	if err := s.repo.UpdateKnowledge(ctx, record); err != nil {
 		logger.Errorf(ctx, "Failed to update knowledge: %v", err)
 		return err
+	}
+	if s.versionRecorder != nil {
+		if err := s.recordManualKnowledgeVersionInput(ctx, wikaversion.RecordVersionInput{
+			KnowledgeID:  record.ID,
+			TenantID:     record.TenantID,
+			KBID:         record.KnowledgeBaseID,
+			Title:        baselineTitle,
+			Content:      baselineContent,
+			Status:       baselineStatus,
+			Metadata:     baselineMetadata,
+			ChangeReason: "baseline",
+		}); err != nil {
+			logger.Errorf(ctx, "Failed to record legacy knowledge baseline version: %v", err)
+			return err
+		}
+		content, status := manualVersionSnapshot(record)
+		if err := s.recordManualKnowledgeVersionInput(ctx, wikaversion.RecordVersionInput{
+			KnowledgeID:  record.ID,
+			TenantID:     record.TenantID,
+			KBID:         record.KnowledgeBaseID,
+			Title:        record.Title,
+			Content:      content,
+			Status:       status,
+			Metadata:     append(types.JSON(nil), record.Metadata...),
+			ChangeReason: "legacy_api_update",
+		}); err != nil {
+			logger.Errorf(ctx, "Failed to record legacy knowledge update version: %v", err)
+			return err
+		}
 	}
 	logger.Infof(ctx, "Knowledge updated successfully, ID: %s", knowledge.ID)
 	return nil
@@ -673,6 +717,10 @@ func (s *knowledgeService) UpdateKnowledgeTag(ctx context.Context, knowledgeID s
 	if err != nil {
 		return err
 	}
+	beforeTagIDs, err := s.currentKnowledgeTagIDs(ctx, knowledgeID)
+	if err != nil {
+		return err
+	}
 
 	// Validate all tag IDs
 	if len(tagIDs) > 0 {
@@ -687,7 +735,10 @@ func (s *knowledgeService) UpdateKnowledgeTag(ctx context.Context, knowledgeID s
 		}
 	}
 
-	return s.repo.SetKnowledgeTags(ctx, knowledgeID, tagIDs)
+	if err := s.repo.SetKnowledgeTags(ctx, knowledgeID, tagIDs); err != nil {
+		return err
+	}
+	return s.recordTagUpdateVersion(ctx, knowledge, beforeTagIDs, tagIDs)
 }
 
 // UpdateKnowledgeTagBatch updates tags for document knowledge items in batch.
@@ -714,6 +765,16 @@ func (s *knowledgeService) UpdateKnowledgeTagBatch(ctx context.Context, authoriz
 	knowledgeList, err := s.repo.GetKnowledgeBatch(ctx, tenantID, knowledgeIDs)
 	if err != nil {
 		return err
+	}
+	beforeTags := map[string][]string{}
+	if s.versionRecorder != nil {
+		existing, err := s.repo.GetKnowledgeTags(ctx, knowledgeIDs)
+		if err != nil {
+			return err
+		}
+		for knowledgeID, tags := range existing {
+			beforeTags[knowledgeID] = tagIDsFromKnowledgeTags(tags)
+		}
 	}
 
 	// Validate all requested IDs were found and belong to the authorized KB
@@ -776,13 +837,80 @@ func (s *knowledgeService) UpdateKnowledgeTagBatch(ctx context.Context, authoriz
 	}
 
 	// Set tags for each knowledge
+	knowledgeByID := make(map[string]*types.Knowledge, len(knowledgeList))
+	for _, knowledge := range knowledgeList {
+		knowledgeByID[knowledge.ID] = knowledge
+	}
 	for knowledgeID, tagIDs := range updates {
 		if err := s.repo.SetKnowledgeTags(ctx, knowledgeID, tagIDs); err != nil {
+			return err
+		}
+		if err := s.recordTagUpdateVersion(ctx, knowledgeByID[knowledgeID], beforeTags[knowledgeID], tagIDs); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+func (s *knowledgeService) currentKnowledgeTagIDs(ctx context.Context, knowledgeID string) ([]string, error) {
+	if s.versionRecorder == nil {
+		return nil, nil
+	}
+	tags, err := s.repo.GetKnowledgeTags(ctx, []string{knowledgeID})
+	if err != nil {
+		return nil, err
+	}
+	return tagIDsFromKnowledgeTags(tags[knowledgeID]), nil
+}
+
+func (s *knowledgeService) recordTagUpdateVersion(ctx context.Context, knowledge *types.Knowledge, beforeTagIDs, afterTagIDs []string) error {
+	if s.versionRecorder == nil || knowledge == nil {
+		return nil
+	}
+	before := manualVersionTagIDs(beforeTagIDs)
+	after := manualVersionTagIDs(afterTagIDs)
+	if string(before) == string(after) {
+		return nil
+	}
+	content, status := manualVersionSnapshot(knowledge)
+	if err := s.recordManualKnowledgeVersionInput(ctx, wikaversion.RecordVersionInput{
+		KnowledgeID:  knowledge.ID,
+		TenantID:     knowledge.TenantID,
+		KBID:         knowledge.KnowledgeBaseID,
+		Title:        knowledge.Title,
+		Content:      content,
+		Tags:         before,
+		Status:       status,
+		Metadata:     append(types.JSON(nil), knowledge.Metadata...),
+		ChangeReason: "baseline",
+	}); err != nil {
+		return err
+	}
+	return s.recordManualKnowledgeVersionInput(ctx, wikaversion.RecordVersionInput{
+		KnowledgeID:  knowledge.ID,
+		TenantID:     knowledge.TenantID,
+		KBID:         knowledge.KnowledgeBaseID,
+		Title:        knowledge.Title,
+		Content:      content,
+		Tags:         after,
+		Status:       status,
+		Metadata:     append(types.JSON(nil), knowledge.Metadata...),
+		ChangeReason: "tag_update",
+	})
+}
+
+func tagIDsFromKnowledgeTags(tags []*types.KnowledgeTag) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if tag != nil && tag.ID != "" {
+			ids = append(ids, tag.ID)
+		}
+	}
+	return ids
 }
 
 // SearchKnowledge searches knowledge items by keyword across the tenant and shared knowledge bases.

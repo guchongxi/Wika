@@ -2,6 +2,7 @@ package evalschedule
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,15 @@ type fakeEvalScheduleGate struct {
 
 func (g fakeEvalScheduleGate) GetBool(ctx context.Context, key string, envName string, def bool) bool {
 	return g.enabled
+}
+
+type fakeEvalScheduleAudit struct {
+	entries []*types.AuditLog
+}
+
+func (a *fakeEvalScheduleAudit) Log(ctx context.Context, entry *types.AuditLog) error {
+	a.entries = append(a.entries, entry)
+	return nil
 }
 
 type reentrantEvalRunner struct {
@@ -122,6 +132,56 @@ func TestServiceRunDueSchedulesCreatesOneRunPerSlot(t *testing.T) {
 	}
 }
 
+func TestServiceScheduleMutationsWriteUpdatedAudit(t *testing.T) {
+	db := setupEvalScheduleTestDB(t)
+	audit := &fakeEvalScheduleAudit{}
+	svc := NewService(NewGormStore(db), &fakeEvalRunner{}, WithAuditLogger(audit), WithFeatureGate(fakeEvalScheduleGate{enabled: true}))
+	now := time.Date(2026, 6, 29, 12, 15, 0, 0, time.UTC)
+
+	schedule, err := svc.CreateSchedule(context.Background(), CreateScheduleInput{
+		ActorID:   "u-owner",
+		TenantID:  90,
+		KBID:      "kb-eval",
+		DatasetID: 11,
+		CronExpr:  "0 * * * *",
+		Enabled:   true,
+		Now:       now,
+	})
+	require.NoError(t, err)
+	_, err = svc.UpdateSchedule(context.Background(), UpdateScheduleInput{
+		ActorID:    "u-admin",
+		ScheduleID: schedule.ID,
+		CronExpr:   "0 */2 * * *",
+		Enabled:    true,
+		Now:        now.Add(time.Minute),
+	})
+	require.NoError(t, err)
+	_, err = svc.DisableSchedule(context.Background(), DisableScheduleInput{
+		ActorID:    "u-admin",
+		ScheduleID: schedule.ID,
+		Now:        now.Add(2 * time.Minute),
+	})
+	require.NoError(t, err)
+
+	if len(audit.entries) != 3 {
+		t.Fatalf("expected 3 audit entries, got %+v", audit.entries)
+	}
+	for _, entry := range audit.entries {
+		if entry.Action != types.AuditActionWikaEvalScheduleUpdated ||
+			entry.TenantID != 90 ||
+			entry.TargetType != "wika_eval_schedule" ||
+			entry.TargetID != "1" {
+			t.Fatalf("unexpected audit entry: %+v", entry)
+		}
+		if strings.Contains(string(entry.Details), "0 * * * *") || strings.Contains(string(entry.Details), "0 */2 * * *") {
+			t.Fatalf("audit details should hash cron expression, got %s", string(entry.Details))
+		}
+	}
+	if audit.entries[0].ActorUserID != "u-owner" || audit.entries[1].ActorUserID != "u-admin" || audit.entries[2].ActorUserID != "u-admin" {
+		t.Fatalf("unexpected audit actors: %+v", audit.entries)
+	}
+}
+
 func TestServiceUpdateScheduleResetsNextRunAndFailures(t *testing.T) {
 	db := setupEvalScheduleTestDB(t)
 	svc := NewService(NewGormStore(db), &fakeEvalRunner{}, WithFeatureGate(fakeEvalScheduleGate{enabled: true}))
@@ -192,7 +252,8 @@ func TestServiceDisableScheduleStopsFutureRuns(t *testing.T) {
 func TestServiceRunDueSchedulesDisablesAfterThirdFailure(t *testing.T) {
 	db := setupEvalScheduleTestDB(t)
 	runner := &fakeEvalRunner{err: wikaeval.ErrEvaluationStoreNotConfigured}
-	svc := NewService(NewGormStore(db), runner, WithFeatureGate(fakeEvalScheduleGate{enabled: true}))
+	audit := &fakeEvalScheduleAudit{}
+	svc := NewService(NewGormStore(db), runner, WithAuditLogger(audit), WithFeatureGate(fakeEvalScheduleGate{enabled: true}))
 	now := time.Date(2026, 6, 29, 12, 15, 0, 0, time.UTC)
 	schedule, err := svc.CreateSchedule(context.Background(), CreateScheduleInput{
 		ActorID:   "u-owner",
@@ -218,6 +279,18 @@ func TestServiceRunDueSchedulesDisablesAfterThirdFailure(t *testing.T) {
 	require.NoError(t, db.First(&updated, "id = ?", schedule.ID).Error)
 	if updated.Enabled || updated.ConsecutiveFailures != 3 || updated.LastFailureCode != "eval_run_failed" {
 		t.Fatalf("expected third failure to disable schedule, got %+v", updated)
+	}
+	if len(audit.entries) != 2 ||
+		audit.entries[0].Action != types.AuditActionWikaEvalScheduleUpdated ||
+		audit.entries[1].Action != types.AuditActionWikaEvalScheduleRunFailed {
+		t.Fatalf("unexpected audit entries: %+v", audit.entries)
+	}
+	runFailed := audit.entries[1]
+	if runFailed.TenantID != 90 || runFailed.ActorUserID != "u-owner" || runFailed.TargetID != "1" {
+		t.Fatalf("unexpected run_failed audit entry: %+v", runFailed)
+	}
+	if strings.Contains(string(runFailed.Details), "黄金 QA") {
+		t.Fatalf("run_failed audit details must not include QA content, got %s", string(runFailed.Details))
 	}
 }
 

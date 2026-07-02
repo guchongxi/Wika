@@ -25,6 +25,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
+	wikaspace "github.com/Tencent/WeKnora/internal/wika/space"
 )
 
 type oidcAuthorizationState struct {
@@ -57,11 +58,17 @@ func getJwtSecret() string {
 
 // userService implements the UserService interface
 type userService struct {
-	userRepo      interfaces.UserRepository
-	tokenRepo     interfaces.AuthTokenRepository
-	tenantService interfaces.TenantService
-	memberService interfaces.TenantMemberService
-	config        *config.Config
+	userRepo       interfaces.UserRepository
+	tokenRepo      interfaces.AuthTokenRepository
+	tenantService  interfaces.TenantService
+	memberService  interfaces.TenantMemberService
+	personalSpaces personalSpaceBootstrapper
+	config         *config.Config
+}
+
+type personalSpaceBootstrapper interface {
+	GetOrCreatePersonalSpace(ctx context.Context, userID, displayName string) (*types.Tenant, error)
+	EnsureTeamDefaults(ctx context.Context, userID string, tenant *types.Tenant) error
 }
 
 // NewUserService creates a new user service instance
@@ -71,13 +78,15 @@ func NewUserService(
 	tokenRepo interfaces.AuthTokenRepository,
 	tenantService interfaces.TenantService,
 	memberService interfaces.TenantMemberService,
+	personalSpaces *wikaspace.Service,
 ) interfaces.UserService {
 	return &userService{
-		userRepo:      userRepo,
-		tokenRepo:     tokenRepo,
-		tenantService: tenantService,
-		memberService: memberService,
-		config:        configInfo,
+		userRepo:       userRepo,
+		tokenRepo:      tokenRepo,
+		tenantService:  tenantService,
+		memberService:  memberService,
+		personalSpaces: personalSpaces,
+		config:         configInfo,
 	}
 }
 
@@ -148,6 +157,16 @@ func (s *userService) Register(ctx context.Context, req *types.RegisterRequest) 
 		if _, err := s.memberService.EnsureOwner(ctx, user.ID, createdTenant.ID); err != nil {
 			logger.Errorf(ctx, "Failed to create owner membership for user %s tenant %d: %v",
 				user.ID, createdTenant.ID, err)
+		}
+	}
+	if s.personalSpaces != nil {
+		if err := s.personalSpaces.EnsureTeamDefaults(ctx, user.ID, createdTenant); err != nil {
+			logger.Errorf(ctx, "Failed to create team defaults for user %s tenant %d: %v", user.ID, createdTenant.ID, err)
+			return nil, errors.New("failed to create workspace defaults")
+		}
+		if _, err := s.personalSpaces.GetOrCreatePersonalSpace(ctx, user.ID, user.Username); err != nil {
+			logger.Errorf(ctx, "Failed to create personal space for user %s: %v", user.ID, err)
+			return nil, errors.New("failed to create personal space")
 		}
 	}
 

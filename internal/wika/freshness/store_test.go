@@ -61,6 +61,11 @@ func TestGormFreshnessStoreSavesCheckItems(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("expected 1 item, got %d", count)
 	}
+	var previousStatus *string
+	require.NoError(t, db.Raw("SELECT previous_status FROM freshness_check_items WHERE check_id = ?", check.ID).Scan(&previousStatus).Error)
+	if previousStatus != nil {
+		t.Fatalf("expected initial previous_status to be NULL, got %q", *previousStatus)
+	}
 }
 
 func TestGormFreshnessStoreHandlesItemAndUpdatesKnowledgeState(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 )
 
 const (
+	FeatureFlagKey            = "wika.governance.conflict.enabled"
 	TriggerManual             = "manual"
 	CheckStatusPending        = "pending"
 	CheckStatusRunning        = "running"
@@ -23,6 +24,7 @@ const (
 	ConflictTypeScopeOverlap  = "scope_overlap"
 )
 
+var ErrFeatureDisabled = errors.New("wika conflict feature disabled")
 var ErrCheckLeaseUnavailable = errors.New("conflict check lease unavailable")
 var ErrConflictItemNotFound = errors.New("conflict item not found")
 var ErrConflictItemTerminal = errors.New("conflict item is terminal")

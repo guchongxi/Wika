@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -82,6 +83,41 @@ func TestGetKnowledgeUsesWikaOrgShareScopeAndRedactsContent(t *testing.T) {
 	}
 	if service.knowledge.Description == "" {
 		t.Fatal("redaction must not mutate the original knowledge entity")
+	}
+}
+
+func TestGetKnowledgeSharedScopeCanExposeAllowedMetadata(t *testing.T) {
+	updatedAt := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	service := &stubOrgShareKnowledgeService{knowledge: &types.Knowledge{
+		ID:              "k-shared",
+		TenantID:        80,
+		KnowledgeBaseID: "kb-shared",
+		Title:           "共享标题",
+		Description:     "不应泄露的共享正文",
+		UpdatedAt:       updatedAt,
+		Metadata:        types.JSON(`{"content":"secret"}`),
+	}}
+	h := newOrgShareKnowledgeHandlerWithFields(service, []string{"id", "title", "source_tenant_id", "source_kb_id", "updated_at"})
+	r := newOrgShareKnowledgeRouter()
+	r.GET("/knowledge/:id", h.GetKnowledge)
+
+	req := httptest.NewRequest(http.MethodGet, "/knowledge/k-shared", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, expected := range []string{`"id":"k-shared"`, `"tenant_id":80`, `"knowledge_base_id":"kb-shared"`, `"updated_at":"2026-06-29T12:00:00Z"`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %q in shared direct read response, body=%s", expected, body)
+		}
+	}
+	for _, leaked := range []string{"不应泄露的共享正文", "secret"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("shared direct read leaked %q: %s", leaked, body)
+		}
 	}
 }
 

@@ -10,10 +10,14 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	wikaspace "github.com/Tencent/WeKnora/internal/wika/space"
 )
 
 // ErrServiceNotConfigured 表示 intake 服务缺少持久化依赖。
 var ErrServiceNotConfigured = errors.New("intake service not configured")
+
+// ErrPersonalDefaultKBNotFound 表示用户还没有个人空间默认知识库。
+var ErrPersonalDefaultKBNotFound = errors.New("personal default kb not found")
 
 // DefaultKB 是当前用户个人空间默认知识库。
 type DefaultKB struct {
@@ -33,15 +37,21 @@ type KnowledgeCreator interface {
 	CreateKnowledgeFromManual(ctx context.Context, kbID string, payload *types.ManualKnowledgePayload, channel string) (*types.Knowledge, error)
 }
 
+// PersonalSpaceEnsurer 负责在用户首次使用 Wika 时补齐个人空间。
+type PersonalSpaceEnsurer interface {
+	GetOrCreatePersonalSpace(ctx context.Context, userID, displayName string) (*types.Tenant, error)
+}
+
 // Service 编排 Web/MCP 统一知识生产入口。
 type Service struct {
 	store     Store
 	knowledge KnowledgeCreator
+	spaces    PersonalSpaceEnsurer
 }
 
 // NewService 创建 intake 服务。
-func NewService(store *GormStore, knowledge interfaces.KnowledgeService) *Service {
-	return &Service{store: store, knowledge: knowledge}
+func NewService(store *GormStore, knowledge interfaces.KnowledgeService, spaces *wikaspace.Service) *Service {
+	return &Service{store: store, knowledge: knowledge, spaces: spaces}
 }
 
 // PushKnowledge 提供确定性的规范化、评分、幂等和手动知识入库。
@@ -70,7 +80,7 @@ func (s *Service) PushKnowledge(ctx context.Context, input PushKnowledgeInput) (
 		return nil, ErrServiceNotConfigured
 	}
 
-	defaultKB, err := s.store.GetPersonalDefaultKB(ctx, input.UserID)
+	defaultKB, err := s.resolvePersonalDefaultKB(ctx, input)
 	if err != nil {
 		return nil, err
 	}
@@ -82,6 +92,9 @@ func (s *Service) PushKnowledge(ctx context.Context, input PushKnowledgeInput) (
 		if existingID != "" {
 			return &PushKnowledgeResult{
 				KnowledgeID:         existingID,
+				TenantID:            defaultKB.TenantID,
+				KBID:                defaultKB.KBID,
+				SourceChannel:       types.ChannelAPI,
 				Normalized:          normalized,
 				QualityScore:        qualityScore,
 				DuplicateCandidates: []DuplicateCandidate{},
@@ -126,11 +139,29 @@ func (s *Service) PushKnowledge(ctx context.Context, input PushKnowledgeInput) (
 
 	return &PushKnowledgeResult{
 		KnowledgeID:         knowledge.ID,
+		TenantID:            defaultKB.TenantID,
+		KBID:                defaultKB.KBID,
+		SourceChannel:       types.ChannelAPI,
+		CreatedAt:           now,
 		Normalized:          normalized,
 		QualityScore:        qualityScore,
 		DuplicateCandidates: []DuplicateCandidate{},
 		Status:              status,
 	}, nil
+}
+
+func (s *Service) resolvePersonalDefaultKB(ctx context.Context, input PushKnowledgeInput) (DefaultKB, error) {
+	defaultKB, err := s.store.GetPersonalDefaultKB(ctx, input.UserID)
+	if err == nil {
+		return defaultKB, nil
+	}
+	if !errors.Is(err, ErrPersonalDefaultKBNotFound) || s.spaces == nil {
+		return DefaultKB{}, err
+	}
+	if _, ensureErr := s.spaces.GetOrCreatePersonalSpace(ctx, input.UserID, ""); ensureErr != nil {
+		return DefaultKB{}, ensureErr
+	}
+	return s.store.GetPersonalDefaultKB(ctx, input.UserID)
 }
 
 func normalizeTags(tags []string) []string {

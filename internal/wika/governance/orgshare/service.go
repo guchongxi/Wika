@@ -52,12 +52,30 @@ func NewService(store Store, admin TeamAdminChecker, opts ...ServiceOption) *Ser
 	return svc
 }
 
+func (s *Service) ListShares(ctx context.Context, input ListSharesInput) (*ListSharesResult, error) {
+	if !s.featureEnabled(ctx) {
+		return nil, ErrFeatureDisabled
+	}
+	if input.Status != "" && !isKnownShareStatus(input.Status) {
+		return nil, ErrInvalidShareState
+	}
+	if s.store == nil {
+		return &ListSharesResult{}, nil
+	}
+	return s.store.ListShares(ctx, input)
+}
+
 func (s *Service) CreateShare(ctx context.Context, input CreateShareInput) (*types.WikaOrgShare, error) {
 	if !s.featureEnabled(ctx) {
 		return nil, ErrFeatureDisabled
 	}
 	if !s.canAdmin(ctx, input.ActorID, input.SourceTenantID) {
 		return nil, ErrScopeDenied
+	}
+	if s.store != nil {
+		if err := s.store.ValidateShareScope(ctx, input.OrgID, input.SourceTenantID, input.SourceKBID, input.TargetTenantID); err != nil {
+			return nil, err
+		}
 	}
 	fields, err := normalizeAllowedFields(input.AllowedFields)
 	if err != nil {
@@ -220,12 +238,12 @@ func normalizeAllowedFields(fields []string) ([]string, error) {
 }
 
 func DefaultAllowedFields() []string {
-	return []string{"id", "title", "source_tenant_id", "source_kb_id", "quality_score", "freshness_status"}
+	return []string{"id", "title", "source_tenant_id", "source_kb_id", "updated_at", "quality_score", "freshness_status"}
 }
 
 func IsAllowedField(field string) bool {
 	switch field {
-	case "id", "title", "source_tenant_id", "source_kb_id", "quality_score", "freshness_status":
+	case "id", "title", "source_tenant_id", "source_kb_id", "updated_at", "quality_score", "freshness_status":
 		return true
 	default:
 		return false
@@ -249,6 +267,15 @@ func SanitizeAllowedFields(fields []string) []string {
 		out = append(out, field)
 	}
 	return out
+}
+
+func isKnownShareStatus(status string) bool {
+	switch status {
+	case types.WikaOrgShareStatusPending, types.WikaOrgShareStatusActive, types.WikaOrgShareStatusRevoked:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) logShareAudit(ctx context.Context, action types.AuditAction, actorID string, oldStatus string, newStatus string, share *types.WikaOrgShare, actorTenantID uint64) error {

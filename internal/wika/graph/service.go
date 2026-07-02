@@ -8,6 +8,7 @@ import (
 
 type Store interface {
 	Overview(ctx context.Context, tenantID uint64, kbID string) (*Overview, error)
+	OverviewByKB(ctx context.Context, kbID string) (*Overview, error)
 	ListEntities(ctx context.Context, input ListEntitiesInput) ([]*types.WikaGraphEntity, int64, error)
 	GetEntity(ctx context.Context, tenantID uint64, kbID string, entityID uint64) (*types.WikaGraphEntity, error)
 	ListEdges(ctx context.Context, input ListEdgesInput) ([]*types.WikaGraphEdge, int64, error)
@@ -23,6 +24,9 @@ func NewService(store *GormStore) *Service {
 }
 
 func (s *Service) Overview(ctx context.Context, input OverviewInput) (*Overview, error) {
+	if input.SystemAdmin {
+		return s.store.OverviewByKB(ctx, input.KBID)
+	}
 	return s.store.Overview(ctx, input.TenantID, input.KBID)
 }
 

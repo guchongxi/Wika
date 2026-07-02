@@ -32,6 +32,13 @@ type TokenStore interface {
 	RevokeToken(ctx context.Context, userID string, tokenID uint64, revokedAt time.Time) error
 }
 
+// TokenUsageStore 是可选的 PAT 调用统计存储能力。
+type TokenUsageStore interface {
+	RecordUsage(ctx context.Context, record TokenUsageRecord) error
+	ListUsage(ctx context.Context, filter TokenUsageFilter) (*TokenUsageListResult, error)
+	ListUsageEvents(ctx context.Context, filter TokenUsageFilter) (*TokenUsageEventListResult, error)
+}
+
 // CreateTokenInput 是创建用户级 MCP token 的输入。
 type CreateTokenInput struct {
 	UserID      string
@@ -136,6 +143,33 @@ func (s *TokenService) ListTokens(ctx context.Context, userID string, tenantID u
 // RevokeToken 撤销用户自己的 token。
 func (s *TokenService) RevokeToken(ctx context.Context, userID string, tokenID uint64) error {
 	return s.store.RevokeToken(ctx, userID, tokenID, s.now())
+}
+
+// RecordUsage 记录一次 Wika PAT daily route 调用。
+func (s *TokenService) RecordUsage(ctx context.Context, record TokenUsageRecord) error {
+	store, ok := s.store.(TokenUsageStore)
+	if !ok {
+		return ErrTokenInvalid
+	}
+	return store.RecordUsage(ctx, record)
+}
+
+// ListUsage 查询 token 维度调用统计。
+func (s *TokenService) ListUsage(ctx context.Context, filter TokenUsageFilter) (*TokenUsageListResult, error) {
+	store, ok := s.store.(TokenUsageStore)
+	if !ok {
+		return nil, ErrTokenInvalid
+	}
+	return store.ListUsage(ctx, filter)
+}
+
+// ListUsageEvents 查询 token 最近调用事件。
+func (s *TokenService) ListUsageEvents(ctx context.Context, filter TokenUsageFilter) (*TokenUsageEventListResult, error) {
+	store, ok := s.store.(TokenUsageStore)
+	if !ok {
+		return nil, ErrTokenInvalid
+	}
+	return store.ListUsageEvents(ctx, filter)
 }
 
 func (s *TokenService) hashToken(plaintext string) string {

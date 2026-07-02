@@ -414,6 +414,7 @@ import GraphSettings from './settings/GraphSettings.vue'
 import KBShareSettings from './settings/KBShareSettings.vue'
 import DataSourceSettings from './settings/DataSourceSettings.vue'
 import { useI18n } from 'vue-i18n'
+import { getMissingExplicitKBModelKeys, pickPreferredKBModelId } from './kbModelDefaults'
 
 const uiStore = useUIStore()
 const authStore = useAuthStore()
@@ -597,17 +598,13 @@ const kbCreateNeedsEmbedding = computed(() => {
 
 const applyDefaultModelsIfEmpty = () => {
   if (!formData.value || props.mode !== 'create') return
-  const pick = (type: ModelConfig['type']) => {
-    const list = allModels.value.filter((m) => m.type === type)
-    return list.find((m) => m.is_default) || list[0]
+  const chatModelId = pickPreferredKBModelId(allModels.value, 'KnowledgeQA')
+  const embeddingModelId = pickPreferredKBModelId(allModels.value, 'Embedding')
+  if (!formData.value.modelConfig.llmModelId && chatModelId) {
+    formData.value.modelConfig.llmModelId = chatModelId
   }
-  const chat = pick('KnowledgeQA')
-  const embedding = pick('Embedding')
-  if (!formData.value.modelConfig.llmModelId && chat?.id) {
-    formData.value.modelConfig.llmModelId = chat.id
-  }
-  if (!formData.value.modelConfig.embeddingModelId && embedding?.id) {
-    formData.value.modelConfig.embeddingModelId = embedding.id
+  if (!formData.value.modelConfig.embeddingModelId && embeddingModelId) {
+    formData.value.modelConfig.embeddingModelId = embeddingModelId
   }
 }
 
@@ -1016,15 +1013,20 @@ const validateForm = (): boolean => {
     }
   }
 
-  // 验证模型配置 - embedding 模型仅在检索索引启用时必须
-  const needsEmbedding = formData.value.indexingStrategy?.vectorEnabled || formData.value.indexingStrategy?.keywordEnabled
-  if (needsEmbedding && !formData.value.modelConfig.embeddingModelId) {
+  // 有可见模型时要求显式选择；没有可见模型时交给后端系统默认值补齐。
+  const needsEmbedding = Boolean(formData.value.indexingStrategy?.vectorEnabled || formData.value.indexingStrategy?.keywordEnabled)
+  const missingModels = getMissingExplicitKBModelKeys({
+    models: allModels.value,
+    config: formData.value.modelConfig,
+    needsEmbedding,
+  })
+  if (missingModels.includes('embedding')) {
     MessagePlugin.warning(t('knowledgeEditor.indexing.embeddingRequired'))
     currentSection.value = 'models'
     return false
   }
 
-  if (!formData.value.modelConfig.llmModelId) {
+  if (missingModels.includes('llm')) {
     MessagePlugin.warning(t('knowledgeEditor.messages.summaryRequired'))
     currentSection.value = 'models'
     return false
@@ -1896,4 +1898,3 @@ watch(
   }
 }
 </style>
-

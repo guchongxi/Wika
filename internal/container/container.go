@@ -96,6 +96,7 @@ import (
 	wikaintake "github.com/Tencent/WeKnora/internal/wika/intake"
 	wikascope "github.com/Tencent/WeKnora/internal/wika/scope"
 	wikasearch "github.com/Tencent/WeKnora/internal/wika/search"
+	wikaspace "github.com/Tencent/WeKnora/internal/wika/space"
 	wikasuggestion "github.com/Tencent/WeKnora/internal/wika/suggestion"
 	"github.com/tencent/vectordatabase-sdk-go/tcvectordb"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate"
@@ -195,6 +196,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(wikaintake.NewGormStore))
 	must(container.Provide(wikascope.NewGormStore))
 	must(container.Provide(wikasearch.NewGormStore))
+	must(container.Provide(wikaspace.NewGormStore, dig.As(new(wikaspace.PersonalSpaceStore))))
 	must(container.Provide(wikasuggestion.NewGormStore))
 
 	// MCP manager for managing MCP client connections
@@ -226,9 +228,11 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewWeKnoraCloudService))
 	must(container.Provide(initWikaTokenService))
 	must(container.Provide(initWikaEvaluationService))
-	must(container.Provide(wikafreshness.NewService))
-	must(container.Provide(wikaconflict.NewNoopCandidateGenerator))
+	must(container.Provide(initWikaFreshnessService))
+	must(container.Provide(wikaconflict.NewDeterministicCandidateGenerator))
 	must(container.Provide(wikaconflict.NewService))
+	must(container.Provide(initWikaConflictWorker))
+	must(container.Provide(wikaversion.NewRecorder))
 	must(container.Provide(wikaversion.NewService))
 	must(container.Provide(initWikaURLRefreshService))
 	must(container.Provide(initWikaURLRefreshWorker))
@@ -237,6 +241,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(wikaorgshare.NewTenantMemberAdminChecker))
 	must(container.Provide(initWikaOrgShareService))
 	must(container.Provide(wikagraph.NewService))
+	must(container.Provide(wikaspace.NewService))
 	must(container.Provide(wikaintake.NewService))
 	must(container.Provide(initWikaScopeResolver))
 	must(container.Provide(wikasearch.NewService))
@@ -335,6 +340,8 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	logger.Debugf(ctx, "[Container] Knowledge housekeeping runner registered")
 	must(container.Invoke(startWikaURLRefreshWorker))
 	logger.Debugf(ctx, "[Container] Wika URL refresh worker registered")
+	must(container.Invoke(startWikaConflictWorker))
+	logger.Debugf(ctx, "[Container] Wika conflict worker registered")
 	must(container.Invoke(startWikaEvalScheduleWorker))
 	logger.Debugf(ctx, "[Container] Wika eval schedule worker registered")
 	must(container.Provide(chatpipeline.NewEventManager))
@@ -486,8 +493,12 @@ func initWikaTokenService(store *wikaauth.GormTokenStore) *wikaauth.TokenService
 	return wikaauth.NewTokenService(store, pepper)
 }
 
-func initWikaSuggestionService(store *wikasuggestion.GormStore, knowledge interfaces.KnowledgeService) *wikasuggestion.Service {
-	return wikasuggestion.NewService(store, knowledge)
+func initWikaSuggestionService(store *wikasuggestion.GormStore, knowledge interfaces.KnowledgeService, versions *wikaversion.Recorder) *wikasuggestion.Service {
+	return wikasuggestion.NewService(store, knowledge, wikasuggestion.WithVersionRecorder(versions))
+}
+
+func initWikaFreshnessService(store *wikafreshness.GormStore, audit interfaces.AuditLogService, versions *wikaversion.Recorder) *wikafreshness.Service {
+	return wikafreshness.NewService(store, audit, wikafreshness.WithVersionRecorder(versions))
 }
 
 func initWikaEvaluationService(store *wikaeval.GormStore, search *wikasearch.Service) *wikaeval.Service {
@@ -511,10 +522,15 @@ func initWikaURLRefreshWorker(svc *wikaurlrefresh.Service, settings interfaces.S
 	return wikaurlrefresh.NewWorker(svc, settings)
 }
 
-func initWikaEvalScheduleService(store *wikaevalschedule.GormStore, runner *wikaeval.Service, settings interfaces.SystemSettingService) *wikaevalschedule.Service {
+func initWikaConflictWorker(svc *wikaconflict.Service, settings interfaces.SystemSettingService) *wikaconflict.Worker {
+	return wikaconflict.NewWorker(svc, settings)
+}
+
+func initWikaEvalScheduleService(store *wikaevalschedule.GormStore, runner *wikaeval.Service, settings interfaces.SystemSettingService, audit interfaces.AuditLogService) *wikaevalschedule.Service {
 	return wikaevalschedule.NewService(
 		store,
 		runner,
+		wikaevalschedule.WithAuditLogger(audit),
 		wikaevalschedule.WithFeatureGate(settings),
 	)
 }
@@ -1550,6 +1566,17 @@ func startWikaURLRefreshWorker(worker *wikaurlrefresh.Worker, cleaner interfaces
 	}
 	worker.Start(context.Background())
 	cleaner.RegisterWithName("WikaURLRefreshWorker", func() error {
+		worker.Stop()
+		return nil
+	})
+}
+
+func startWikaConflictWorker(worker *wikaconflict.Worker, cleaner interfaces.ResourceCleaner) {
+	if worker == nil {
+		return
+	}
+	worker.Start(context.Background())
+	cleaner.RegisterWithName("WikaConflictWorker", func() error {
 		worker.Stop()
 		return nil
 	})

@@ -68,6 +68,11 @@ func NewFetcher(validator URLValidator, opts ...FetcherOption) *Fetcher {
 	return f
 }
 
+func (f *Fetcher) ValidateURL(ctx context.Context, raw string) error {
+	_, err := f.validateFetchTarget(ctx, raw)
+	return err
+}
+
 func (f *Fetcher) Fetch(ctx context.Context, raw string) (*FetchResult, error) {
 	if f.validator == nil {
 		return nil, fmt.Errorf("url validator is required")

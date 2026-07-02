@@ -1,6 +1,10 @@
 package freshness
 
-import "time"
+import (
+	"time"
+
+	"github.com/Tencent/WeKnora/internal/types"
+)
 
 // RunCheckInput 是触发一次保鲜扫描的输入。
 type RunCheckInput struct {
@@ -15,6 +19,16 @@ type ListInput struct {
 	TenantID uint64
 	KBID     string
 	Status   string
+}
+
+// OverviewResult 是保鲜面板的汇总数据。
+type OverviewResult struct {
+	LatestCheck     *types.WikaFreshnessCheck `json:"latest_check,omitempty"`
+	TotalOpen       int                       `json:"total_open"`
+	TotalResolved   int                       `json:"total_resolved"`
+	TotalIgnored    int                       `json:"total_ignored"`
+	IssueCounts     map[string]int            `json:"issue_counts"`
+	OpenIssueCounts map[string]int            `json:"open_issue_counts"`
 }
 
 // HandleItemInput 是团队维护者处理保鲜问题的输入。

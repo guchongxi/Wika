@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 export const useUIStore = defineStore('ui', {
   state: () => ({
     showSettingsModal: false,
+    showSystemSettingsModal: false,
     showKBEditorModal: false,
     kbEditorMode: 'create' as 'create' | 'edit',
     currentKBId: null as string | null,
@@ -12,6 +13,8 @@ export const useUIStore = defineStore('ui', {
     kbEditorInitialSection: null as string | null,
     settingsInitialSection: null as string | null,
     settingsInitialSubSection: null as string | null,
+    systemSettingsInitialSection: null as string | null,
+    systemSettingsInitialSubSection: null as string | null,
     manualEditorVisible: false,
     manualEditorMode: 'create' as 'create' | 'edit',
     manualEditorKBId: null as string | null,
@@ -38,6 +41,18 @@ export const useUIStore = defineStore('ui', {
 
     toggleSettings() {
       this.showSettingsModal = !this.showSettingsModal
+    },
+
+    openSystemSettings(section?: string, subSection?: string) {
+      this.systemSettingsInitialSection = section || null
+      this.systemSettingsInitialSubSection = subSection || null
+      this.showSystemSettingsModal = true
+    },
+
+    closeSystemSettings() {
+      this.showSystemSettingsModal = false
+      this.systemSettingsInitialSection = null
+      this.systemSettingsInitialSubSection = null
     },
 
     openKBSettings(kbId: string, initialSection?: string) {
@@ -136,4 +151,3 @@ export const useUIStore = defineStore('ui', {
     }
   }
 })
-

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
+	wikaversion "github.com/Tencent/WeKnora/internal/wika/governance/version"
 )
 
 var (
@@ -20,6 +21,7 @@ var (
 	ErrSourceKnowledgeChanged     = errors.New("source knowledge changed since review")
 	ErrKnowledgeCreatorMissing    = errors.New("knowledge creator not configured")
 	ErrInvalidDecision            = errors.New("invalid suggestion decision")
+	ErrTargetDefaultKBNotFound    = errors.New("target space default knowledge base not found")
 )
 
 // Store 隔离 suggest_to_team 需要的数据访问。
@@ -42,15 +44,32 @@ type KnowledgeCreator interface {
 	CreateKnowledgeFromManual(ctx context.Context, kbID string, payload *types.ManualKnowledgePayload, channel string) (*types.Knowledge, error)
 }
 
+type VersionRecorder interface {
+	RecordVersion(ctx context.Context, input wikaversion.RecordVersionInput) (*types.WikaKnowledgeVersion, error)
+}
+
 // Service 编排个人知识推荐到团队的 AI 预审流程。
 type Service struct {
-	store     Store
-	knowledge KnowledgeCreator
+	store           Store
+	knowledge       KnowledgeCreator
+	versionRecorder VersionRecorder
+}
+
+type ServiceOption func(*Service)
+
+func WithVersionRecorder(recorder VersionRecorder) ServiceOption {
+	return func(s *Service) {
+		s.versionRecorder = recorder
+	}
 }
 
 // NewService 创建 suggestion service。
-func NewService(store *GormStore, knowledge KnowledgeCreator) *Service {
-	return &Service{store: store, knowledge: knowledge}
+func NewService(store *GormStore, knowledge KnowledgeCreator, opts ...ServiceOption) *Service {
+	svc := &Service{store: store, knowledge: knowledge}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // CreateSuggestion 创建团队推荐并执行确定性的最小预审。
@@ -101,6 +120,9 @@ func (s *Service) CreateSuggestion(ctx context.Context, input CreateInput) (*Sug
 		targetKBID, err = s.store.GetDefaultKB(ctx, input.TargetTenantID)
 		if err != nil {
 			return nil, err
+		}
+		if strings.TrimSpace(targetKBID) == "" {
+			return nil, ErrTargetDefaultKBNotFound
 		}
 	}
 	policy, err := s.store.GetSpacePolicy(ctx, input.TargetTenantID)
@@ -270,10 +292,11 @@ func (s *Service) applyLoadedSuggestion(ctx context.Context, actorID string, ite
 	}
 	createCtx := context.WithValue(ctx, types.TenantIDContextKey, item.TargetTenantID)
 	created, err := s.knowledge.CreateKnowledgeFromManual(createCtx, item.TargetKBID, &types.ManualKnowledgePayload{
-		Title:   title,
-		Content: content,
-		Status:  types.ManualKnowledgeStatusPublish,
-		Channel: types.ChannelAPI,
+		Title:             title,
+		Content:           content,
+		Status:            types.ManualKnowledgeStatusPublish,
+		Channel:           types.ChannelAPI,
+		SkipVersionRecord: s.versionRecorder != nil,
 	}, types.ChannelAPI)
 	if err != nil {
 		return nil, err
@@ -285,7 +308,33 @@ func (s *Service) applyLoadedSuggestion(ctx context.Context, actorID string, ite
 	if err != nil {
 		return nil, err
 	}
+	if err := s.recordSuggestionApplyVersion(ctx, actorID, applied, created, title, content); err != nil {
+		return nil, err
+	}
 	return &ApplyResult{ResultKnowledgeID: applied.ResultKnowledgeID, Status: Status(applied.Status)}, nil
+}
+
+func (s *Service) recordSuggestionApplyVersion(ctx context.Context, actorID string, item *types.WikaKnowledgeSuggestion, created *types.Knowledge, title, content string) error {
+	if s.versionRecorder == nil || item == nil || created == nil {
+		return nil
+	}
+	kbID := strings.TrimSpace(created.KnowledgeBaseID)
+	if kbID == "" {
+		kbID = strings.TrimSpace(item.TargetKBID)
+	}
+	_, err := s.versionRecorder.RecordVersion(ctx, wikaversion.RecordVersionInput{
+		KnowledgeID:  created.ID,
+		TenantID:     item.TargetTenantID,
+		KBID:         kbID,
+		Title:        title,
+		Content:      content,
+		Tags:         item.CorrectedTags,
+		Status:       types.ManualKnowledgeStatusPublish,
+		Metadata:     append(types.JSON(nil), created.Metadata...),
+		ChangeReason: "suggestion_apply",
+		ActorID:      strings.TrimSpace(actorID),
+	})
+	return err
 }
 
 func (s *Service) requireTeamMaintainer(ctx context.Context, actorID string, tenantID uint64) error {
@@ -332,10 +381,44 @@ func reviewKnowledge(title, content string) reviewResult {
 	if len(risks) > 0 {
 		return reviewResult{Decision: DecisionNeedsConfirmation, Confidence: 0.62, Risks: risks}
 	}
-	if len([]rune(strings.TrimSpace(content))) < 12 {
+	if len([]rune(reviewableContent(content))) < 12 {
 		return reviewResult{Decision: DecisionRejected, Confidence: 0.7, Risks: []string{"content_too_short"}}
 	}
 	return reviewResult{Decision: DecisionApproved, Confidence: 0.9, Risks: []string{}}
+}
+
+func reviewableContent(content string) string {
+	body := stripLeadingMarkdownTitle(content)
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if isIntakeAppendixHeading(strings.TrimSpace(line)) {
+			return strings.TrimSpace(strings.Join(lines[:i], "\n"))
+		}
+	}
+	return strings.TrimSpace(body)
+}
+
+func isIntakeAppendixHeading(line string) bool {
+	switch {
+	case line == "## 来源", line == "## 证据":
+		return true
+	case strings.EqualFold(line, "## Source"), strings.EqualFold(line, "## Evidence"):
+		return true
+	default:
+		return false
+	}
+}
+
+func stripLeadingMarkdownTitle(content string) string {
+	content = strings.TrimSpace(content)
+	if !strings.HasPrefix(content, "# ") {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) <= 1 {
+		return ""
+	}
+	return strings.TrimSpace(strings.Join(lines[1:], "\n"))
 }
 
 func knowledgeContent(knowledge *types.Knowledge) string {

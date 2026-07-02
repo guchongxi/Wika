@@ -1,6 +1,11 @@
 package types
 
-import "testing"
+import (
+	"sync"
+	"testing"
+
+	"gorm.io/gorm/schema"
+)
 
 func TestTenantEnsureSpaceTypeDefaultsEmptyToTeam(t *testing.T) {
 	tenant := &Tenant{}
@@ -39,6 +44,8 @@ func TestWikaP1aGovernanceTableNames(t *testing.T) {
 		{name: "space defaults", got: (WikaSpaceDefault{}).TableName(), want: "wika_space_defaults"},
 		{name: "space policies", got: (WikaSpacePolicy{}).TableName(), want: "wika_space_policies"},
 		{name: "user tokens", got: (WikaUserToken{}).TableName(), want: "wika_user_tokens"},
+		{name: "token usage daily", got: (WikaTokenUsageDaily{}).TableName(), want: "wika_token_usage_daily"},
+		{name: "token usage events", got: (WikaTokenUsageEvent{}).TableName(), want: "wika_token_usage_events"},
 	}
 
 	for _, tc := range cases {
@@ -66,6 +73,20 @@ func TestWikaP1bKnowledgeTableNames(t *testing.T) {
 				t.Fatalf("expected table name %q, got %q", tc.want, tc.got)
 			}
 		})
+	}
+}
+
+func TestWikaKnowledgeSuggestionAIDecisionColumnName(t *testing.T) {
+	parsed, err := schema.Parse(&WikaKnowledgeSuggestion{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	field := parsed.LookUpField("AIDecision")
+	if field == nil {
+		t.Fatal("expected AIDecision field")
+	}
+	if field.DBName != "ai_decision" {
+		t.Fatalf("expected AIDecision DB column ai_decision, got %q", field.DBName)
 	}
 }
 

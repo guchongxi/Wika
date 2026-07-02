@@ -126,3 +126,30 @@ func TestResolveKnowledgeBaseReadAllowsActiveOrgShare(t *testing.T) {
 		t.Fatalf("expected shared scope with allowed fields, got %+v", decision.Scopes[0])
 	}
 }
+
+func TestResolveKnowledgeBaseReadKeepsSharedScopeWhenActorIsAlsoSourceMember(t *testing.T) {
+	resolver := NewResolver(&fakeScopeStore{
+		tenants: map[uint64]*types.Tenant{80: {ID: 80, SpaceType: types.SpaceTypeTeam}},
+		kbs:     map[string]*types.KnowledgeBase{"kb-shared": {ID: "kb-shared", TenantID: 80}},
+		members: map[string]*types.TenantMember{
+			"user-target:2": {UserID: "user-target", TenantID: 80, Role: types.TenantRoleContributor},
+		},
+		shared: map[string][]Scope{
+			"user-target:kb-shared": {
+				{TenantID: 80, KBID: "kb-shared", Source: ScopeSourceShared, AllowedFields: []string{"id", "title"}},
+			},
+		},
+	})
+
+	decision, err := resolver.Resolve(context.Background(), Actor{UserID: "user-target"}, Resource{Kind: ResourceKnowledgeBase, ID: "kb-shared"}, ActionRead)
+
+	if err != nil {
+		t.Fatalf("expected shared allow, got error: %v", err)
+	}
+	if !decision.Allowed || len(decision.Scopes) != 2 {
+		t.Fatalf("expected team and shared scopes, got %+v", decision)
+	}
+	if decision.Scopes[0].Source != ScopeSourceTeam || decision.Scopes[1].Source != ScopeSourceShared {
+		t.Fatalf("expected team scope followed by shared scope, got %+v", decision.Scopes)
+	}
+}

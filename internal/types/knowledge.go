@@ -205,12 +205,13 @@ type ManualKnowledgeMetadata struct {
 
 // ManualKnowledgePayload represents the payload for manual knowledge operations.
 type ManualKnowledgePayload struct {
-	Title         string                     `json:"title"`
-	Content       string                     `json:"content"`
-	Status        string                     `json:"status"`
-	TagIDs        []string                   `json:"tag_ids"`
-	Channel       string                     `json:"channel"`
-	ProcessConfig *KnowledgeProcessOverrides `json:"process_config,omitempty"`
+	Title             string                     `json:"title"`
+	Content           string                     `json:"content"`
+	Status            string                     `json:"status"`
+	TagIDs            []string                   `json:"tag_ids"`
+	Channel           string                     `json:"channel"`
+	ProcessConfig     *KnowledgeProcessOverrides `json:"process_config,omitempty"`
+	SkipVersionRecord bool                       `json:"-"`
 }
 
 // KnowledgeSearchScope defines a (tenant_id, knowledge_base_id) scope for knowledge search (e.g. own KBs + shared KBs).

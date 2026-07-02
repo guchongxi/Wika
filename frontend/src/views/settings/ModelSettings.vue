@@ -136,7 +136,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { AddIcon, PlayCircleIcon } from 'tdesign-icons-vue-next'
 import { useI18n } from 'vue-i18n'
@@ -150,12 +150,26 @@ const authStore = useAuthStore()
 type ModelType = 'chat' | 'embedding' | 'rerank' | 'vllm' | 'asr'
 type FilterType = 'all' | ModelType
 
+const props = withDefaults(defineProps<{
+  initialType?: FilterType
+}>(), {
+  initialType: 'all',
+})
+
 const showDialog = ref(false)
 const showDebugDrawer = ref(false)
 const currentModelType = ref<ModelType>('chat')
 const editingModel = ref<any>(null)
 const loading = ref(true)
 const activeTypeFilter = ref<FilterType>('all')
+
+watch(
+  () => props.initialType,
+  (type) => {
+    activeTypeFilter.value = type
+  },
+  { immediate: true },
+)
 
 // 模型列表数据
 const allModels = ref<ModelConfig[]>([])

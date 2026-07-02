@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
+	wikaversion "github.com/Tencent/WeKnora/internal/wika/governance/version"
 )
 
 type fakeFreshnessStore struct {
@@ -66,6 +67,15 @@ func (a *fakeFreshnessAudit) Log(ctx context.Context, entry *types.AuditLog) err
 	return nil
 }
 
+type fakeFreshnessVersionRecorder struct {
+	records []wikaversion.RecordVersionInput
+}
+
+func (r *fakeFreshnessVersionRecorder) RecordVersion(ctx context.Context, input wikaversion.RecordVersionInput) (*types.WikaKnowledgeVersion, error) {
+	r.records = append(r.records, input)
+	return &types.WikaKnowledgeVersion{ID: uint64(len(r.records)), KnowledgeID: input.KnowledgeID, TenantID: input.TenantID, KBID: input.KBID, VersionNo: len(r.records)}, nil
+}
+
 func TestRunCheckCreatesFreshnessItemsForAllMVPConditions(t *testing.T) {
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 	expired := now.Add(-24 * time.Hour)
@@ -121,7 +131,8 @@ func TestHandleItemMarksUpdatedAndWritesAudit(t *testing.T) {
 		},
 	}
 	audit := &fakeFreshnessAudit{}
-	svc := &Service{store: store, audit: audit}
+	recorder := &fakeFreshnessVersionRecorder{}
+	svc := &Service{store: store, audit: audit, versions: recorder}
 
 	got, err := svc.HandleItem(context.Background(), HandleItemInput{
 		ActorID:  "u-reviewer",
@@ -153,5 +164,44 @@ func TestHandleItemMarksUpdatedAndWritesAudit(t *testing.T) {
 		entry.TargetType != "freshness" ||
 		entry.TargetID != "7" {
 		t.Fatalf("unexpected audit entry: %+v", entry)
+	}
+	if len(recorder.records) != 1 ||
+		recorder.records[0].KnowledgeID != "k-expired" ||
+		recorder.records[0].TenantID != 80 ||
+		recorder.records[0].KBID != "kb-team" ||
+		recorder.records[0].Status != FreshnessStatusFresh ||
+		recorder.records[0].ReviewStatus != ReviewStatusReviewed ||
+		recorder.records[0].ChangeReason != "freshness_handle" ||
+		recorder.records[0].ActorID != "u-reviewer" {
+		t.Fatalf("expected freshness_handle version, got %+v", recorder.records)
+	}
+}
+
+func TestOverviewAggregatesOpenItemsByIssueAndStatus(t *testing.T) {
+	store := &fakeFreshnessStore{
+		check: &types.WikaFreshnessCheck{ID: 41, TenantID: 80, KBID: "kb-team", Status: CheckStatusCompleted},
+		items: []*types.WikaFreshnessCheckItem{
+			{ID: 1, TenantID: 80, KBID: "kb-team", IssueType: IssueExpired, Status: ItemStatusOpen},
+			{ID: 2, TenantID: 80, KBID: "kb-team", IssueType: IssueExpired, Status: ItemStatusResolved},
+			{ID: 3, TenantID: 80, KBID: "kb-team", IssueType: IssueStale, Status: ItemStatusOpen},
+			{ID: 4, TenantID: 80, KBID: "kb-team", IssueType: IssueLowQuality, Status: ItemStatusIgnored},
+		},
+	}
+	svc := &Service{store: store}
+
+	got, err := svc.Overview(context.Background(), ListInput{TenantID: 80, KBID: "kb-team"})
+	if err != nil {
+		t.Fatalf("Overview returned error: %v", err)
+	}
+	if got.LatestCheck == nil || got.LatestCheck.ID != 41 {
+		t.Fatalf("unexpected latest check: %+v", got.LatestCheck)
+	}
+	if got.TotalOpen != 2 || got.TotalResolved != 1 || got.TotalIgnored != 1 {
+		t.Fatalf("unexpected status totals: %+v", got)
+	}
+	if got.IssueCounts[IssueExpired] != 2 ||
+		got.IssueCounts[IssueStale] != 1 ||
+		got.OpenIssueCounts[IssueExpired] != 1 {
+		t.Fatalf("unexpected issue counts: %+v", got)
 	}
 }

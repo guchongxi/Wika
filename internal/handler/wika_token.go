@@ -24,12 +24,15 @@ var allowedWikaTokenScopes = map[string]struct{}{
 	"knowledge:search":  {},
 	"knowledge:read":    {},
 	"suggestion:create": {},
+	"mcp:admin":         {},
 }
 
 type wikaTokenService interface {
 	CreateToken(ctx context.Context, input wikaauth.CreateTokenInput) (*wikaauth.CreatedToken, error)
 	ListTokens(ctx context.Context, userID string, tenantID uint64) ([]*types.WikaUserToken, error)
 	RevokeToken(ctx context.Context, userID string, tokenID uint64) error
+	ListUsage(ctx context.Context, filter wikaauth.TokenUsageFilter) (*wikaauth.TokenUsageListResult, error)
+	ListUsageEvents(ctx context.Context, filter wikaauth.TokenUsageFilter) (*wikaauth.TokenUsageEventListResult, error)
 }
 
 // WikaTokenHandler 暴露日常 MCP 工具使用的用户级 PAT 管理接口。
@@ -77,6 +80,10 @@ func (h *WikaTokenHandler) CreateToken(c *gin.Context) {
 	scopes, err := normalizeWikaTokenScopes(req.Scopes)
 	if err != nil {
 		c.Error(apperrors.NewBadRequestError(err.Error()))
+		return
+	}
+	if hasWikaTokenScope(scopes, "mcp:admin") && !isWikaMCPAdminActor(c.Request.Context()) {
+		c.Error(apperrors.NewForbiddenError("mcp:admin scope requires tenant admin"))
 		return
 	}
 	targetTenantID := tenantID
@@ -145,6 +152,73 @@ func (h *WikaTokenHandler) ListTokens(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"tokens": resp})
 }
 
+// AuthorizeMCPAdminToolset 校验当前用户能否在 Remote MCP 中启用管理工具集。
+func (h *WikaTokenHandler) AuthorizeMCPAdminToolset(c *gin.Context) {
+	if _, _, ok := wikaTokenContext(c); !ok {
+		return
+	}
+	if !isWikaMCPAdminActor(c.Request.Context()) {
+		c.Error(apperrors.NewForbiddenError("admin MCP toolset requires tenant admin"))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"allowed": true,
+		"toolset": "admin",
+	})
+}
+
+// ListTokenUsage 列出当前用户或当前租户内全部用户的 Wika PAT 调用统计。
+func (h *WikaTokenHandler) ListTokenUsage(c *gin.Context) {
+	userID, tenantID, ok := wikaTokenContext(c)
+	if !ok {
+		return
+	}
+	if h.service == nil {
+		c.Error(apperrors.NewInternalServerError("wika token service unavailable"))
+		return
+	}
+	filter, ok := h.parseUsageFilter(c, userID, tenantID)
+	if !ok {
+		return
+	}
+	result, err := h.service.ListUsage(c.Request.Context(), filter)
+	if err != nil {
+		logger.Error(c.Request.Context(), "failed to list Wika token usage", err)
+		c.Error(apperrors.NewInternalServerError("failed to list token usage"))
+		return
+	}
+	if result == nil {
+		result = &wikaauth.TokenUsageListResult{Scope: filter.Scope, Items: []wikaauth.TokenUsageItem{}}
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// ListTokenUsageEvents 列出 Wika PAT 最近调用事件。
+func (h *WikaTokenHandler) ListTokenUsageEvents(c *gin.Context) {
+	userID, tenantID, ok := wikaTokenContext(c)
+	if !ok {
+		return
+	}
+	if h.service == nil {
+		c.Error(apperrors.NewInternalServerError("wika token service unavailable"))
+		return
+	}
+	filter, ok := h.parseUsageFilter(c, userID, tenantID)
+	if !ok {
+		return
+	}
+	result, err := h.service.ListUsageEvents(c.Request.Context(), filter)
+	if err != nil {
+		logger.Error(c.Request.Context(), "failed to list Wika token usage events", err)
+		c.Error(apperrors.NewInternalServerError("failed to list token usage events"))
+		return
+	}
+	if result == nil {
+		result = &wikaauth.TokenUsageEventListResult{Scope: filter.Scope, Events: []wikaauth.TokenUsageEventItem{}}
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 // RevokeToken 撤销当前用户自己的 PAT。
 func (h *WikaTokenHandler) RevokeToken(c *gin.Context) {
 	userID, _, ok := wikaTokenContext(c)
@@ -173,6 +247,128 @@ func (h *WikaTokenHandler) currentTime() time.Time {
 		return h.now()
 	}
 	return time.Now()
+}
+
+func (h *WikaTokenHandler) parseUsageFilter(c *gin.Context, userID string, tenantID uint64) (wikaauth.TokenUsageFilter, bool) {
+	now := h.currentTime()
+	scope := strings.TrimSpace(c.Query("scope"))
+	if scope == "" {
+		scope = wikaauth.UsageScopeMine
+	}
+	if scope != wikaauth.UsageScopeMine && scope != wikaauth.UsageScopeAll {
+		c.Error(apperrors.NewBadRequestError("scope must be mine or all"))
+		return wikaauth.TokenUsageFilter{}, false
+	}
+	role := types.TenantRoleFromContext(c.Request.Context())
+	if scope == wikaauth.UsageScopeAll && !role.HasPermission(types.TenantRoleAdmin) {
+		c.Error(apperrors.NewForbiddenError("scope=all requires tenant admin"))
+		return wikaauth.TokenUsageFilter{}, false
+	}
+
+	ownerUserID := strings.TrimSpace(c.Query("owner_user_id"))
+	if scope == wikaauth.UsageScopeMine {
+		if ownerUserID != "" && ownerUserID != userID {
+			c.Error(apperrors.NewForbiddenError("owner_user_id must match current user"))
+			return wikaauth.TokenUsageFilter{}, false
+		}
+		ownerUserID = ""
+	}
+	tokenID, ok := parseWikaTokenOptionalUint64(c, "token_id")
+	if !ok {
+		return wikaauth.TokenUsageFilter{}, false
+	}
+	limit, ok := parseWikaTokenOptionalInt(c, "limit", 50)
+	if !ok {
+		return wikaauth.TokenUsageFilter{}, false
+	}
+	offset, ok := parseWikaTokenOptionalInt(c, "offset", 0)
+	if !ok {
+		return wikaauth.TokenUsageFilter{}, false
+	}
+	from, ok := parseWikaTokenOptionalDate(c, "from")
+	if !ok {
+		return wikaauth.TokenUsageFilter{}, false
+	}
+	to, ok := parseWikaTokenOptionalDate(c, "to")
+	if !ok {
+		return wikaauth.TokenUsageFilter{}, false
+	}
+	if from.IsZero() {
+		from = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -6)
+	}
+	if to.IsZero() {
+		to = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	}
+	if from.After(to) {
+		c.Error(apperrors.NewBadRequestError("from must be before or equal to to"))
+		return wikaauth.TokenUsageFilter{}, false
+	}
+	if to.Sub(from) > 90*24*time.Hour {
+		c.Error(apperrors.NewBadRequestError("date range must be within 90 days"))
+		return wikaauth.TokenUsageFilter{}, false
+	}
+	var success *bool
+	if raw := strings.TrimSpace(c.Query("success")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			c.Error(apperrors.NewBadRequestError("success must be true or false"))
+			return wikaauth.TokenUsageFilter{}, false
+		}
+		success = &parsed
+	}
+	return wikaauth.TokenUsageFilter{
+		TenantID:     tenantID,
+		ViewerUserID: userID,
+		Scope:        scope,
+		OwnerUserID:  ownerUserID,
+		TokenID:      tokenID,
+		ToolName:     strings.TrimSpace(c.Query("tool_name")),
+		Success:      success,
+		From:         from,
+		To:           to,
+		Limit:        limit,
+		Offset:       offset,
+		Now:          now,
+	}, true
+}
+
+func parseWikaTokenOptionalUint64(c *gin.Context, key string) (uint64, bool) {
+	raw := strings.TrimSpace(c.Query(key))
+	if raw == "" {
+		return 0, true
+	}
+	parsed, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || parsed == 0 {
+		c.Error(apperrors.NewBadRequestError(key + " must be a positive integer"))
+		return 0, false
+	}
+	return parsed, true
+}
+
+func parseWikaTokenOptionalInt(c *gin.Context, key string, fallback int) (int, bool) {
+	raw := strings.TrimSpace(c.Query(key))
+	if raw == "" {
+		return fallback, true
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed < 0 {
+		c.Error(apperrors.NewBadRequestError(key + " must be a non-negative integer"))
+		return 0, false
+	}
+	return parsed, true
+}
+
+func parseWikaTokenOptionalDate(c *gin.Context, key string) (time.Time, bool) {
+	raw := strings.TrimSpace(c.Query(key))
+	if raw == "" {
+		return time.Time{}, true
+	}
+	parsed, err := time.Parse("2006-01-02", raw)
+	if err != nil {
+		c.Error(apperrors.NewBadRequestError(key + " must use YYYY-MM-DD"))
+		return time.Time{}, false
+	}
+	return parsed, true
 }
 
 func wikaTokenContext(c *gin.Context) (string, uint64, bool) {
@@ -210,6 +406,26 @@ func normalizeWikaTokenScopes(raw []string) ([]string, error) {
 		scopes = append(scopes, scope)
 	}
 	return scopes, nil
+}
+
+func hasWikaTokenScope(scopes []string, target string) bool {
+	for _, scope := range scopes {
+		if scope == target {
+			return true
+		}
+	}
+	return false
+}
+
+func isWikaMCPAdminActor(ctx context.Context) bool {
+	if types.TenantRoleFromContext(ctx).HasPermission(types.TenantRoleAdmin) {
+		return true
+	}
+	if types.IsSystemAdminFromContext(ctx) {
+		return true
+	}
+	user, _ := ctx.Value(types.UserContextKey).(*types.User)
+	return user != nil && user.IsSystemAdmin
 }
 
 func buildWikaTokenResponse(token *types.WikaUserToken) wikaTokenResponse {

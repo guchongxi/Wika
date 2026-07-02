@@ -13,7 +13,42 @@ type fakeGraphStore struct {
 }
 
 func (s *fakeGraphStore) Overview(ctx context.Context, tenantID uint64, kbID string) (*Overview, error) {
-	return &Overview{TenantID: tenantID, KBID: kbID, EntityCount: int64(len(s.entities)), EdgeCount: int64(len(s.edges))}, nil
+	var entityCount int64
+	for _, entity := range s.entities {
+		if entity != nil && entity.TenantID == tenantID && entity.KBID == kbID {
+			entityCount++
+		}
+	}
+	var edgeCount int64
+	for _, edge := range s.edges {
+		if edge != nil && edge.TenantID == tenantID && edge.KBID == kbID {
+			edgeCount++
+		}
+	}
+	return &Overview{TenantID: tenantID, KBID: kbID, EntityCount: entityCount, EdgeCount: edgeCount}, nil
+}
+
+func (s *fakeGraphStore) OverviewByKB(ctx context.Context, kbID string) (*Overview, error) {
+	var tenantID uint64
+	var entityCount int64
+	for _, entity := range s.entities {
+		if entity != nil && entity.KBID == kbID {
+			if tenantID == 0 {
+				tenantID = entity.TenantID
+			}
+			entityCount++
+		}
+	}
+	var edgeCount int64
+	for _, edge := range s.edges {
+		if edge != nil && edge.KBID == kbID {
+			if tenantID == 0 {
+				tenantID = edge.TenantID
+			}
+			edgeCount++
+		}
+	}
+	return &Overview{TenantID: tenantID, KBID: kbID, EntityCount: entityCount, EdgeCount: edgeCount}, nil
 }
 
 func (s *fakeGraphStore) ListEntities(ctx context.Context, input ListEntitiesInput) ([]*types.WikaGraphEntity, int64, error) {
@@ -68,6 +103,30 @@ func TestGraphServiceHidesPersonalEvidenceForSystemAdmin(t *testing.T) {
 	}
 	if len(edges) != 1 || edges[0].EvidenceText != "" {
 		t.Fatalf("expected system admin personal edge evidence to be hidden: %+v", edges)
+	}
+}
+
+func TestGraphServiceSystemAdminOverviewUsesKBIDForPersonalMetadata(t *testing.T) {
+	store := &fakeGraphStore{
+		entities: []*types.WikaGraphEntity{
+			{ID: 1, TenantID: 80, KBID: "kb-personal", Name: "个人实体", EntityType: "concept", Summary: "个人摘要"},
+		},
+		edges: []*types.WikaGraphEdge{
+			{ID: 11, TenantID: 80, KBID: "kb-personal", SourceEntityID: 1, TargetEntityID: 2, RelationType: "mentions", EvidenceText: "个人证据正文"},
+		},
+	}
+	svc := &Service{store: store}
+
+	overview, err := svc.Overview(context.Background(), OverviewInput{
+		TenantID:    1,
+		KBID:        "kb-personal",
+		SystemAdmin: true,
+	})
+	if err != nil {
+		t.Fatalf("Overview returned error: %v", err)
+	}
+	if overview.TenantID != 80 || overview.EntityCount != 1 || overview.EdgeCount != 1 {
+		t.Fatalf("expected system admin to see personal graph metadata by KB ID only, got %+v", overview)
 	}
 }
 

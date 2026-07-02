@@ -26,21 +26,22 @@ var ErrInvalidTenantID = errors.New("invalid tenant ID")
 
 // knowledgeBaseService implements the knowledge base service interface
 type knowledgeBaseService struct {
-	repo           interfaces.KnowledgeBaseRepository
-	kgRepo         interfaces.KnowledgeRepository
-	chunkRepo      interfaces.ChunkRepository
-	shareRepo      interfaces.KBShareRepository
-	kbShareService interfaces.KBShareService
-	modelService   interfaces.ModelService
-	retrieveEngine interfaces.RetrieveEngineRegistry
-	ownership      retriever.TenantStoreOwnership
-	tenantRepo     interfaces.TenantRepository
-	fileSvc        interfaces.FileService
-	graphEngine    interfaces.RetrieveGraphRepository
-	asynqClient    interfaces.TaskEnqueuer
-	dsRepo         interfaces.DataSourceRepository
-	syncLogRepo    interfaces.SyncLogRepository
-	dsScheduler    *datasource.Scheduler
+	repo             interfaces.KnowledgeBaseRepository
+	kgRepo           interfaces.KnowledgeRepository
+	chunkRepo        interfaces.ChunkRepository
+	shareRepo        interfaces.KBShareRepository
+	kbShareService   interfaces.KBShareService
+	modelService     interfaces.ModelService
+	retrieveEngine   interfaces.RetrieveEngineRegistry
+	ownership        retriever.TenantStoreOwnership
+	tenantRepo       interfaces.TenantRepository
+	fileSvc          interfaces.FileService
+	graphEngine      interfaces.RetrieveGraphRepository
+	asynqClient      interfaces.TaskEnqueuer
+	dsRepo           interfaces.DataSourceRepository
+	syncLogRepo      interfaces.SyncLogRepository
+	dsScheduler      *datasource.Scheduler
+	systemSettingSvc interfaces.SystemSettingService
 }
 
 // NewKnowledgeBaseService creates a new knowledge base service
@@ -59,23 +60,25 @@ func NewKnowledgeBaseService(repo interfaces.KnowledgeBaseRepository,
 	dsRepo interfaces.DataSourceRepository,
 	syncLogRepo interfaces.SyncLogRepository,
 	dsScheduler *datasource.Scheduler,
+	systemSettingSvc interfaces.SystemSettingService,
 ) interfaces.KnowledgeBaseService {
 	return &knowledgeBaseService{
-		repo:           repo,
-		kgRepo:         kgRepo,
-		chunkRepo:      chunkRepo,
-		shareRepo:      shareRepo,
-		kbShareService: kbShareService,
-		modelService:   modelService,
-		retrieveEngine: retrieveEngine,
-		ownership:      ownership,
-		tenantRepo:     tenantRepo,
-		fileSvc:        fileSvc,
-		graphEngine:    graphEngine,
-		asynqClient:    asynqClient,
-		dsRepo:         dsRepo,
-		syncLogRepo:    syncLogRepo,
-		dsScheduler:    dsScheduler,
+		repo:             repo,
+		kgRepo:           kgRepo,
+		chunkRepo:        chunkRepo,
+		shareRepo:        shareRepo,
+		kbShareService:   kbShareService,
+		modelService:     modelService,
+		retrieveEngine:   retrieveEngine,
+		ownership:        ownership,
+		tenantRepo:       tenantRepo,
+		fileSvc:          fileSvc,
+		graphEngine:      graphEngine,
+		asynqClient:      asynqClient,
+		dsRepo:           dsRepo,
+		syncLogRepo:      syncLogRepo,
+		dsScheduler:      dsScheduler,
+		systemSettingSvc: systemSettingSvc,
 	}
 }
 
@@ -116,6 +119,7 @@ func (s *knowledgeBaseService) CreateKnowledgeBase(ctx context.Context,
 	if uid, ok := types.UserIDFromContext(ctx); ok && !types.IsSyntheticUserID(uid) {
 		kb.CreatorID = uid
 	}
+	s.applySystemKBDefaults(ctx, kb)
 	kb.EnsureDefaults()
 	applyTenantDefaultStorageProvider(ctx, kb)
 
@@ -237,7 +241,7 @@ func (s *knowledgeBaseService) GetKnowledgeBaseByID(ctx context.Context, id stri
 		return nil, err
 	}
 
-	kb.EnsureDefaults()
+	s.applyKnowledgeBaseReadDefaults(ctx, kb)
 	return kb, nil
 }
 
@@ -257,7 +261,7 @@ func (s *knowledgeBaseService) GetKnowledgeBaseByIDOnly(ctx context.Context, id 
 		return nil, err
 	}
 
-	kb.EnsureDefaults()
+	s.applyKnowledgeBaseReadDefaults(ctx, kb)
 	return kb, nil
 }
 
@@ -271,11 +275,17 @@ func (s *knowledgeBaseService) GetKnowledgeBasesByIDsOnly(ctx context.Context, i
 		return nil, err
 	}
 	for _, kb := range kbs {
-		if kb != nil {
-			kb.EnsureDefaults()
-		}
+		s.applyKnowledgeBaseReadDefaults(ctx, kb)
 	}
 	return kbs, nil
+}
+
+func (s *knowledgeBaseService) applyKnowledgeBaseReadDefaults(ctx context.Context, kb *types.KnowledgeBase) {
+	if kb == nil {
+		return
+	}
+	s.applySystemKBDefaults(ctx, kb)
+	kb.EnsureDefaults()
 }
 
 // ListKnowledgeBases returns all knowledge bases for a tenant
@@ -296,7 +306,7 @@ func (s *knowledgeBaseService) ListKnowledgeBases(ctx context.Context) ([]*types
 
 	// Query knowledge count and chunk count for each knowledge base
 	for _, kb := range kbs {
-		kb.EnsureDefaults()
+		s.applyKnowledgeBaseReadDefaults(ctx, kb)
 
 		// Get knowledge count
 		switch kb.Type {

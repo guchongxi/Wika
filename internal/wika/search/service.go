@@ -64,6 +64,12 @@ func (s *Service) SearchKnowledge(ctx context.Context, input SearchInput) (*Sear
 	if len(readableScopes) == 0 {
 		return &SearchResult{Results: []ResultItem{}}, nil
 	}
+	if kbID := strings.TrimSpace(input.KBID); kbID != "" {
+		readableScopes = filterReadableScopesByKB(readableScopes, kbID)
+		if len(readableScopes) == 0 {
+			return &SearchResult{Results: []ResultItem{}}, nil
+		}
+	}
 
 	graphContribution, graphDegraded := s.searchGraphBestEffort(ctx, readableScopes, query, limit)
 
@@ -139,7 +145,8 @@ func (s *Service) ListMyKnowledge(ctx context.Context, input MineInput) (*MineRe
 
 	page := &types.Pagination{Page: 1, PageSize: limit}
 	filter := types.KnowledgeListFilter{ParseStatus: strings.TrimSpace(input.Status)}
-	pageResult, err := s.knowledge.ListPagedKnowledgeByKnowledgeBaseID(ctx, personal.KBID, page, filter)
+	personalCtx := context.WithValue(ctx, types.TenantIDContextKey, personal.TenantID)
+	pageResult, err := s.knowledge.ListPagedKnowledgeByKnowledgeBaseID(personalCtx, personal.KBID, page, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -221,6 +228,12 @@ func buildResultItem(knowledge *types.Knowledge, scope ReadableScope, state *typ
 	if scopeAllowsField(scope, "title") {
 		result.Title = knowledge.Title
 	}
+	if scopeAllowsField(scope, "source_tenant_id") {
+		result.SourceTenantID = knowledge.TenantID
+	}
+	if scopeAllowsField(scope, "source_kb_id") {
+		result.SourceKBID = knowledge.KnowledgeBaseID
+	}
 	if scopeAllowsField(scope, "freshness_status") {
 		result.FreshnessStatus = "fresh"
 	}
@@ -252,6 +265,12 @@ func buildExpandedItem(knowledge *types.Knowledge, scope ReadableScope, state *t
 	}
 	if scopeAllowsField(scope, "title") {
 		item.Title = knowledge.Title
+	}
+	if scopeAllowsField(scope, "source_tenant_id") {
+		item.SourceTenantID = knowledge.TenantID
+	}
+	if scopeAllowsField(scope, "source_kb_id") {
+		item.SourceKBID = knowledge.KnowledgeBaseID
 	}
 	if scopeAllowsField(scope, "source") {
 		item.Source = knowledge.Source
@@ -310,8 +329,23 @@ func scopeKey(tenantID uint64, kbID string) string {
 	return strconv.FormatUint(tenantID, 10) + ":" + kbID
 }
 
+func filterReadableScopesByKB(scopes []ReadableScope, kbID string) []ReadableScope {
+	filtered := make([]ReadableScope, 0, len(scopes))
+	for _, scope := range scopes {
+		if scope.KBID == kbID {
+			filtered = append(filtered, scope)
+		}
+	}
+	return filtered
+}
+
 func compactSnippet(knowledge *types.Knowledge) string {
 	text := strings.TrimSpace(knowledge.Description)
+	if text == "" {
+		if meta, err := knowledge.ManualMetadata(); err == nil && meta != nil {
+			text = strings.TrimSpace(meta.Content)
+		}
+	}
 	if text == "" {
 		text = strings.TrimSpace(knowledge.Title)
 	}

@@ -52,7 +52,9 @@ func (s *GormStore) SaveCheck(ctx context.Context, check *types.WikaFreshnessChe
 				continue
 			}
 			item.CheckID = check.ID
-			if err := tx.Create(item).Error; err != nil {
+			if err := tx.
+				Omit("ResolutionAction", "ResolutionNote", "PreviousStatus", "ResolvedBy", "ResolvedAt").
+				Create(item).Error; err != nil {
 				return err
 			}
 			if err := tx.Model(&types.WikaKnowledgeState{}).

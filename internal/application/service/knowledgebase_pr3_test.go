@@ -130,6 +130,50 @@ func newPR3KBService(repo *fakeKBRepo, registry *fakeRegistry, ownership *fakeOw
 	}
 }
 
+type fakeSystemSettingSvc struct {
+	interfaces.SystemSettingService
+	strings     map[string]string
+	ints        map[string]int64
+	bools       map[string]bool
+	stringLists map[string][]string
+}
+
+func (f *fakeSystemSettingSvc) GetString(_ context.Context, key string, _ string, def string) string {
+	if f != nil && f.strings != nil {
+		if v, ok := f.strings[key]; ok {
+			return v
+		}
+	}
+	return def
+}
+
+func (f *fakeSystemSettingSvc) GetInt(_ context.Context, key string, _ string, def int64) int64 {
+	if f != nil && f.ints != nil {
+		if v, ok := f.ints[key]; ok {
+			return v
+		}
+	}
+	return def
+}
+
+func (f *fakeSystemSettingSvc) GetBool(_ context.Context, key string, _ string, def bool) bool {
+	if f != nil && f.bools != nil {
+		if v, ok := f.bools[key]; ok {
+			return v
+		}
+	}
+	return def
+}
+
+func (f *fakeSystemSettingSvc) GetStringList(_ context.Context, key string, _ string, def []string) []string {
+	if f != nil && f.stringLists != nil {
+		if v, ok := f.stringLists[key]; ok {
+			return v
+		}
+	}
+	return def
+}
+
 func ctxWithTenant(tenantID uint64) context.Context {
 	return context.WithValue(context.Background(), types.TenantIDContextKey, tenantID)
 }
@@ -159,6 +203,173 @@ func TestCreateKnowledgeBase_DefaultStorageProviderFromTenant(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "cos", kbExplicit.GetStorageProvider())
+}
+
+func TestCreateKnowledgeBase_AppliesSystemKBDefaultsWhenAdvancedConfigMissing(t *testing.T) {
+	repo := newFakeKBRepo()
+	svc := newPR3KBService(repo, &fakeRegistry{registered: map[string]struct{}{}}, &fakeOwnership{})
+	svc.systemSettingSvc = &fakeSystemSettingSvc{
+		strings: map[string]string{
+			"kb.default_llm_model_id":       "builtin-llm",
+			"kb.default_embedding_model_id": "builtin-embedding",
+			"kb.default_storage_provider":   "minio",
+			"kb.default_vlm_model_id":       "builtin-vlm",
+			"kb.default_asr_model_id":       "builtin-asr",
+		},
+		ints: map[string]int64{
+			"kb.default_chunk_size":                768,
+			"kb.default_chunk_overlap":             96,
+			"kb.default_parent_chunk_size":         4096,
+			"kb.default_child_chunk_size":          384,
+			"kb.default_question_generation_count": 5,
+		},
+		bools: map[string]bool{
+			"kb.default_index_vector_enabled":        true,
+			"kb.default_index_keyword_enabled":       false,
+			"kb.default_index_wiki_enabled":          true,
+			"kb.default_index_graph_enabled":         false,
+			"kb.default_parent_child_enabled":        true,
+			"kb.default_vlm_enabled":                 true,
+			"kb.default_asr_enabled":                 true,
+			"kb.default_question_generation_enabled": true,
+		},
+		stringLists: map[string][]string{
+			"kb.default_chunk_separators": {"\n\n", "\n", "。"},
+		},
+	}
+
+	kb, err := svc.CreateKnowledgeBase(ctxWithTenant(1), &types.KnowledgeBase{Name: "kb"})
+	require.NoError(t, err)
+
+	assert.Equal(t, "builtin-llm", kb.SummaryModelID)
+	assert.Equal(t, "builtin-embedding", kb.EmbeddingModelID)
+	assert.Equal(t, 768, kb.ChunkingConfig.ChunkSize)
+	assert.Equal(t, 96, kb.ChunkingConfig.ChunkOverlap)
+	assert.Equal(t, []string{"\n\n", "\n", "。"}, kb.ChunkingConfig.Separators)
+	assert.True(t, kb.ChunkingConfig.EnableParentChild)
+	assert.Equal(t, 4096, kb.ChunkingConfig.ParentChunkSize)
+	assert.Equal(t, 384, kb.ChunkingConfig.ChildChunkSize)
+	assert.Equal(t, types.IndexingStrategy{
+		VectorEnabled:  true,
+		KeywordEnabled: false,
+		WikiEnabled:    true,
+		GraphEnabled:   false,
+	}, kb.IndexingStrategy)
+	assert.Equal(t, "minio", kb.GetStorageProvider())
+	assert.True(t, kb.VLMConfig.Enabled)
+	assert.Equal(t, "builtin-vlm", kb.VLMConfig.ModelID)
+	assert.True(t, kb.ASRConfig.Enabled)
+	assert.Equal(t, "builtin-asr", kb.ASRConfig.ModelID)
+	require.NotNil(t, kb.QuestionGenerationConfig)
+	assert.True(t, kb.QuestionGenerationConfig.Enabled)
+	assert.Equal(t, 5, kb.QuestionGenerationConfig.QuestionCount)
+}
+
+func TestGetKnowledgeBaseByIDAppliesSystemKBDefaultsForLegacyKB(t *testing.T) {
+	repo := newFakeKBRepo()
+	repo.rows["kb-legacy"] = &types.KnowledgeBase{
+		ID:       "kb-legacy",
+		TenantID: 1,
+		Name:     "legacy",
+		Type:     types.KnowledgeBaseTypeDocument,
+	}
+	svc := newPR3KBService(repo, &fakeRegistry{registered: map[string]struct{}{}}, &fakeOwnership{})
+	svc.systemSettingSvc = &fakeSystemSettingSvc{
+		strings: map[string]string{
+			"kb.default_llm_model_id":       "builtin-llm",
+			"kb.default_embedding_model_id": "builtin-embedding",
+			"kb.default_storage_provider":   "local",
+		},
+		ints: map[string]int64{
+			"kb.default_chunk_size":    768,
+			"kb.default_chunk_overlap": 96,
+		},
+		bools: map[string]bool{
+			"kb.default_index_vector_enabled":  true,
+			"kb.default_index_keyword_enabled": true,
+		},
+		stringLists: map[string][]string{
+			"kb.default_chunk_separators": {"\n\n", "\n", "。"},
+		},
+	}
+
+	kb, err := svc.GetKnowledgeBaseByID(context.Background(), "kb-legacy")
+	require.NoError(t, err)
+
+	assert.Equal(t, "builtin-llm", kb.SummaryModelID)
+	assert.Equal(t, "builtin-embedding", kb.EmbeddingModelID)
+	assert.Equal(t, 768, kb.ChunkingConfig.ChunkSize)
+	assert.Equal(t, 96, kb.ChunkingConfig.ChunkOverlap)
+	assert.Equal(t, []string{"\n\n", "\n", "。"}, kb.ChunkingConfig.Separators)
+	assert.True(t, kb.IndexingStrategy.VectorEnabled)
+	assert.True(t, kb.IndexingStrategy.KeywordEnabled)
+	assert.Equal(t, "local", kb.GetStorageProvider())
+}
+
+func TestCreateKnowledgeBase_DoesNotOverrideExplicitAdvancedConfig(t *testing.T) {
+	repo := newFakeKBRepo()
+	svc := newPR3KBService(repo, &fakeRegistry{registered: map[string]struct{}{}}, &fakeOwnership{})
+	svc.systemSettingSvc = &fakeSystemSettingSvc{
+		strings: map[string]string{
+			"kb.default_llm_model_id":       "builtin-llm",
+			"kb.default_embedding_model_id": "builtin-embedding",
+			"kb.default_storage_provider":   "minio",
+			"kb.default_vlm_model_id":       "builtin-vlm",
+			"kb.default_asr_model_id":       "builtin-asr",
+		},
+		ints: map[string]int64{
+			"kb.default_chunk_size":                768,
+			"kb.default_chunk_overlap":             96,
+			"kb.default_question_generation_count": 5,
+		},
+		bools: map[string]bool{
+			"kb.default_index_vector_enabled":        true,
+			"kb.default_index_keyword_enabled":       false,
+			"kb.default_vlm_enabled":                 true,
+			"kb.default_asr_enabled":                 true,
+			"kb.default_question_generation_enabled": true,
+		},
+	}
+
+	kb, err := svc.CreateKnowledgeBase(ctxWithTenant(1), &types.KnowledgeBase{
+		Name:             "kb",
+		SummaryModelID:   "own-llm",
+		EmbeddingModelID: "own-embedding",
+		ChunkingConfig: types.ChunkingConfig{
+			ChunkSize:    256,
+			ChunkOverlap: 32,
+			Separators:   []string{"###"},
+		},
+		IndexingStrategy: types.IndexingStrategy{GraphEnabled: true},
+		StorageProviderConfig: &types.StorageProviderConfig{
+			Provider: "cos",
+		},
+		VLMConfig: types.VLMConfig{
+			Enabled: true,
+			ModelID: "own-vlm",
+		},
+		ASRConfig: types.ASRConfig{
+			Enabled: true,
+			ModelID: "own-asr",
+		},
+		QuestionGenerationConfig: &types.QuestionGenerationConfig{
+			Enabled:       true,
+			QuestionCount: 2,
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "own-llm", kb.SummaryModelID)
+	assert.Equal(t, "own-embedding", kb.EmbeddingModelID)
+	assert.Equal(t, 256, kb.ChunkingConfig.ChunkSize)
+	assert.Equal(t, 32, kb.ChunkingConfig.ChunkOverlap)
+	assert.Equal(t, []string{"###"}, kb.ChunkingConfig.Separators)
+	assert.Equal(t, types.IndexingStrategy{GraphEnabled: true}, kb.IndexingStrategy)
+	assert.Equal(t, "cos", kb.GetStorageProvider())
+	assert.Equal(t, "own-vlm", kb.VLMConfig.ModelID)
+	assert.Equal(t, "own-asr", kb.ASRConfig.ModelID)
+	require.NotNil(t, kb.QuestionGenerationConfig)
+	assert.Equal(t, 2, kb.QuestionGenerationConfig.QuestionCount)
 }
 
 // ---------------------------------------------------------------------------

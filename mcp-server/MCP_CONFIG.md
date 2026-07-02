@@ -1,5 +1,9 @@
 # 使用 uv 运行 WeKnora MCP 服务器
 
+> 本文只适用于本地开发调试或旧版 stdio 客户端兼容。Wika 正式用户接入应使用云端 Remote MCP 地址，不需要本地安装本项目；配置方式见 [MCP/API 知识生产接入](../docs/MCP知识生产接入.md)。
+>
+> 默认云端入口不传工具集请求头时只开放 `push_knowledge`、`search_knowledge`、`expand_knowledge_result`、`get_my_knowledge`、`suggest_to_team`。租户、模型、知识库等管理工具应通过 Remote MCP 请求头 `X-Wika-MCP-Toolset: admin` 请求，并由后端校验 `mcp:admin` scope 和管理员角色。
+
 > 更推荐使用`uv`来运行基于python的MCP服务。
 
 ## 1. 安装 uv

@@ -8,7 +8,7 @@ type WikaEvalSchedule struct {
 	TenantID            uint64     `json:"tenant_id" gorm:"not null;index"`
 	KBID                string     `json:"kb_id" gorm:"type:varchar(36);not null;uniqueIndex:ux_wika_eval_schedules_enabled,where:enabled = true;index"`
 	DatasetID           uint64     `json:"dataset_id" gorm:"not null;uniqueIndex:ux_wika_eval_schedules_enabled,where:enabled = true;index"`
-	Enabled             bool       `json:"enabled" gorm:"not null;default:true;index:idx_wika_eval_schedules_due;uniqueIndex:ux_wika_eval_schedules_enabled,where:enabled = true"`
+	Enabled             bool       `json:"enabled" gorm:"not null;index:idx_wika_eval_schedules_due;uniqueIndex:ux_wika_eval_schedules_enabled,where:enabled = true"`
 	CronExpr            string     `json:"cron_expr" gorm:"type:varchar(128);not null"`
 	NextRunAt           time.Time  `json:"next_run_at" gorm:"not null;index:idx_wika_eval_schedules_due"`
 	LastRunID           *uint64    `json:"last_run_id,omitempty"`

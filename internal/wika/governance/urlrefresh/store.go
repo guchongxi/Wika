@@ -10,7 +10,9 @@ import (
 
 type Store interface {
 	CreateJob(ctx context.Context, input CreateJobInput) (*types.WikaURLRefreshJob, error)
+	List(ctx context.Context, input ListInput) (*ListResult, error)
 	GetJob(ctx context.Context, jobID uint64) (*types.WikaURLRefreshJob, error)
+	ListRunnableJobs(ctx context.Context, now time.Time, limit int) ([]*types.WikaURLRefreshJob, error)
 	AcquireJob(ctx context.Context, jobID uint64, workerID string, now time.Time, lease time.Duration) (*types.WikaURLRefreshJob, error)
 	MarkPendingReview(ctx context.Context, input MarkPendingReviewInput) error
 	MarkReviewed(ctx context.Context, input MarkReviewedInput) error
@@ -60,6 +62,51 @@ func (s *GormStore) CreateJob(ctx context.Context, input CreateJobInput) (*types
 	return job, nil
 }
 
+func (s *GormStore) List(ctx context.Context, input ListInput) (*ListResult, error) {
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := input.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	jobQuery := s.db.WithContext(ctx).
+		Where("tenant_id = ? AND knowledge_id = ?", input.TenantID, input.KnowledgeID)
+	if input.KBID != "" {
+		jobQuery = jobQuery.Where("kb_id = ?", input.KBID)
+	}
+	if input.Status != "" {
+		jobQuery = jobQuery.Where("status = ?", input.Status)
+	}
+	var jobs []*types.WikaURLRefreshJob
+	if err := jobQuery.
+		Order("created_at DESC, id DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+
+	scheduleQuery := s.db.WithContext(ctx).
+		Where("tenant_id = ? AND knowledge_id = ?", input.TenantID, input.KnowledgeID)
+	if input.KBID != "" {
+		scheduleQuery = scheduleQuery.Where("kb_id = ?", input.KBID)
+	}
+	var schedules []*types.WikaURLRefreshSchedule
+	if err := scheduleQuery.
+		Order("enabled DESC, updated_at DESC, id DESC").
+		Find(&schedules).Error; err != nil {
+		return nil, err
+	}
+
+	return &ListResult{Jobs: jobs, Schedules: schedules}, nil
+}
+
 func (s *GormStore) GetJob(ctx context.Context, jobID uint64) (*types.WikaURLRefreshJob, error) {
 	var job types.WikaURLRefreshJob
 	err := s.db.WithContext(ctx).First(&job, "id = ?", jobID).Error
@@ -70,6 +117,20 @@ func (s *GormStore) GetJob(ctx context.Context, jobID uint64) (*types.WikaURLRef
 		return nil, err
 	}
 	return &job, nil
+}
+
+func (s *GormStore) ListRunnableJobs(ctx context.Context, now time.Time, limit int) ([]*types.WikaURLRefreshJob, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var jobs []*types.WikaURLRefreshJob
+	err := s.db.WithContext(ctx).
+		Where("status IN ?", []string{JobStatusPending, JobStatusRunning}).
+		Where("locked_until IS NULL OR locked_until < ?", now).
+		Order("created_at ASC, id ASC").
+		Limit(limit).
+		Find(&jobs).Error
+	return jobs, err
 }
 
 func (s *GormStore) AcquireJob(ctx context.Context, jobID uint64, workerID string, now time.Time, lease time.Duration) (*types.WikaURLRefreshJob, error) {

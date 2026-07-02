@@ -34,6 +34,31 @@ func (s *GormStore) Overview(ctx context.Context, tenantID uint64, kbID string) 
 	return &Overview{TenantID: tenantID, KBID: kbID, EntityCount: entityCount, EdgeCount: edgeCount}, nil
 }
 
+func (s *GormStore) OverviewByKB(ctx context.Context, kbID string) (*Overview, error) {
+	var kb types.KnowledgeBase
+	if err := s.db.WithContext(ctx).
+		Select("id", "tenant_id").
+		First(&kb, "id = ?", kbID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return &Overview{KBID: kbID}, nil
+		}
+		return nil, err
+	}
+	var entityCount int64
+	if err := s.db.WithContext(ctx).Model(&types.WikaGraphEntity{}).
+		Where("kb_id = ?", kbID).
+		Count(&entityCount).Error; err != nil {
+		return nil, err
+	}
+	var edgeCount int64
+	if err := s.db.WithContext(ctx).Model(&types.WikaGraphEdge{}).
+		Where("kb_id = ?", kbID).
+		Count(&edgeCount).Error; err != nil {
+		return nil, err
+	}
+	return &Overview{TenantID: kb.TenantID, KBID: kbID, EntityCount: entityCount, EdgeCount: edgeCount}, nil
+}
+
 func (s *GormStore) ListEntities(ctx context.Context, input ListEntitiesInput) ([]*types.WikaGraphEntity, int64, error) {
 	query := s.db.WithContext(ctx).Model(&types.WikaGraphEntity{}).
 		Where("tenant_id = ? AND kb_id = ?", input.TenantID, input.KBID)

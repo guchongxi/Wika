@@ -2,26 +2,29 @@ package suggestion
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
+	wikaversion "github.com/Tencent/WeKnora/internal/wika/governance/version"
 )
 
 type fakeSuggestionStore struct {
-	sourceKnowledge *types.Knowledge
-	sourceTenant    *types.Tenant
-	sourceMember    *types.TenantMember
-	targetMember    *types.TenantMember
-	targetDefaultKB string
-	policy          SpacePolicy
-	existing        *SuggestionResult
-	suggestion      *types.WikaKnowledgeSuggestion
-	saved           *types.WikaKnowledgeSuggestion
-	humanReviewed   *types.WikaKnowledgeSuggestion
-	applySaved      *types.WikaKnowledgeSuggestion
-	pendingReason   string
-	lineage         *types.WikaKnowledgeLineage
+	sourceKnowledge  *types.Knowledge
+	sourceTenant     *types.Tenant
+	sourceMember     *types.TenantMember
+	targetMember     *types.TenantMember
+	targetDefaultKB  string
+	targetDefaultErr error
+	policy           SpacePolicy
+	existing         *SuggestionResult
+	suggestion       *types.WikaKnowledgeSuggestion
+	saved            *types.WikaKnowledgeSuggestion
+	humanReviewed    *types.WikaKnowledgeSuggestion
+	applySaved       *types.WikaKnowledgeSuggestion
+	pendingReason    string
+	lineage          *types.WikaKnowledgeLineage
 }
 
 func (s *fakeSuggestionStore) GetKnowledge(ctx context.Context, knowledgeID string) (*types.Knowledge, error) {
@@ -40,6 +43,9 @@ func (s *fakeSuggestionStore) GetTenantMember(ctx context.Context, userID string
 }
 
 func (s *fakeSuggestionStore) GetDefaultKB(ctx context.Context, tenantID uint64) (string, error) {
+	if s.targetDefaultErr != nil {
+		return "", s.targetDefaultErr
+	}
 	return s.targetDefaultKB, nil
 }
 
@@ -102,11 +108,12 @@ func (s *fakeSuggestionStore) MarkPendingHuman(ctx context.Context, suggestionID
 }
 
 type fakeTeamKnowledgeCreator struct {
-	called  bool
-	kbID    string
-	tenant  uint64
-	title   string
-	content string
+	called            bool
+	kbID              string
+	tenant            uint64
+	title             string
+	content           string
+	skipVersionRecord bool
 }
 
 func (c *fakeTeamKnowledgeCreator) CreateKnowledgeFromManual(ctx context.Context, kbID string, payload *types.ManualKnowledgePayload, channel string) (*types.Knowledge, error) {
@@ -118,8 +125,18 @@ func (c *fakeTeamKnowledgeCreator) CreateKnowledgeFromManual(ctx context.Context
 	if payload != nil {
 		c.title = payload.Title
 		c.content = payload.Content
+		c.skipVersionRecord = payload.SkipVersionRecord
 	}
 	return &types.Knowledge{ID: "k-team-new", TenantID: c.tenant, KnowledgeBaseID: kbID, Title: c.title}, nil
+}
+
+type fakeSuggestionVersionRecorder struct {
+	records []wikaversion.RecordVersionInput
+}
+
+func (r *fakeSuggestionVersionRecorder) RecordVersion(ctx context.Context, input wikaversion.RecordVersionInput) (*types.WikaKnowledgeVersion, error) {
+	r.records = append(r.records, input)
+	return &types.WikaKnowledgeVersion{ID: uint64(len(r.records)), KnowledgeID: input.KnowledgeID, TenantID: input.TenantID, KBID: input.KBID, VersionNo: len(r.records)}, nil
 }
 
 func TestCreateSuggestionReviewsPersonalKnowledgeButDoesNotAutoApplyByDefault(t *testing.T) {
@@ -211,6 +228,106 @@ func TestCreateSuggestionDowngradesPromptInjectionToNeedsConfirmation(t *testing
 	}
 }
 
+func TestCreateSuggestionRejectsShortManualContentEvenWhenTitleIsLong(t *testing.T) {
+	source := &types.Knowledge{
+		ID:              "k-personal",
+		TenantID:        70,
+		KnowledgeBaseID: "kb-personal",
+		Title:           "P1 Suggest 短内容 20260629232353",
+	}
+	if err := source.SetManualMetadata(types.NewManualKnowledgeMetadata("# P1 Suggest 短内容 20260629232353\n\n太短", types.ManualKnowledgeStatusPublish, 1)); err != nil {
+		t.Fatalf("set metadata: %v", err)
+	}
+	store := &fakeSuggestionStore{
+		sourceKnowledge: source,
+		sourceTenant:    &types.Tenant{ID: 70, SpaceType: types.SpaceTypePersonal},
+		sourceMember:    &types.TenantMember{UserID: "u-test", TenantID: 70, Role: types.TenantRoleOwner, Status: types.TenantMemberStatusActive},
+		targetMember:    &types.TenantMember{UserID: "u-test", TenantID: 80, Role: types.TenantRoleContributor, Status: types.TenantMemberStatusActive},
+		targetDefaultKB: "kb-team",
+		policy:          SpacePolicy{AutoApplyApproved: false, PolicyVersion: 1},
+	}
+	svc := &Service{store: store}
+
+	got, err := svc.CreateSuggestion(context.Background(), CreateInput{
+		SubmitterID:    "u-test",
+		KnowledgeID:    "k-personal",
+		TargetTenantID: 80,
+	})
+	if err != nil {
+		t.Fatalf("CreateSuggestion returned error: %v", err)
+	}
+	if got.AIDecision != DecisionRejected || got.Status != StatusRejected {
+		t.Fatalf("expected rejected short content, got %+v", got)
+	}
+}
+
+func TestCreateSuggestionRejectsShortManualContentWithIntakeAppendix(t *testing.T) {
+	source := &types.Knowledge{
+		ID:              "k-personal",
+		TenantID:        70,
+		KnowledgeBaseID: "kb-personal",
+		Title:           "P1 Suggest 短内容 20260629232353",
+	}
+	content := "# P1 Suggest 短内容 20260629232353\n\n短\n\n## 来源\nsuggest-e2e\n\n## 证据\nsuggest e2e"
+	if err := source.SetManualMetadata(types.NewManualKnowledgeMetadata(content, types.ManualKnowledgeStatusPublish, 1)); err != nil {
+		t.Fatalf("set metadata: %v", err)
+	}
+	store := &fakeSuggestionStore{
+		sourceKnowledge: source,
+		sourceTenant:    &types.Tenant{ID: 70, SpaceType: types.SpaceTypePersonal},
+		sourceMember:    &types.TenantMember{UserID: "u-test", TenantID: 70, Role: types.TenantRoleOwner, Status: types.TenantMemberStatusActive},
+		targetMember:    &types.TenantMember{UserID: "u-test", TenantID: 80, Role: types.TenantRoleContributor, Status: types.TenantMemberStatusActive},
+		targetDefaultKB: "kb-team",
+		policy:          SpacePolicy{AutoApplyApproved: false, PolicyVersion: 1},
+	}
+	svc := &Service{store: store}
+
+	got, err := svc.CreateSuggestion(context.Background(), CreateInput{
+		SubmitterID:    "u-test",
+		KnowledgeID:    "k-personal",
+		TargetTenantID: 80,
+	})
+	if err != nil {
+		t.Fatalf("CreateSuggestion returned error: %v", err)
+	}
+	if got.AIDecision != DecisionRejected || got.Status != StatusRejected {
+		t.Fatalf("expected rejected short intake content, got %+v", got)
+	}
+}
+
+func TestCreateSuggestionReturnsTargetDefaultKBErrorWhenTargetKBMissing(t *testing.T) {
+	source := &types.Knowledge{
+		ID:              "k-personal",
+		TenantID:        70,
+		KnowledgeBaseID: "kb-personal",
+		Title:           "排查记录",
+	}
+	if err := source.SetManualMetadata(types.NewManualKnowledgeMetadata("这是可复用的团队排查知识，包含日志、指标和处理步骤。", types.ManualKnowledgeStatusPublish, 1)); err != nil {
+		t.Fatalf("set metadata: %v", err)
+	}
+	store := &fakeSuggestionStore{
+		sourceKnowledge:  source,
+		sourceTenant:     &types.Tenant{ID: 70, SpaceType: types.SpaceTypePersonal},
+		sourceMember:     &types.TenantMember{UserID: "u-test", TenantID: 70, Role: types.TenantRoleOwner, Status: types.TenantMemberStatusActive},
+		targetMember:     &types.TenantMember{UserID: "u-test", TenantID: 80, Role: types.TenantRoleContributor, Status: types.TenantMemberStatusActive},
+		targetDefaultErr: ErrTargetDefaultKBNotFound,
+		policy:           SpacePolicy{AutoApplyApproved: false, PolicyVersion: 1},
+	}
+	svc := &Service{store: store}
+
+	_, err := svc.CreateSuggestion(context.Background(), CreateInput{
+		SubmitterID:    "u-test",
+		KnowledgeID:    "k-personal",
+		TargetTenantID: 80,
+	})
+	if !errors.Is(err, ErrTargetDefaultKBNotFound) {
+		t.Fatalf("expected ErrTargetDefaultKBNotFound, got %v", err)
+	}
+	if store.saved != nil {
+		t.Fatalf("missing target default KB must not save suggestion: %+v", store.saved)
+	}
+}
+
 func TestCreateSuggestionAutoAppliesWhenPolicyEnabledAndSafetyPasses(t *testing.T) {
 	source := &types.Knowledge{
 		ID:              "k-personal",
@@ -230,7 +347,8 @@ func TestCreateSuggestionAutoAppliesWhenPolicyEnabledAndSafetyPasses(t *testing.
 		policy:          SpacePolicy{AutoApplyApproved: true, PolicyVersion: 2},
 	}
 	creator := &fakeTeamKnowledgeCreator{}
-	svc := &Service{store: store, knowledge: creator}
+	recorder := &fakeSuggestionVersionRecorder{}
+	svc := &Service{store: store, knowledge: creator, versionRecorder: recorder}
 
 	got, err := svc.CreateSuggestion(context.Background(), CreateInput{
 		SubmitterID:    "u-test",
@@ -246,6 +364,20 @@ func TestCreateSuggestionAutoAppliesWhenPolicyEnabledAndSafetyPasses(t *testing.
 	}
 	if !creator.called || creator.kbID != "kb-team" || creator.tenant != 80 {
 		t.Fatalf("expected team knowledge to be created, got %+v", creator)
+	}
+	if !creator.skipVersionRecord {
+		t.Fatalf("suggestion apply must own the version reason, not default to manual_create")
+	}
+	if len(recorder.records) != 1 ||
+		recorder.records[0].KnowledgeID != "k-team-new" ||
+		recorder.records[0].TenantID != 80 ||
+		recorder.records[0].KBID != "kb-team" ||
+		recorder.records[0].Title != "排查记录" ||
+		recorder.records[0].Content != "这是可复用的团队排查知识，包含日志、指标和处理步骤。" ||
+		recorder.records[0].Status != types.ManualKnowledgeStatusPublish ||
+		recorder.records[0].ChangeReason != "suggestion_apply" ||
+		recorder.records[0].ActorID != "u-test" {
+		t.Fatalf("expected suggestion_apply version, got %+v", recorder.records)
 	}
 	if store.lineage == nil || store.lineage.CreatedBy != "u-test" {
 		t.Fatalf("expected lineage from auto apply: %+v", store.lineage)

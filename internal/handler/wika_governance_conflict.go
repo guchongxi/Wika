@@ -65,6 +65,10 @@ func (h *WikaConflictHandler) CreateCheck(c *gin.Context) {
 		Now:      time.Now(),
 	})
 	if err != nil {
+		if stderrors.Is(err, wikaconflict.ErrFeatureDisabled) {
+			c.Error(apperrors.NewNotFoundError("wika conflict feature disabled"))
+			return
+		}
 		c.Error(apperrors.NewInternalServerError("failed to create conflict check"))
 		return
 	}
@@ -89,6 +93,10 @@ func (h *WikaConflictHandler) ListItems(c *gin.Context) {
 		Offset:   parseWikaConflictInt(c.Query("offset"), 0),
 	})
 	if err != nil {
+		if stderrors.Is(err, wikaconflict.ErrFeatureDisabled) {
+			c.Error(apperrors.NewNotFoundError("wika conflict feature disabled"))
+			return
+		}
 		c.Error(apperrors.NewInternalServerError("failed to list conflict items"))
 		return
 	}
@@ -124,6 +132,8 @@ func (h *WikaConflictHandler) ResolveItem(c *gin.Context) {
 	})
 	if err != nil {
 		switch {
+		case stderrors.Is(err, wikaconflict.ErrFeatureDisabled):
+			c.Error(apperrors.NewNotFoundError("wika conflict feature disabled"))
 		case stderrors.Is(err, wikaconflict.ErrInvalidConflictStatus):
 			c.Error(apperrors.NewBadRequestError("invalid conflict status"))
 		case stderrors.Is(err, wikaconflict.ErrConflictItemNotFound):

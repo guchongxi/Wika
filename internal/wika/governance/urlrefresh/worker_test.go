@@ -13,9 +13,12 @@ type fakeURLRefreshRunner struct {
 	mu              sync.Mutex
 	dueCalls        int
 	runCalls        int
+	runnableCalls   int
 	runJobIDs       []uint64
 	jobs            []*types.WikaURLRefreshJob
+	runnableJobs    []*types.WikaURLRefreshJob
 	runDueErr       error
+	runnableErr     error
 	runJobErr       error
 	lastRunJobInput RunJobInput
 }
@@ -28,6 +31,16 @@ func (r *fakeURLRefreshRunner) RunDueSchedules(ctx context.Context, now time.Tim
 		return nil, r.runDueErr
 	}
 	return r.jobs, nil
+}
+
+func (r *fakeURLRefreshRunner) RunRunnableJobs(ctx context.Context, now time.Time) ([]*types.WikaURLRefreshJob, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.runnableCalls++
+	if r.runnableErr != nil {
+		return nil, r.runnableErr
+	}
+	return r.runnableJobs, nil
 }
 
 func (r *fakeURLRefreshRunner) RunJob(ctx context.Context, input RunJobInput) error {
@@ -75,6 +88,25 @@ func TestWorkerCreatesDueJobsAndRunsThemUntilStopped(t *testing.T) {
 	}
 	if runner.runJobIDs[0] != 101 || runner.runJobIDs[1] != 102 || runner.lastRunJobInput.WorkerID != "worker-test" {
 		t.Fatalf("unexpected run-job inputs: ids=%+v last=%+v", runner.runJobIDs, runner.lastRunJobInput)
+	}
+}
+
+func TestWorkerRunsRunnablePendingJobsInSameTick(t *testing.T) {
+	runner := &fakeURLRefreshRunner{
+		jobs:         []*types.WikaURLRefreshJob{{ID: 101}},
+		runnableJobs: []*types.WikaURLRefreshJob{{ID: 201}},
+	}
+	worker := NewWorker(runner, fakeFeatureGate{enabled: true}, WithWorkerID("worker-test"))
+
+	if err := worker.RunOnce(context.Background(), time.Date(2026, 6, 30, 6, 15, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("RunOnce returned error: %v", err)
+	}
+
+	if runner.runnableCalls != 1 {
+		t.Fatalf("expected runnable jobs to be scanned once, got %d", runner.runnableCalls)
+	}
+	if len(runner.runJobIDs) != 2 || runner.runJobIDs[0] != 101 || runner.runJobIDs[1] != 201 {
+		t.Fatalf("expected due and runnable jobs to run once each, got ids=%+v", runner.runJobIDs)
 	}
 }
 

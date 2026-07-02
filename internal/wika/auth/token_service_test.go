@@ -220,3 +220,83 @@ func TestRevokeTokenMarksTokenRevoked(t *testing.T) {
 		t.Fatal("expected token revoked_at to be set")
 	}
 }
+
+func TestTokenConnectionStatusFromUsageSummary(t *testing.T) {
+	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	revokedAt := now.Add(-time.Hour)
+	successRecent := now.Add(-5 * time.Minute)
+	successOld := now.Add(-time.Hour)
+	failureNewer := now.Add(-time.Minute)
+
+	cases := []struct {
+		name    string
+		token   TokenUsageToken
+		summary TokenUsageSummary
+		want    string
+	}{
+		{
+			name: "revoked",
+			token: TokenUsageToken{
+				RevokedAt: &revokedAt,
+				ExpiresAt: now.Add(time.Hour),
+			},
+			want: "revoked",
+		},
+		{
+			name: "expired",
+			token: TokenUsageToken{
+				ExpiresAt: now.Add(-time.Second),
+			},
+			want: "expired",
+		},
+		{
+			name: "never used",
+			token: TokenUsageToken{
+				ExpiresAt: now.Add(time.Hour),
+			},
+			want: "never_used",
+		},
+		{
+			name: "active recent success",
+			token: TokenUsageToken{
+				LastUsedAt: &successRecent,
+				ExpiresAt:  now.Add(time.Hour),
+			},
+			summary: TokenUsageSummary{
+				LastSuccessAt: &successRecent,
+			},
+			want: "active",
+		},
+		{
+			name: "error newer than success",
+			token: TokenUsageToken{
+				LastUsedAt: &failureNewer,
+				ExpiresAt:  now.Add(time.Hour),
+			},
+			summary: TokenUsageSummary{
+				LastSuccessAt: &successOld,
+				LastFailureAt: &failureNewer,
+			},
+			want: "error",
+		},
+		{
+			name: "idle old success",
+			token: TokenUsageToken{
+				LastUsedAt: &successOld,
+				ExpiresAt:  now.Add(time.Hour),
+			},
+			summary: TokenUsageSummary{
+				LastSuccessAt: &successOld,
+			},
+			want: "idle",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := connectionStatus(tc.token, tc.summary, now); got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
+	}
+}

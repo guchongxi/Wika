@@ -85,6 +85,8 @@ func (h *WikaSuggestionHandler) CreateSuggestion(c *gin.Context) {
 		switch {
 		case stderrors.Is(err, wikasuggestion.ErrSourceKnowledgeNotPersonal):
 			c.Error(apperrors.NewBadRequestError("source knowledge must belong to personal space"))
+		case stderrors.Is(err, wikasuggestion.ErrTargetDefaultKBNotFound):
+			c.Error(apperrors.NewBadRequestError("target space default knowledge base not found"))
 		case stderrors.Is(err, wikasuggestion.ErrSuggestionPermissionDenied):
 			c.Error(apperrors.NewForbiddenError("suggestion permission denied"))
 		default:
@@ -182,6 +184,8 @@ func (h *WikaSuggestionHandler) handleSuggestionError(c *gin.Context, err error,
 	switch {
 	case stderrors.Is(err, wikasuggestion.ErrSourceKnowledgeNotPersonal):
 		c.Error(apperrors.NewBadRequestError("source knowledge must belong to personal space"))
+	case stderrors.Is(err, wikasuggestion.ErrTargetDefaultKBNotFound):
+		c.Error(apperrors.NewBadRequestError("target space default knowledge base not found"))
 	case stderrors.Is(err, wikasuggestion.ErrInvalidDecision):
 		c.Error(apperrors.NewBadRequestError("invalid final_decision"))
 	case stderrors.Is(err, wikasuggestion.ErrSuggestionPermissionDenied):

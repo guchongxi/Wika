@@ -10,6 +10,7 @@ import (
 
 type dueJobRunner interface {
 	RunDueSchedules(ctx context.Context, now time.Time) ([]*types.WikaURLRefreshJob, error)
+	RunRunnableJobs(ctx context.Context, now time.Time) ([]*types.WikaURLRefreshJob, error)
 	RunJob(ctx context.Context, input RunJobInput) error
 }
 
@@ -122,6 +123,11 @@ func (w *Worker) RunOnce(ctx context.Context, now time.Time) error {
 	if now.IsZero() {
 		now = time.Now()
 	}
+	runnableJobs, err := w.runner.RunRunnableJobs(ctx, now)
+	if err != nil {
+		return err
+	}
+	jobs = appendRunnableJobs(jobs, runnableJobs)
 	for _, job := range jobs {
 		if job == nil {
 			continue
@@ -136,6 +142,27 @@ func (w *Worker) RunOnce(ctx context.Context, now time.Time) error {
 		}
 	}
 	return nil
+}
+
+func appendRunnableJobs(base []*types.WikaURLRefreshJob, extra []*types.WikaURLRefreshJob) []*types.WikaURLRefreshJob {
+	seen := make(map[uint64]struct{}, len(base)+len(extra))
+	for _, job := range base {
+		if job == nil {
+			continue
+		}
+		seen[job.ID] = struct{}{}
+	}
+	for _, job := range extra {
+		if job == nil {
+			continue
+		}
+		if _, ok := seen[job.ID]; ok {
+			continue
+		}
+		base = append(base, job)
+		seen[job.ID] = struct{}{}
+	}
+	return base
 }
 
 func (w *Worker) featureEnabled(ctx context.Context) bool {

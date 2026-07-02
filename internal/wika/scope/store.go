@@ -65,6 +65,8 @@ func (s *GormStore) ListSharedKnowledgeBaseScopes(ctx context.Context, userID st
 	err := s.db.WithContext(ctx).
 		Table("wika_org_shares AS ws").
 		Select("ws.source_tenant_id AS tenant_id, ws.source_kb_id AS kb_id, ws.allowed_fields AS allowed_fields").
+		Joins("JOIN organization_tenant_members AS source_otm ON source_otm.organization_id = ws.org_id AND source_otm.tenant_id = ws.source_tenant_id").
+		Joins("JOIN organization_tenant_members AS target_otm ON target_otm.organization_id = ws.org_id AND target_otm.tenant_id = ws.target_tenant_id").
 		Joins("JOIN tenant_members AS tm ON tm.tenant_id = ws.target_tenant_id AND tm.user_id = ? AND tm.status = ?", userID, types.TenantMemberStatusActive).
 		Joins("JOIN tenants AS source_tenant ON source_tenant.id = ws.source_tenant_id AND source_tenant.space_type = ?", types.SpaceTypeTeam).
 		Joins("JOIN knowledge_bases AS kb ON kb.id = ws.source_kb_id AND kb.tenant_id = ws.source_tenant_id AND kb.type = ?", types.KnowledgeBaseTypeDocument).

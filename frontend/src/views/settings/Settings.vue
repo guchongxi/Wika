@@ -70,7 +70,6 @@
             <div class="settings-content">
               <div class="content-wrapper" :class="{
                 'content-wrapper--wide': currentSection === 'members',
-                'content-wrapper--full': currentSection === 'system-global',
               }">
                 <!-- 角色不允许访问当前 section（deep-link 进来 / 跨租户切换后角色降级）—— 优先于具体 section 渲染。
                      正常导航走 navItems filter 不会到这里，但 watch(navItems) 的 fallback 会在角色降级
@@ -133,11 +132,6 @@
                     <SystemInfo />
                   </div>
 
-                  <!-- 系统管理员可见的全局运行时设置 -->
-                  <div v-if="currentSection === 'system-global'" class="section">
-                    <SystemSettings />
-                  </div>
-
                   <!-- 用户信息（账户基础信息：ID / 用户名 / 邮箱 / 注册时间）。
                      从 ApiInfo.vue 拆出来，原页面挂的是 owner-only 入口，
                      用户的基本信息不该跟 owner 权限绑定。 -->
@@ -158,6 +152,11 @@
                   <!-- API 信息 -->
                   <div v-if="currentSection === 'api'" class="section">
                     <ApiInfo />
+                  </div>
+
+                  <!-- Wika AI 工具接入 -->
+                  <div v-if="currentSection === 'wikaTokens'" class="section">
+                    <WikaTokenSettings />
                   </div>
 
                   <!-- MCP 服务 -->
@@ -184,6 +183,7 @@ import SystemInfo from './SystemInfo.vue'
 import TenantInfo from './TenantInfo.vue'
 import ApiInfo from './ApiInfo.vue'
 import UserProfile from './UserProfile.vue'
+import WikaTokenSettings from './WikaTokenSettings.vue'
 import GeneralSettings from './GeneralSettings.vue'
 import ModelSettings from './ModelSettings.vue'
 import OllamaSettings from './OllamaSettings.vue'
@@ -195,7 +195,6 @@ import ParserEngineSettings from './ParserEngineSettings.vue'
 import StorageEngineSettings from './StorageEngineSettings.vue'
 import WeKnoraCloudSettings from './WeKnoraCloudSettings.vue'
 import TenantMembers from './TenantMembers.vue'
-import SystemSettings from '@/views/system/SystemSettings.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -251,14 +250,10 @@ const SECTION_MIN_ROLE: Record<string, RoleKey> = {
   tenant: 'viewer',
   members: 'viewer',
   api: 'owner',
+  wikaTokens: 'viewer',
 }
 
-const SYSTEM_ADMIN_SECTIONS = new Set(['system-global'])
-
 const canSeeSection = (key: string): boolean => {
-  if (SYSTEM_ADMIN_SECTIONS.has(key)) {
-    return authStore.isSystemAdmin
-  }
   const min = SECTION_MIN_ROLE[key] ?? 'viewer'
   // canAccessAllTenants（superuser）和路由层一样必须 bypass，否则 cross-tenant
   // 管理员看不到自己有权操作的入口（参考 TenantMembers.vue 的 canManage）。
@@ -282,11 +277,11 @@ const navItems = computed(() => {
     { key: 'storage', icon: 'cloud', label: t('settings.storageEngine') },
     { key: 'mcp', icon: 'tools', label: t('settings.mcpService') },
     { key: 'system', icon: 'info-circle', label: t('settings.versionInfo') },
-    { key: 'system-global', icon: 'server', label: t('settings.system') },
     { key: 'userprofile', icon: 'user', label: t('userProfile.title') },
     { key: 'tenant', icon: 'user-circle', label: t('settings.tenantInfo') },
     { key: 'members', icon: 'usergroup', label: t('tenantMember.title') },
     { key: 'api', icon: 'secured', label: t('settings.apiInfo') },
+    { key: 'wikaTokens', icon: 'key', label: t('settings.wikaTokens.title') },
   ]
   // currentTenantRole 为空表示「membership 还没加载」—— 比起渲染整套
   // viewer 入口然后角色一返回又消失，先卡住不渲染更稳，跟原先 members
@@ -308,7 +303,7 @@ const navGroups = computed<NavGroup[]>(() => {
     {
       key: 'account',
       label: t('settings.navGroups.account'),
-      items: pickItems(['general', 'userprofile', 'api']),
+      items: pickItems(['general', 'userprofile', 'wikaTokens', 'api']),
     },
     {
       key: 'workspace',
@@ -328,7 +323,7 @@ const navGroups = computed<NavGroup[]>(() => {
     {
       key: 'platform',
       label: t('settings.navGroups.platform'),
-      items: pickItems(['system-global', 'system']),
+      items: pickItems(['system']),
     },
   ].filter((group) => group.items.length > 0)
 })
@@ -376,12 +371,7 @@ const handleClose = () => {
   uiStore.closeSettings()
   // 如果当前路由是设置页，返回上一页
   if (route.path === '/platform/settings') {
-    const sec = route.query.section
-    if (sec === 'system-global') {
-      router.push('/platform/knowledge-bases')
-    } else {
-      router.back()
-    }
+    router.back()
   }
 }
 

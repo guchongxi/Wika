@@ -22,6 +22,31 @@ func escapeLikeKeyword(keyword string) string {
 	return keyword
 }
 
+func applyKnowledgeKeywordFilter(query *gorm.DB, dialect, keyword string) *gorm.DB {
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return query
+	}
+	pattern := "%" + escapeLikeKeyword(keyword) + "%"
+	switch dialect {
+	case "postgres":
+		return query.Where(
+			"(knowledges.file_name ILIKE ? OR knowledges.title ILIKE ? OR knowledges.description ILIKE ? OR knowledges.metadata->>'content' ILIKE ?)",
+			pattern, pattern, pattern, pattern,
+		)
+	case "mysql":
+		return query.Where(
+			"(knowledges.file_name LIKE ? OR knowledges.title LIKE ? OR knowledges.description LIKE ? OR JSON_UNQUOTE(JSON_EXTRACT(knowledges.metadata, '$.content')) LIKE ?)",
+			pattern, pattern, pattern, pattern,
+		)
+	default:
+		return query.Where(
+			"(knowledges.file_name LIKE ? OR knowledges.title LIKE ? OR knowledges.description LIKE ? OR json_extract(knowledges.metadata, '$.content') LIKE ?)",
+			pattern, pattern, pattern, pattern,
+		)
+	}
+}
+
 // omitFieldsOnUpdate defines fields to omit when updating knowledge.
 //
 // PendingSubtasksCount is deliberately omitted from every full-row Save:
@@ -105,8 +130,11 @@ func applyKnowledgeListFilter(query *gorm.DB, filter types.KnowledgeListFilter) 
 		)
 	}
 	if filter.Keyword != "" {
-		escaped := escapeLikeKeyword(filter.Keyword)
-		query = query.Where("(file_name LIKE ? OR title LIKE ?)", "%"+escaped+"%", "%"+escaped+"%")
+		dialect := ""
+		if query.Statement != nil && query.Statement.DB != nil && query.Statement.DB.Dialector != nil {
+			dialect = query.Statement.DB.Dialector.Name()
+		}
+		query = applyKnowledgeKeywordFilter(query, dialect, filter.Keyword)
 	}
 	// FileType and Source share the same special-case routing onto `type` for
 	// the "manual" / "url" values, so callers can pick either control.
@@ -532,8 +560,7 @@ func (r *knowledgeRepository) SearchKnowledge(
 
 	// If keyword is provided, filter by file_name or title
 	if keyword != "" {
-		escaped := escapeLikeKeyword(keyword)
-		query = query.Where("(knowledges.file_name LIKE ? OR knowledges.title LIKE ?)", "%"+escaped+"%", "%"+escaped+"%")
+		query = applyKnowledgeKeywordFilter(query, r.db.Dialector.Name(), keyword)
 	}
 
 	// If fileTypes is provided, filter by file extension or type
@@ -651,8 +678,7 @@ func (r *knowledgeRepository) SearchKnowledgeInScopes(
 		Where("knowledges.deleted_at IS NULL")
 
 	if keyword != "" {
-		escaped := escapeLikeKeyword(keyword)
-		query = query.Where("(knowledges.file_name LIKE ? OR knowledges.title LIKE ?)", "%"+escaped+"%", "%"+escaped+"%")
+		query = applyKnowledgeKeywordFilter(query, r.db.Dialector.Name(), keyword)
 	}
 
 	if len(fileTypes) > 0 {

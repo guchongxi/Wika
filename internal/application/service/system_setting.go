@@ -91,6 +91,9 @@ type settingSpec struct {
 	// (e.g. asynq worker pool size). The UI shows a restart badge; the
 	// service persists the flag on first write.
 	RequiresRestart bool
+	// PreserveStringListWhitespace 用于保留 "\n\n" 这类本身有语义的空白项。
+	// 默认 string_list 仍会 trim，因为它最初服务于 SSRF host/CIDR 列表。
+	PreserveStringListWhitespace bool
 }
 
 // registry pins the set of legal keys. Expanding it is a deliberate,
@@ -164,6 +167,170 @@ var registry = map[string]settingSpec{
 		Description: "新建租户时默认分配的存储配额（GB），包含向量、原文、文本、索引等。" +
 			"仅在创建时读取，修改后只对之后新建的租户生效，不会回写已存在的租户。" +
 			"0 或负数表示使用内置默认值 10GB。",
+	},
+	KBDefaultLLMModelID: {
+		Type:        "string",
+		EnvName:     "WEKNORA_KB_DEFAULT_LLM_MODEL_ID",
+		Default:     "",
+		Category:    "kb_defaults",
+		Description: "新建知识库默认使用的 LLM / Summary 模型 ID。留空表示普通用户仍需显式选择。",
+	},
+	KBDefaultEmbeddingModelID: {
+		Type:        "string",
+		EnvName:     "WEKNORA_KB_DEFAULT_EMBEDDING_MODEL_ID",
+		Default:     "",
+		Category:    "kb_defaults",
+		Description: "新建知识库默认使用的 Embedding 模型 ID。启用向量或关键词索引时应配置。",
+	},
+	KBDefaultStorageProvider: {
+		Type:        "string",
+		EnvName:     "WEKNORA_KB_DEFAULT_STORAGE_PROVIDER",
+		Default:     "local",
+		Category:    "kb_defaults",
+		Description: "新建知识库默认存储引擎 provider，例如 local、minio、cos。",
+	},
+	KBDefaultChunkSize: {
+		Type:        "int",
+		EnvName:     "WEKNORA_KB_DEFAULT_CHUNK_SIZE",
+		Default:     int64(512),
+		Category:    "kb_defaults",
+		Description: "新建知识库默认分块大小。",
+	},
+	KBDefaultChunkOverlap: {
+		Type:        "int",
+		EnvName:     "WEKNORA_KB_DEFAULT_CHUNK_OVERLAP",
+		Default:     int64(80),
+		Category:    "kb_defaults",
+		Description: "新建知识库默认分块重叠大小。",
+	},
+	KBDefaultChunkSeparators: {
+		Type:                         "string_list",
+		EnvName:                      "WEKNORA_KB_DEFAULT_CHUNK_SEPARATORS",
+		Default:                      []string{"\n\n", "\n", "。", "！", "？", ";", "；"},
+		Category:                     "kb_defaults",
+		Description:                  "新建知识库默认分块分隔符列表。",
+		PreserveStringListWhitespace: true,
+	},
+	KBDefaultParentChildEnabled: {
+		Type:        "bool",
+		EnvName:     "WEKNORA_KB_DEFAULT_PARENT_CHILD_ENABLED",
+		Default:     false,
+		Category:    "kb_defaults",
+		Description: "新建知识库是否默认启用父子分块。",
+	},
+	KBDefaultParentChunkSize: {
+		Type:        "int",
+		EnvName:     "WEKNORA_KB_DEFAULT_PARENT_CHUNK_SIZE",
+		Default:     int64(4096),
+		Category:    "kb_defaults",
+		Description: "父子分块启用时的默认父分块大小。",
+	},
+	KBDefaultChildChunkSize: {
+		Type:        "int",
+		EnvName:     "WEKNORA_KB_DEFAULT_CHILD_CHUNK_SIZE",
+		Default:     int64(384),
+		Category:    "kb_defaults",
+		Description: "父子分块启用时的默认子分块大小。",
+	},
+	KBDefaultIndexVectorEnabled: {
+		Type:        "bool",
+		EnvName:     "WEKNORA_KB_DEFAULT_INDEX_VECTOR_ENABLED",
+		Default:     true,
+		Category:    "kb_defaults",
+		Description: "新建知识库是否默认启用向量索引。",
+	},
+	KBDefaultIndexKeywordEnabled: {
+		Type:        "bool",
+		EnvName:     "WEKNORA_KB_DEFAULT_INDEX_KEYWORD_ENABLED",
+		Default:     true,
+		Category:    "kb_defaults",
+		Description: "新建知识库是否默认启用关键词索引。",
+	},
+	KBDefaultIndexWikiEnabled: {
+		Type:        "bool",
+		EnvName:     "WEKNORA_KB_DEFAULT_INDEX_WIKI_ENABLED",
+		Default:     false,
+		Category:    "kb_defaults",
+		Description: "新建知识库是否默认启用 Wiki 生成。",
+	},
+	KBDefaultIndexGraphEnabled: {
+		Type:        "bool",
+		EnvName:     "WEKNORA_KB_DEFAULT_INDEX_GRAPH_ENABLED",
+		Default:     false,
+		Category:    "kb_defaults",
+		Description: "新建知识库是否默认启用知识图谱抽取。",
+	},
+	KBDefaultVLMEnabled: {
+		Type:        "bool",
+		EnvName:     "WEKNORA_KB_DEFAULT_VLM_ENABLED",
+		Default:     false,
+		Category:    "kb_defaults",
+		Description: "新建知识库是否默认启用视觉模型。",
+	},
+	KBDefaultVLMModelID: {
+		Type:        "string",
+		EnvName:     "WEKNORA_KB_DEFAULT_VLM_MODEL_ID",
+		Default:     "",
+		Category:    "kb_defaults",
+		Description: "新建知识库默认视觉模型 ID。",
+	},
+	KBDefaultASREnabled: {
+		Type:        "bool",
+		EnvName:     "WEKNORA_KB_DEFAULT_ASR_ENABLED",
+		Default:     false,
+		Category:    "kb_defaults",
+		Description: "新建知识库是否默认启用语音识别。",
+	},
+	KBDefaultASRModelID: {
+		Type:        "string",
+		EnvName:     "WEKNORA_KB_DEFAULT_ASR_MODEL_ID",
+		Default:     "",
+		Category:    "kb_defaults",
+		Description: "新建知识库默认 ASR 模型 ID。",
+	},
+	KBDefaultQuestionGenerationEnabled: {
+		Type:        "bool",
+		EnvName:     "WEKNORA_KB_DEFAULT_QUESTION_GENERATION_ENABLED",
+		Default:     false,
+		Category:    "kb_defaults",
+		Description: "新建知识库是否默认开启问题生成。",
+	},
+	KBDefaultQuestionGenerationCount: {
+		Type:        "int",
+		EnvName:     "WEKNORA_KB_DEFAULT_QUESTION_GENERATION_COUNT",
+		Default:     int64(3),
+		Category:    "kb_defaults",
+		Description: "问题生成开启时每个分块默认生成的问题数量。",
+	},
+	"wika.governance.conflict.enabled": {
+		Type:        "bool",
+		Default:     false,
+		Category:    "wika_governance",
+		Description: "是否开启 P5a 冲突治理。关闭时冲突检测、列表、处理和 worker 均不可用。",
+	},
+	"wika.governance.version.enabled": {
+		Type:        "bool",
+		Default:     false,
+		Category:    "wika_governance",
+		Description: "是否开启 P5b 知识版本治理。关闭时版本恢复等写入治理能力不可用。",
+	},
+	"wika.governance.url_refresh.enabled": {
+		Type:        "bool",
+		Default:     false,
+		Category:    "wika_governance",
+		Description: "是否开启 P5c URL 保鲜治理。关闭时 URL 刷新任务、计划和审核不可用。",
+	},
+	"wika.governance.eval_schedule.enabled": {
+		Type:        "bool",
+		Default:     false,
+		Category:    "wika_governance",
+		Description: "是否开启 P5d 评测计划。关闭时定时评测计划和 worker 不可用。",
+	},
+	"wika.governance.org_share.enabled": {
+		Type:        "bool",
+		Default:     false,
+		Category:    "wika_governance",
+		Description: "是否开启 P5e 组织级共享。关闭时 Organization share 相关能力不可用。",
 	},
 	// asynq.concurrency is the asynq worker pool size (parallel in-flight
 	// tasks). Read once when the asynq server starts — changing it in the
@@ -775,7 +942,7 @@ func (s *systemSettingService) Update(ctx context.Context, key string, rawValue 
 		return nil, fmt.Errorf("unknown setting key %q", key)
 	}
 
-	encoded, err := encodeForType(spec.Type, rawValue)
+	encoded, err := encodeForSpec(spec, rawValue)
 	if err != nil {
 		return nil, fmt.Errorf("invalid value for %q (expected %s): %w", key, spec.Type, err)
 	}
@@ -1056,6 +1223,13 @@ func (s *systemSettingService) emitChangeAudit(
 // returns the canonical JSON encoding for the DB. Rejects type
 // mismatches (e.g. passing "abc" for an int field) with a clear error
 // the handler can surface to the UI.
+func encodeForSpec(spec settingSpec, rawValue any) (types.JSON, error) {
+	if spec.Type == "string_list" && spec.PreserveStringListWhitespace {
+		return encodeStringList(rawValue, false)
+	}
+	return encodeForType(spec.Type, rawValue)
+}
+
 func encodeForType(declared string, rawValue any) (types.JSON, error) {
 	switch declared {
 	case "int":
@@ -1106,46 +1280,53 @@ func encodeForType(declared string, rawValue any) (types.JSON, error) {
 		// string (operator pasting from a legacy ENV value). Reject
 		// arrays containing non-strings to avoid silently coercing
 		// `[1, 2]` into `["1", "2"]` — that hides typos.
-		var entries []string
-		switch v := rawValue.(type) {
-		case []any:
-			entries = make([]string, 0, len(v))
-			for i, item := range v {
-				s, ok := item.(string)
-				if !ok {
-					return nil, fmt.Errorf("expected string at index %d, got %T", i, item)
-				}
-				s = strings.TrimSpace(s)
-				if s != "" {
-					entries = append(entries, s)
-				}
-			}
-		case []string:
-			entries = make([]string, 0, len(v))
-			for _, s := range v {
-				s = strings.TrimSpace(s)
-				if s != "" {
-					entries = append(entries, s)
-				}
-			}
-		case string:
-			for _, s := range strings.Split(v, ",") {
-				s = strings.TrimSpace(s)
-				if s != "" {
-					entries = append(entries, s)
-				}
-			}
-			if entries == nil {
-				entries = []string{}
-			}
-		default:
-			return nil, fmt.Errorf("expected string array, got %T", rawValue)
-		}
-		b, _ := json.Marshal(entries)
-		return types.JSON(b), nil
+		return encodeStringList(rawValue, true)
 	default:
 		return nil, errors.New("unknown declared type: " + declared)
 	}
+}
+
+func encodeStringList(rawValue any, trim bool) (types.JSON, error) {
+	normalize := func(s string) (string, bool) {
+		if trim {
+			s = strings.TrimSpace(s)
+		}
+		return s, s != ""
+	}
+	var entries []string
+	switch v := rawValue.(type) {
+	case []any:
+		entries = make([]string, 0, len(v))
+		for i, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("expected string at index %d, got %T", i, item)
+			}
+			if normalized, keep := normalize(s); keep {
+				entries = append(entries, normalized)
+			}
+		}
+	case []string:
+		entries = make([]string, 0, len(v))
+		for _, s := range v {
+			if normalized, keep := normalize(s); keep {
+				entries = append(entries, normalized)
+			}
+		}
+	case string:
+		for _, s := range strings.Split(v, ",") {
+			if normalized, keep := normalize(s); keep {
+				entries = append(entries, normalized)
+			}
+		}
+		if entries == nil {
+			entries = []string{}
+		}
+	default:
+		return nil, fmt.Errorf("expected string array, got %T", rawValue)
+	}
+	b, _ := json.Marshal(entries)
+	return types.JSON(b), nil
 }
 
 // validateRegistryEntry runs key-specific structural validation that

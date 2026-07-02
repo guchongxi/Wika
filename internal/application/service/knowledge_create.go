@@ -19,6 +19,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
 	"github.com/Tencent/WeKnora/internal/types"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
+	wikaversion "github.com/Tencent/WeKnora/internal/wika/governance/version"
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 )
@@ -820,6 +821,13 @@ func (s *knowledgeService) CreateKnowledgeFromManual(ctx context.Context,
 		}
 	}
 
+	if !payload.SkipVersionRecord {
+		if err := s.recordManualKnowledgeVersion(ctx, knowledge, cleanContent, status, payload.TagIDs, "manual_create"); err != nil {
+			logger.Errorf(ctx, "Failed to record manual knowledge initial version: %v", err)
+			return nil, err
+		}
+	}
+
 	if status == types.ManualKnowledgeStatusPublish {
 		logger.Infof(ctx, "Manual knowledge created, enqueuing async processing task, ID: %s", knowledge.ID)
 		if err := s.enqueueManualProcessing(ctx, knowledge, cleanContent, false); err != nil {
@@ -988,6 +996,9 @@ func (s *knowledgeService) UpdateManualKnowledge(ctx context.Context,
 	if !existing.IsManual() {
 		return nil, werrors.NewBadRequestError("仅支持手工知识的在线编辑")
 	}
+	baselineContent, baselineStatus := manualVersionSnapshot(existing)
+	baselineTitle := existing.Title
+	baselineMetadata := append(types.JSON(nil), existing.Metadata...)
 
 	kb, err := s.kbService.GetKnowledgeBaseByID(ctx, existing.KnowledgeBaseID)
 	if err != nil {
@@ -1030,6 +1041,25 @@ func (s *knowledgeService) UpdateManualKnowledge(ctx context.Context,
 			logger.Errorf(ctx, "Failed to persist manual draft: %v", err)
 			return nil, err
 		}
+		if !payload.SkipVersionRecord {
+			if err := s.recordManualKnowledgeVersionInput(ctx, wikaversion.RecordVersionInput{
+				KnowledgeID:  existing.ID,
+				TenantID:     existing.TenantID,
+				KBID:         existing.KnowledgeBaseID,
+				Title:        baselineTitle,
+				Content:      baselineContent,
+				Status:       baselineStatus,
+				Metadata:     baselineMetadata,
+				ChangeReason: "baseline",
+			}); err != nil {
+				logger.Errorf(ctx, "Failed to record manual knowledge baseline version: %v", err)
+				return nil, err
+			}
+			if err := s.recordManualKnowledgeVersion(ctx, existing, cleanContent, status, payload.TagIDs, "manual_update"); err != nil {
+				logger.Errorf(ctx, "Failed to record manual knowledge draft version: %v", err)
+				return nil, err
+			}
+		}
 		return existing, nil
 	}
 
@@ -1046,6 +1076,25 @@ func (s *knowledgeService) UpdateManualKnowledge(ctx context.Context,
 		logger.Errorf(ctx, "Failed to persist manual knowledge before indexing: %v", err)
 		return nil, err
 	}
+	if !payload.SkipVersionRecord {
+		if err := s.recordManualKnowledgeVersionInput(ctx, wikaversion.RecordVersionInput{
+			KnowledgeID:  existing.ID,
+			TenantID:     existing.TenantID,
+			KBID:         existing.KnowledgeBaseID,
+			Title:        baselineTitle,
+			Content:      baselineContent,
+			Status:       baselineStatus,
+			Metadata:     baselineMetadata,
+			ChangeReason: "baseline",
+		}); err != nil {
+			logger.Errorf(ctx, "Failed to record manual knowledge baseline version: %v", err)
+			return nil, err
+		}
+		if err := s.recordManualKnowledgeVersion(ctx, existing, cleanContent, status, payload.TagIDs, "manual_update"); err != nil {
+			logger.Errorf(ctx, "Failed to record manual knowledge publish version: %v", err)
+			return nil, err
+		}
+	}
 
 	logger.Infof(ctx, "Manual knowledge updated, enqueuing async processing task, ID: %s", existing.ID)
 	if err := s.enqueueManualProcessing(ctx, existing, cleanContent, true); err != nil {
@@ -1057,6 +1106,72 @@ func (s *knowledgeService) UpdateManualKnowledge(ctx context.Context,
 		return nil, werrors.NewInternalServerError("Failed to submit processing task")
 	}
 	return existing, nil
+}
+
+func (s *knowledgeService) recordManualKnowledgeVersion(
+	ctx context.Context,
+	knowledge *types.Knowledge,
+	content string,
+	status string,
+	tagIDs []string,
+	reason string,
+) error {
+	if knowledge == nil {
+		return nil
+	}
+	return s.recordManualKnowledgeVersionInput(ctx, wikaversion.RecordVersionInput{
+		KnowledgeID:  knowledge.ID,
+		TenantID:     knowledge.TenantID,
+		KBID:         knowledge.KnowledgeBaseID,
+		Title:        knowledge.Title,
+		Content:      content,
+		Tags:         manualVersionTagIDs(tagIDs),
+		Status:       status,
+		Metadata:     append(types.JSON(nil), knowledge.Metadata...),
+		ChangeReason: reason,
+	})
+}
+
+func (s *knowledgeService) recordManualKnowledgeVersionInput(ctx context.Context, input wikaversion.RecordVersionInput) error {
+	if s.versionRecorder == nil {
+		return nil
+	}
+	if input.ActorID == "" {
+		if actorID, ok := types.UserIDFromContext(ctx); ok {
+			input.ActorID = actorID
+		}
+	}
+	_, err := s.versionRecorder.RecordVersion(ctx, input)
+	return err
+}
+
+func manualVersionSnapshot(knowledge *types.Knowledge) (string, string) {
+	if knowledge == nil {
+		return "", ""
+	}
+	status := knowledge.EnableStatus
+	if status == "" {
+		status = knowledge.ParseStatus
+	}
+	meta, err := knowledge.ManualMetadata()
+	if err != nil || meta == nil {
+		return "", status
+	}
+	if meta.Status != "" {
+		status = meta.Status
+	}
+	return meta.Content, status
+}
+
+func manualVersionTagIDs(tagIDs []string) types.JSON {
+	if tagIDs == nil {
+		return nil
+	}
+	raw, err := json.Marshal(tagIDs)
+	if err != nil {
+		return nil
+	}
+	return types.JSON(raw)
 }
 
 // enqueueManualProcessing enqueues a manual:process Asynq task for async cleanup + re-indexing.

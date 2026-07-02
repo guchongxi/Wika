@@ -2,7 +2,11 @@ package evalschedule
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	stderrors "errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,10 +24,15 @@ type FeatureGate interface {
 	GetBool(ctx context.Context, key string, envName string, def bool) bool
 }
 
+type AuditLogger interface {
+	Log(ctx context.Context, entry *types.AuditLog) error
+}
+
 type Service struct {
 	store  Store
 	runner EvalRunner
 	flags  FeatureGate
+	audit  AuditLogger
 }
 
 type ServiceOption func(*Service)
@@ -35,6 +44,12 @@ const defaultScheduleWorkerID = "wika-eval-scheduler"
 func WithFeatureGate(flags FeatureGate) ServiceOption {
 	return func(s *Service) {
 		s.flags = flags
+	}
+}
+
+func WithAuditLogger(audit AuditLogger) ServiceOption {
+	return func(s *Service) {
+		s.audit = audit
 	}
 }
 
@@ -66,7 +81,24 @@ func (s *Service) CreateSchedule(ctx context.Context, input CreateScheduleInput)
 	}
 	input.Now = now
 	input.CronExpr = strings.TrimSpace(input.CronExpr)
-	return s.store.CreateSchedule(ctx, input, nextRunAt)
+	created, err := s.store.CreateSchedule(ctx, input, nextRunAt)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.logScheduleUpdated(ctx, input.ActorID, created); err != nil {
+		return nil, err
+	}
+	return created, nil
+}
+
+func (s *Service) List(ctx context.Context, input ListInput) (*ListResult, error) {
+	if !s.featureEnabled(ctx) {
+		return nil, ErrFeatureDisabled
+	}
+	if s.store == nil {
+		return &ListResult{}, nil
+	}
+	return s.store.List(ctx, input)
 }
 
 func (s *Service) RunDueSchedules(ctx context.Context, now time.Time) ([]*types.WikaEvalRun, error) {
@@ -110,8 +142,12 @@ func (s *Service) RunDueSchedules(ctx context.Context, now time.Time) ([]*types.
 			ScheduledFor: &scheduledFor,
 		})
 		if err != nil {
-			if markErr := s.store.MarkScheduleFailed(ctx, item.ID, now, "eval_run_failed"); markErr != nil {
+			updated, markErr := s.store.MarkScheduleFailed(ctx, item.ID, now, "eval_run_failed")
+			if markErr != nil {
 				return nil, markErr
+			}
+			if auditErr := s.logScheduleRunFailed(ctx, updated, nil); auditErr != nil {
+				return nil, auditErr
 			}
 			return nil, err
 		}
@@ -147,7 +183,14 @@ func (s *Service) UpdateSchedule(ctx context.Context, input UpdateScheduleInput)
 	}
 	input.Now = now
 	input.CronExpr = strings.TrimSpace(input.CronExpr)
-	return s.store.UpdateSchedule(ctx, input, nextRunAt)
+	updated, err := s.store.UpdateSchedule(ctx, input, nextRunAt)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.logScheduleUpdated(ctx, input.ActorID, updated); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func (s *Service) DisableSchedule(ctx context.Context, input DisableScheduleInput) (*types.WikaEvalSchedule, error) {
@@ -160,7 +203,14 @@ func (s *Service) DisableSchedule(ctx context.Context, input DisableScheduleInpu
 	if input.Now.IsZero() {
 		input.Now = time.Now()
 	}
-	return s.store.DisableSchedule(ctx, input)
+	disabled, err := s.store.DisableSchedule(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.logScheduleUpdated(ctx, input.ActorID, disabled); err != nil {
+		return nil, err
+	}
+	return disabled, nil
 }
 
 func (s *Service) featureEnabled(ctx context.Context) bool {
@@ -198,4 +248,55 @@ func evalScheduleFailureBackoff(failures int) time.Duration {
 		return time.Hour
 	}
 	return 6 * time.Hour
+}
+
+func (s *Service) logScheduleUpdated(ctx context.Context, actorID string, schedule *types.WikaEvalSchedule) error {
+	if s.audit == nil || schedule == nil {
+		return nil
+	}
+	details, _ := json.Marshal(map[string]any{
+		"kb_id":                schedule.KBID,
+		"dataset_id":           schedule.DatasetID,
+		"enabled":              schedule.Enabled,
+		"cron_expr_hash":       hashEvalScheduleCron(schedule.CronExpr),
+		"consecutive_failures": schedule.ConsecutiveFailures,
+	})
+	return s.audit.Log(ctx, &types.AuditLog{
+		TenantID:    schedule.TenantID,
+		ActorUserID: strings.TrimSpace(actorID),
+		Action:      types.AuditActionWikaEvalScheduleUpdated,
+		TargetType:  "wika_eval_schedule",
+		TargetID:    strconv.FormatUint(schedule.ID, 10),
+		Details:     types.JSON(details),
+	})
+}
+
+func (s *Service) logScheduleRunFailed(ctx context.Context, schedule *types.WikaEvalSchedule, runID *uint64) error {
+	if s.audit == nil || schedule == nil {
+		return nil
+	}
+	detailsMap := map[string]any{
+		"kb_id":                schedule.KBID,
+		"dataset_id":           schedule.DatasetID,
+		"enabled":              schedule.Enabled,
+		"failure_code":         schedule.LastFailureCode,
+		"consecutive_failures": schedule.ConsecutiveFailures,
+	}
+	if runID != nil {
+		detailsMap["run_id"] = *runID
+	}
+	details, _ := json.Marshal(detailsMap)
+	return s.audit.Log(ctx, &types.AuditLog{
+		TenantID:    schedule.TenantID,
+		ActorUserID: strings.TrimSpace(schedule.CreatedBy),
+		Action:      types.AuditActionWikaEvalScheduleRunFailed,
+		TargetType:  "wika_eval_schedule",
+		TargetID:    strconv.FormatUint(schedule.ID, 10),
+		Details:     types.JSON(details),
+	})
+}
+
+func hashEvalScheduleCron(expr string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(expr)))
+	return hex.EncodeToString(sum[:])
 }

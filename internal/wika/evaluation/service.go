@@ -24,6 +24,8 @@ type Store interface {
 	CreateDataset(ctx context.Context, item *types.WikaEvalDataset) (*types.WikaEvalDataset, error)
 	CreateQAItem(ctx context.Context, item *types.WikaEvalQAItem) (*types.WikaEvalQAItem, error)
 	ListQAItems(ctx context.Context, datasetID uint64, enabledOnly bool) ([]*types.WikaEvalQAItem, error)
+	GetDataset(ctx context.Context, tenantID uint64, kbID string, datasetID uint64) (*types.WikaEvalDataset, error)
+	ListRuns(ctx context.Context, tenantID uint64, kbID string, limit int) ([]*types.WikaEvalRun, error)
 	CreateRun(ctx context.Context, item *types.WikaEvalRun) (*types.WikaEvalRun, error)
 	SaveRunItems(ctx context.Context, items []*types.WikaEvalRunItem) error
 	CompleteRun(ctx context.Context, runID uint64, metrics RunMetrics, failed int) (*types.WikaEvalRun, error)
@@ -66,6 +68,15 @@ func (s *Service) AddQAItem(ctx context.Context, input AddQAItemInput) (*types.W
 	if s.store == nil {
 		return nil, ErrEvaluationStoreNotConfigured
 	}
+	if input.TenantID != 0 && strings.TrimSpace(input.KBID) != "" {
+		if _, err := s.store.GetDataset(ctx, input.TenantID, strings.TrimSpace(input.KBID), input.DatasetID); err != nil {
+			return nil, err
+		}
+	}
+	return s.createQAItem(ctx, input)
+}
+
+func (s *Service) createQAItem(ctx context.Context, input AddQAItemInput) (*types.WikaEvalQAItem, error) {
 	question := strings.TrimSpace(input.Question)
 	if question == "" {
 		return nil, ErrInvalidQAItem
@@ -89,6 +100,45 @@ func (s *Service) AddQAItem(ctx context.Context, input AddQAItemInput) (*types.W
 	})
 }
 
+// ImportDataset 批量导入黄金 QA。导入前先校验 dataset 属于当前 tenant/KB。
+func (s *Service) ImportDataset(ctx context.Context, input ImportDatasetInput) (*ImportDatasetResult, error) {
+	if s.store == nil {
+		return nil, ErrEvaluationStoreNotConfigured
+	}
+	kbID := strings.TrimSpace(input.KBID)
+	if _, err := s.store.GetDataset(ctx, input.TenantID, kbID, input.DatasetID); err != nil {
+		return nil, err
+	}
+	for _, item := range input.Items {
+		if strings.TrimSpace(item.Question) == "" {
+			return nil, ErrInvalidQAItem
+		}
+	}
+	result := &ImportDatasetResult{Items: make([]ImportedQAItem, 0, len(input.Items))}
+	for _, item := range input.Items {
+		created, err := s.createQAItem(ctx, AddQAItemInput{
+			DatasetID:            input.DatasetID,
+			Question:             item.Question,
+			ExpectedAnswer:       item.ExpectedAnswer,
+			ExpectedKnowledgeIDs: item.ExpectedKnowledgeIDs,
+			ExpectedChunkIDs:     item.ExpectedChunkIDs,
+			Tags:                 item.Tags,
+			Enabled:              &item.Enabled,
+		})
+		if err != nil {
+			return nil, err
+		}
+		result.Items = append(result.Items, ImportedQAItem{
+			ID:       created.ID,
+			Question: created.Question,
+			Enabled:  created.Enabled,
+			Version:  created.Version,
+		})
+	}
+	result.Imported = len(result.Items)
+	return result, nil
+}
+
 // ValidateDatasetForFormalRun 确保正式 run 的每条启用 QA 都有期望命中 ID。
 func (s *Service) ValidateDatasetForFormalRun(ctx context.Context, datasetID uint64) error {
 	if s.store == nil {
@@ -109,6 +159,130 @@ func (s *Service) ValidateDatasetForFormalRun(ctx context.Context, datasetID uin
 	return nil
 }
 
+// DryRun 执行单条 QA 的召回预览，不创建 run，也不写入趋势指标。
+func (s *Service) DryRun(ctx context.Context, input DryRunInput) (*DryRunResult, error) {
+	if s.search == nil {
+		return nil, ErrEvaluationSearchNotConfigured
+	}
+	question := strings.TrimSpace(input.Question)
+	if question == "" {
+		return nil, ErrInvalidQAItem
+	}
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	searchResult, err := s.search.SearchKnowledge(ctx, wikasearch.SearchInput{
+		UserID:      strings.TrimSpace(input.ActorID),
+		TenantID:    input.TenantID,
+		Query:       question,
+		Limit:       limit,
+		IncludeTeam: true,
+		Format:      "compact",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if searchResult == nil {
+		searchResult = &wikasearch.SearchResult{}
+	}
+	return &DryRunResult{
+		Question:      question,
+		Results:       searchResult.Results,
+		Truncated:     searchResult.Truncated,
+		GraphDegraded: searchResult.GraphDegraded,
+	}, nil
+}
+
+// ExportDataset 导出黄金 QA 数据集，但不导出 expected_answer。
+func (s *Service) ExportDataset(ctx context.Context, input ExportDatasetInput) (*ExportDatasetResult, error) {
+	if s.store == nil {
+		return nil, ErrEvaluationStoreNotConfigured
+	}
+	kbID := strings.TrimSpace(input.KBID)
+	dataset, err := s.store.GetDataset(ctx, input.TenantID, kbID, input.DatasetID)
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.store.ListQAItems(ctx, input.DatasetID, false)
+	if err != nil {
+		return nil, err
+	}
+	result := &ExportDatasetResult{
+		Dataset: ExportDatasetMeta{
+			ID:          dataset.ID,
+			KBID:        dataset.KBID,
+			Name:        dataset.Name,
+			Description: dataset.Description,
+			CreatedBy:   dataset.CreatedBy,
+			CreatedAt:   dataset.CreatedAt,
+			UpdatedAt:   dataset.UpdatedAt,
+		},
+		Items: make([]ExportQAItem, 0, len(items)),
+	}
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		result.Items = append(result.Items, ExportQAItem{
+			ID:                   item.ID,
+			Question:             item.Question,
+			ExpectedKnowledgeIDs: stringArray(item.ExpectedKnowledgeIDs),
+			ExpectedChunkIDs:     stringArray(item.ExpectedChunkIDs),
+			Tags:                 stringArray(item.Tags),
+			Enabled:              item.Enabled,
+			Version:              item.Version,
+			CreatedAt:            item.CreatedAt,
+			UpdatedAt:            item.UpdatedAt,
+		})
+	}
+	return result, nil
+}
+
+// Trend 返回知识库最近的正式评测 run。
+func (s *Service) Trend(ctx context.Context, input TrendInput) (*TrendResult, error) {
+	if s.store == nil {
+		return nil, ErrEvaluationStoreNotConfigured
+	}
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	runs, err := s.store.ListRuns(ctx, input.TenantID, strings.TrimSpace(input.KBID), limit)
+	if err != nil {
+		return nil, err
+	}
+	result := &TrendResult{Runs: make([]TrendRun, 0, len(runs))}
+	for _, run := range runs {
+		if run == nil {
+			continue
+		}
+		result.Runs = append(result.Runs, TrendRun{
+			RunID:          run.ID,
+			DatasetID:      run.DatasetID,
+			DatasetVersion: run.DatasetVersion,
+			Status:         run.Status,
+			Trigger:        run.Trigger,
+			RecallAt5:      run.RecallAt5,
+			MRR:            run.MRR,
+			NDCGAt5:        run.NDCGAt5,
+			Total:          run.Total,
+			Failed:         run.Failed,
+			CreatedBy:      run.CreatedBy,
+			StartedAt:      run.StartedAt,
+			CompletedAt:    run.CompletedAt,
+			CreatedAt:      run.CreatedAt,
+		})
+	}
+	return result, nil
+}
+
 // RunEvaluation 执行一次正式评测 run，并持久化 run 和 case 明细。
 func (s *Service) RunEvaluation(ctx context.Context, input RunInput) (*types.WikaEvalRun, error) {
 	if s.store == nil {
@@ -116,6 +290,9 @@ func (s *Service) RunEvaluation(ctx context.Context, input RunInput) (*types.Wik
 	}
 	if s.search == nil {
 		return nil, ErrEvaluationSearchNotConfigured
+	}
+	if _, err := s.store.GetDataset(ctx, input.TenantID, strings.TrimSpace(input.KBID), input.DatasetID); err != nil {
+		return nil, err
 	}
 	if err := s.ValidateDatasetForFormalRun(ctx, input.DatasetID); err != nil {
 		return nil, err
@@ -276,6 +453,17 @@ func jsonArrayLen(raw types.JSON) int {
 		return 0
 	}
 	return len(values)
+}
+
+func stringArray(raw types.JSON) []string {
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return []string{}
+	}
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 func jsonArrayContains(raw types.JSON, want string) bool {

@@ -17,6 +17,7 @@ import (
 type stubWikaEvalScheduleService struct {
 	createInput  *wikaevalschedule.CreateScheduleInput
 	createErr    error
+	listInput    *wikaevalschedule.ListInput
 	updateInput  *wikaevalschedule.UpdateScheduleInput
 	updateErr    error
 	disableInput *wikaevalschedule.DisableScheduleInput
@@ -29,6 +30,22 @@ func (s *stubWikaEvalScheduleService) CreateSchedule(_ context.Context, input wi
 		return nil, s.createErr
 	}
 	return &types.WikaEvalSchedule{ID: 31, TenantID: input.TenantID, KBID: input.KBID, DatasetID: input.DatasetID, Enabled: input.Enabled, CronExpr: input.CronExpr, CreatedBy: input.ActorID}, nil
+}
+
+func (s *stubWikaEvalScheduleService) List(_ context.Context, input wikaevalschedule.ListInput) (*wikaevalschedule.ListResult, error) {
+	s.listInput = &input
+	return &wikaevalschedule.ListResult{
+		Schedules: []*types.WikaEvalSchedule{{
+			ID:        31,
+			TenantID:  input.TenantID,
+			KBID:      input.KBID,
+			DatasetID: 11,
+			Enabled:   true,
+			CronExpr:  "0 * * * *",
+			CreatedBy: input.ActorID,
+		}},
+		Total: 1,
+	}, nil
 }
 
 func (s *stubWikaEvalScheduleService) UpdateSchedule(_ context.Context, input wikaevalschedule.UpdateScheduleInput) (*types.WikaEvalSchedule, error) {
@@ -57,10 +74,36 @@ func newWikaEvalScheduleTestRouter(service *stubWikaEvalScheduleService) *gin.En
 		c.Next()
 	})
 	h := &WikaEvalScheduleHandler{service: service}
+	r.GET("/api/v1/wika/kb/:id/eval/schedules", h.List)
 	r.POST("/api/v1/wika/kb/:id/eval/schedules", h.CreateSchedule)
 	r.PUT("/api/v1/wika/kb/:id/eval/schedules/:schedule_id", h.UpdateSchedule)
 	r.DELETE("/api/v1/wika/kb/:id/eval/schedules/:schedule_id", h.DisableSchedule)
 	return r
+}
+
+func TestWikaEvalScheduleListPassesActorTenantKBAndFilters(t *testing.T) {
+	service := &stubWikaEvalScheduleService{}
+	r := newWikaEvalScheduleTestRouter(service)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/wika/kb/kb-team/eval/schedules?enabled=true&limit=20", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if service.listInput == nil ||
+		service.listInput.ActorID != "u-test" ||
+		service.listInput.TenantID != 80 ||
+		service.listInput.KBID != "kb-team" ||
+		service.listInput.Enabled == nil ||
+		!*service.listInput.Enabled ||
+		service.listInput.Limit != 20 {
+		t.Fatalf("unexpected list input: %+v", service.listInput)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"schedules"`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"total"`)) {
+		t.Fatalf("expected schedules and total response, got %s", w.Body.String())
+	}
 }
 
 func TestWikaEvalScheduleCreatePassesActorTenantKBAndCron(t *testing.T) {
@@ -97,6 +140,20 @@ func TestWikaEvalScheduleInvalidCronReturnsBadRequest(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestWikaEvalScheduleDuplicateEnabledScheduleReturnsConflict(t *testing.T) {
+	service := &stubWikaEvalScheduleService{createErr: wikaevalschedule.ErrScheduleConflict}
+	r := newWikaEvalScheduleTestRouter(service)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/kb/kb-team/eval/schedules", bytes.NewBufferString(`{"dataset_id":11,"cron_expr":"0 * * * *","enabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 

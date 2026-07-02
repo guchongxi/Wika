@@ -2,9 +2,11 @@
 
 这是一个 Model Context Protocol (MCP) 服务器，提供对 WeKnora 知识管理 API 的访问。
 
-## 快速开始
+> 在 Wika 云端集中架构中，本目录是服务端 MCP 组件，不是终端用户必须安装的客户端依赖。终端用户应直接使用 Wika 提供的 Remote MCP 地址和个人 PAT，见 [MCP/API 知识生产接入](../docs/MCP知识生产接入.md)。
 
-> 推荐直接参考 [MCP配置说明](./MCP_CONFIG.md)，无需进行以下操作。
+## 服务端/开发调试快速开始
+
+生产用户入口建议使用 HTTP transport。默认 `dynamic` 模式下，不传工具集请求头时只开放日常知识生产工具；客户端请求 `X-Wika-MCP-Toolset: admin` 时，服务端会向 Wika API 校验 `mcp:admin` scope 和管理员角色。
 
 ### 1. 安装依赖
 ```bash
@@ -15,22 +17,24 @@ pip install -r requirements.txt
 ```bash
 # Linux/macOS
 export WEKNORA_BASE_URL="http://localhost:8080/api/v1"
-export WEKNORA_API_KEY="your_api_key_here"
+export WEKNORA_MCP_TOOLSET="dynamic"
 
 # Windows PowerShell
 $env:WEKNORA_BASE_URL="http://localhost:8080/api/v1"
-$env:WEKNORA_API_KEY="your_api_key_here"
+$env:WEKNORA_MCP_TOOLSET="dynamic"
 
 # Windows CMD
 set WEKNORA_BASE_URL=http://localhost:8080/api/v1
-set WEKNORA_API_KEY=your_api_key_here
+set WEKNORA_MCP_TOOLSET=dynamic
 ```
+
+云端 dynamic 模式不配置固定 `WEKNORA_PAT`，由每个请求的 `Authorization: Bearer wika_pat_xxx` 透传用户身份。若要彻底禁用管理工具，设置 `WEKNORA_MCP_TOOLSET=daily`；只有可信管理员/内网部署需要旧版兼容工具时，才设置 `WEKNORA_MCP_TOOLSET=all` 并配置 `WEKNORA_API_KEY` 或 `WEKNORA_PAT`。
 
 ### 3. 运行服务器
 
-**推荐方式 - 使用主入口点：**
+**推荐方式：**
 ```bash
-python main.py
+python main.py --transport http --host 0.0.0.0 --port 8000
 ```
 
 **其他运行方式：**
@@ -94,7 +98,15 @@ python test_module.py
 
 ## 功能特性
 
-该 MCP 服务器提供以下工具：
+默认 `WEKNORA_MCP_TOOLSET=dynamic` 且客户端不传工具集请求头时，只暴露日常知识生产工具：
+
+- `push_knowledge`
+- `search_knowledge`
+- `expand_knowledge_result`
+- `get_my_knowledge`
+- `suggest_to_team`
+
+客户端传 `X-Wika-MCP-Toolset: admin` 且后端授权通过，或设置 `WEKNORA_MCP_TOOLSET=all` 后，才暴露以下管理工具：
 
 ### 租户管理
 - `create_tenant` - 创建新租户

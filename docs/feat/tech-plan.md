@@ -1336,22 +1336,41 @@ suggest_to_team(knowledge_id, target_space_id?, reason?)
 
 客户端配置约定：
 
-- 日常工具优先读取 `WEKNORA_PAT`，以 `Authorization: Bearer <token>` 调用 Wika API。
+- 终端用户通过 Wika 云端 Remote MCP 地址接入，不需要本地安装或启动 `weknora_mcp_server`。
+- Remote MCP 从每个请求的 `Authorization: Bearer <wika_pat_xxx>` 读取用户 PAT，并透传调用 Wika API。
 - 兼容期允许 `WEKNORA_API_KEY` 继续服务管理型工具，但日常工具不得把它当作 PAT fallback。
 - `WEKNORA_BASE_URL` 仍指向 API v1 根路径，例如 `http://localhost:8080/api/v1`。
-- MCP server 启动时如配置了 `WEKNORA_PAT`，必须只注册或启用日常工具的用户级鉴权路径。
+- MCP server 默认 `WEKNORA_MCP_TOOLSET=dynamic`：不传工具集请求头时只开放日常知识生产工具；客户端传 `X-Wika-MCP-Toolset: admin` 时，服务端调用 `/api/v1/wika/mcp/admin/authorize` 校验 `mcp:admin` scope 和租户 Admin/Owner 或系统管理员身份。
+- `WEKNORA_MCP_TOOLSET=daily` 是部署级硬禁用管理工具；`WEKNORA_MCP_TOOLSET=all` 仅用于可信管理员/内网兼容部署。
+- 本地 `stdio` 只保留为开发调试或旧客户端兼容，可配置 `WEKNORA_PAT` 做单用户调试。
 
-stdio 示例：
+Remote MCP 示例：
 
 ```json
 {
   "mcpServers": {
     "wika": {
-      "command": "python",
-      "args": ["-m", "weknora_mcp_server"],
-      "env": {
-        "WEKNORA_BASE_URL": "http://localhost:8080/api/v1",
-        "WEKNORA_PAT": "wika_pat_xxx"
+      "type": "streamable-http",
+      "url": "https://<wika-domain>/mcp",
+      "headers": {
+        "Authorization": "Bearer wika_pat_xxx"
+      }
+	}
+  }
+}
+```
+
+管理员 MCP 示例：
+
+```json
+{
+  "mcpServers": {
+    "wika-admin": {
+      "type": "streamable-http",
+      "url": "https://<wika-domain>/mcp",
+      "headers": {
+        "Authorization": "Bearer wika_pat_xxx",
+        "X-Wika-MCP-Toolset": "admin"
       }
     }
   }
@@ -1362,7 +1381,7 @@ stdio 示例：
 
 ### 7.3 管理工具
 
-现有管理型 MCP tools 保留，但与日常工具在权限和文档上分组展示。
+现有管理型 MCP tools 保留为兼容能力，但不出现在默认用户 Remote MCP 入口中；如需使用，客户端必须请求 `X-Wika-MCP-Toolset: admin`，并通过 `mcp:admin` PAT scope 和管理员角色校验。
 
 ## 八、HTTP API 契约
 
@@ -2128,15 +2147,18 @@ P5e 后续验收规格：
 - `RevokeShare` 允许 source 或 target 团队 Admin/Owner 执行，成功写 `wika.org_share.revoked`，details 至少包含 `actor_tenant_id/source_tenant_id/target_tenant_id/old_status/new_status/share_id`，便于 source 和 target 两侧审计检索。若现有 `audit_logs.tenant_id` 只能填一个租户，优先填 actor 当前租户，source/target 放 details。
 - 同事务判定：审计 writer 必须参与当前 DB transaction，或在同一事务内写同库 audit/outbox 表。若外部审计 sink 不支持事务，不能直接把外部调用当作同事务审计；先提交同库 audit/outbox，再异步投递外部 sink。RED 测试必须覆盖 audit writer 返回错误时 create/accept/revoke 状态均不推进。
 - 审计内容禁止：正文、chunk、snippet、证据文本、diff 全文、文件路径、token 明文或 hash。允许记录字段枚举、状态、资源 ID、hash、request_id、脱敏 actor 信息。
-- MCP smoke 配置：只设置 `WEKNORA_PAT`，不要设置 `WEKNORA_API_KEY` 作为日常工具 fallback。
+- MCP smoke 配置：按云端 Remote MCP 形态启动 HTTP transport，客户端用请求头传 `Authorization: Bearer <PAT>`；不要把 `WEKNORA_API_KEY` 当作日常工具 fallback。
 
 ```bash
 export WEKNORA_BASE_URL="http://localhost:8080/api/v1"
-export WEKNORA_PAT="wika_pat_xxx"
+export WEKNORA_MCP_TOOLSET=dynamic
+unset WEKNORA_PAT
 unset WEKNORA_API_KEY
 cd mcp-server
-python -m weknora_mcp_server --transport stdio
+python -m weknora_mcp_server --transport http --host 0.0.0.0 --port 8082
 ```
+
+AI 工具侧连接 `http://localhost:8082/mcp`，并在 Remote MCP 配置中设置请求头 `Authorization: Bearer wika_pat_xxx`。需要管理工具时另加 `X-Wika-MCP-Toolset: admin`，并使用包含 `mcp:admin` scope 的管理员 PAT。
 
 MCP smoke 的通过条件是：revoke 前 `search_knowledge(query, include_team=true)` 命中 shared 结果且 compact 结果不含正文；`expand_knowledge_result([id])` 仍只返回 `allowed_fields`；revoke 后同一 query 和同一 id 都不再返回共享内容。
 
@@ -2335,7 +2357,7 @@ P5 handler 错误映射：
 | P1a-4 ScopeResolver | A 不能读 B personal KB/knowledge/file/search | `internal/wika/scope`、旧 handler/service 接入点 | 旧 API A/B 越权测试 |
 | P1b-1 Intake | 空 content 400；幂等键重复不重复创建；dry_run 不入库 | `internal/wika/intake`、`internal/handler/wika_knowledge.go` | Web/API push 冒烟 |
 | P1b-2 Search | compact 不返回全文；expand 重新校验 scope；无权 ID 被过滤 | `internal/wika/search`、现有 hybrid search adapter | personal+team 搜索证据、access upsert 证据 |
-| P1b-3 MCP 日常工具 | `WEKNORA_PAT` 走 Bearer，`WEKNORA_API_KEY` 不可调用日常工具 | `mcp-server/weknora_mcp_server.py`、MCP tests | stdio 或 HTTP 真实调用截图/日志 |
+| P1b-3 MCP 日常工具 | Remote MCP 请求头 PAT 透传；默认 daily，管理员可用 `X-Wika-MCP-Toolset: admin` 请求管理工具但必须通过后端授权；`WEKNORA_API_KEY` 不可调用日常工具 | `mcp-server/weknora_mcp_server.py`、MCP tests | HTTP Remote MCP 真实调用截图/日志 |
 | P1c-1 Suggestion 创建 | 三态 fixture 可构造；AI schema 错误重试后待确认 | `internal/wika/suggestion`、`internal/handler/wika_suggestion.go` | suggestion API 测试 |
 | P1c-2 SafetyGate/Apply | 默认不自动应用；开启后安全门禁失败降级；重复 apply 不复制 | `internal/wika/suggestion/safety_*`、`knowledge_lineage` store | AI fixture、事务幂等、安全测试 |
 | P2-1 Dataset/QA | 无 expected IDs 不能进入正式指标 | `internal/wika/evaluation`、eval migrations | QA CRUD/import/export 测试 |
@@ -2862,7 +2884,7 @@ P5 回滚优先关闭能力，不删除历史数据。除非迁移本身导致�
 - 数据库迁移 up/down。
 - Go 单元测试。
 - API 冒烟。
-- 涉及 MCP 的阶段必须提供 stdio 或 HTTP 真实调用；P5 不新增 MCP 工具，只回归 `search_knowledge` shared scope。
+- 涉及 MCP 的阶段必须优先提供 HTTP Remote MCP 真实调用；stdio 只可作为旧客户端兼容补充证据。P5 不新增 MCP 工具，只回归 `search_knowledge` shared scope。
 - A/B 越权安全测试。
 - 前端主路径 E2E。
 - 对应指标或状态可查。
@@ -2918,7 +2940,7 @@ make dev-frontend
 P5 MCP 回归口径：
 
 - P5 不新增 MCP tool；P5e 只回归已有 `search_knowledge` 和 `expand_knowledge_result`。
-- MCP 真实调用必须使用用户级 PAT，通过 `WEKNORA_PAT` 走 `Authorization: Bearer`；不得用 `WEKNORA_API_KEY` 作为日常工具 fallback。
+- MCP 真实调用必须使用用户级 PAT，通过 Remote MCP 请求头 `Authorization: Bearer <PAT>` 透传；管理工具另加 `X-Wika-MCP-Toolset: admin` 并使用 `mcp:admin` scope；不得用 `WEKNORA_API_KEY` 作为日常工具 fallback。
 - P5e 冒烟最小路径：
   1. source team Admin 创建 active share，`allowed_fields=["id","title"]`。
   2. target team 成员通过 MCP `search_knowledge(query, include_team=true)` 命中 shared 结果。

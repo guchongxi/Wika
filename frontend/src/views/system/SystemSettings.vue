@@ -1,356 +1,379 @@
 <template>
-  <!--
-    SystemSettings — platform-wide tunables (system_settings table) for
-    SystemAdmin. Gated server-side by RequireSystemAdmin middleware;
-    the route also has meta.requiresSystemAdmin so non-admins never
-    reach this component (see frontend/src/router/index.ts).
-
-    Visual contract: matches the canonical Settings-modal pane skeleton
-    (`.section-header` + `.settings-group` + `.setting-row` /
-    `.setting-info` / `.setting-control`) used by GeneralSettings,
-    OllamaSettings, etc. Avoid bespoke layout here; the modal already
-    constrains width and padding via `.content-wrapper--full`.
-
-    UI principle: every control auto-persists, no Save button. The
-    commit signal differs by control type so the user isn't surprised
-    by writes while they're still composing:
-
-      - Switch / Select (single-pick)         → @change. Selecting an
-                                                 option IS the commit
-                                                 signal; there's no
-                                                 "in-progress" state.
-      - Input / InputNumber                   → @blur (not @change —
-                                                 t-input-number fires
-                                                 @change on every digit).
-      - SSRF whitelist (string_list)          → controlled tag-input +
-                                                 per-tag inline popconfirm.
-      - System admins                         → tag-input @change with
-                                                 inline popconfirm per delta.
-
-    auth.registration_mode triggers an
-    inline t-popconfirm (same as Reset / bulk-apply) before persisting;
-    cancelling rolls the in-progress edit back to the canonical value.
-  -->
   <div class="system-settings">
-    <div class="section-header">
-      <div class="section-header-row">
-        <h2>{{ t('system.globalSettings.title') }}</h2>
-        <!-- Platform audit-log entry. SystemAdmin already gated the
-             whole view via meta.requiresSystemAdmin (router/index.ts)
-             so we don't re-check role here — every visitor of this
-             page is eligible. Mirrors the audit button placement in
-             tenant settings (frontend/src/views/settings/TenantMembers.vue). -->
-        <t-button
-          variant="text"
-          size="small"
-          class="header-audit-btn"
-          @click="openAuditDrawer"
-        >
-          <template #icon><t-icon name="history" /></template>
-          {{ t('system.globalSettings.audit.tabLabel') }}
-        </t-button>
-      </div>
-      <p class="section-description">
-        {{ t('system.globalSettings.description') }}
-      </p>
-    </div>
+    <Teleport to="body">
+      <Transition name="modal">
+        <div v-if="visible" class="system-settings-overlay" @click.self="handleClose">
+          <div class="system-settings-modal">
+            <button class="system-settings-close" type="button" @click="handleClose" :aria-label="t('general.close')">
+              <t-icon name="close" />
+            </button>
 
-    <!--
-      Priority hint. We surface the 3-tier resolver semantics inline so
-      operators don't have to dig through code to figure out why a value
-      they set in env "doesn't show up" — once a row is overridden in
-      the UI, env is shadowed until the row is cleared. The "已覆盖"
-      badge per row is the per-key signal; this block is the global key.
-      Hand-rolled panel rather than t-alert because the default alert
-      slot rendering hid most of the body text in TDesign's layout.
-    -->
-    <div class="priority-hint">
-      <div class="priority-hint-header">
-        <t-icon name="info-circle-filled" class="priority-hint-icon" />
-        <span class="priority-hint-title">
-          {{ t('system.globalSettings.priorityHint.title') }}
-        </span>
-      </div>
-      <ul class="priority-hint-list">
-        <li>{{ t('system.globalSettings.priorityHint.tier1') }}</li>
-        <li>{{ t('system.globalSettings.priorityHint.tier2') }}</li>
-        <li>{{ t('system.globalSettings.priorityHint.tier3') }}</li>
-      </ul>
-    </div>
+            <div class="system-settings-container">
+              <aside class="system-settings-sidebar">
+                <div class="system-settings-sidebar-header">
+                  <h2>{{ t('system.globalSettings.title') }}</h2>
+                  <p>{{ t('system.globalSettings.description') }}</p>
+                </div>
 
-    <div v-if="loading && settings.length === 0" class="loading-state">
-      <t-loading :text="t('system.globalSettings.loading')" />
-    </div>
+                <nav class="system-settings-nav" aria-label="System settings">
+                  <button
+                    v-for="tab in systemSettingTabs"
+                    :key="tab.key"
+                    type="button"
+                    class="system-settings-nav-item"
+                    :class="{ active: activeTab === tab.key }"
+                    @click="setActiveTab(tab.key)"
+                  >
+                    <t-icon :name="tab.icon" class="system-settings-nav-icon" />
+                    <span>{{ t(tab.labelKey) }}</span>
+                  </button>
+                </nav>
+              </aside>
 
-    <div v-else-if="settings.length === 0" class="empty-state">
-      <t-icon name="info-circle" size="24px" />
-      <span>{{ t('system.globalSettings.empty') }}</span>
-    </div>
+              <main class="system-settings-content">
+                <div class="system-settings-content-header">
+                  <div>
+                    <h2>{{ t(currentTab.labelKey) }}</h2>
+                    <p>{{ t(currentTab.descriptionKey) }}</p>
+                  </div>
+                  <t-button variant="text" size="small" class="header-audit-btn" @click="openAuditDrawer">
+                    <template #icon><t-icon name="history" /></template>
+                    {{ t('system.globalSettings.audit.tabLabel') }}
+                  </t-button>
+                </div>
 
-    <div v-else class="settings-group">
-      <!--
-        System-admins management. Visually identical to SSRF whitelist
-        (a tag-input with one entry per email). NOT a system_setting
-        row — it's backed by the user table via promote/revoke APIs.
-        We sit it at the top because changing who can edit this page
-        is structurally more important than tweaking any value below.
-        Self-edit safety: the current user is excluded from the visible
-        tags (they can't revoke themselves anyway, and showing a tag
-        that can't be removed is worse than not showing it).
-      -->
-      <div class="setting-row">
-        <div class="setting-info">
-          <label class="setting-label">
-            <span>{{ t('system.globalSettings.admins.label') }}</span>
-          </label>
-          <p class="desc">{{ t('system.globalSettings.admins.description') }}</p>
-        </div>
-        <div class="setting-control">
-          <div class="setting-control-row">
-            <t-popconfirm
-              v-model:visible="adminPopconfirm.visible"
-              :content="adminPopconfirm.content"
-              :theme="adminPopconfirm.theme"
-              :confirm-btn="adminPopconfirm.confirmBtn"
-              :cancel-btn="t('system.globalSettings.confirm.cancelBtn')"
-              :popup-props="PROGRAMMATIC_POPCONFIRM_PROPS"
-              placement="left"
-              @confirm="adminPopconfirm.finish(true)"
-              @cancel="adminPopconfirm.finish(false)"
-              @visible-change="adminPopconfirm.onVisibleChange"
-            >
-              <div class="setting-control-anchor">
-                <t-tag-input
-                  v-model="adminEmails"
-                  :placeholder="t('system.globalSettings.admins.placeholder')"
-                  :disabled="adminBusy"
-                  class="setting-input setting-input--wide"
-                  clearable
-                  @change="onAdminsChange"
-                />
-              </div>
-            </t-popconfirm>
-            <t-loading v-if="adminBusy" size="small" class="setting-saving" />
-          </div>
-        </div>
-      </div>
+                <div class="system-settings-content-body">
+                  <template v-if="activeTab === 'models-services'">
+                    <div class="model-service-intro">
+                      <div
+                        v-for="section in modelServiceSections"
+                        :key="section.key"
+                        class="model-service-item"
+                        :class="{ active: activeServiceSection === section.key }"
+                        :data-service-section="section.key"
+                        @click="setActiveServiceSection(section.key)"
+                      >
+                        <t-icon :name="section.icon" class="model-service-icon" />
+                        <div>
+                          <div class="model-service-title">{{ t(section.labelKey) }}</div>
+                          <p>{{ t(section.descriptionKey) }}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="embedded-model-settings">
+                      <ModelSettings :initial-type="activeModelSettingsType" />
+                    </div>
+                  </template>
 
-      <!--
-        Flat list — no category grouping. The registry is small enough
-        (single digits) that section headers add visual noise without
-        helping discovery; if it grows past ~10 keys we'll bring back
-        grouping with a real visual treatment instead of a tiny caps
-        label.
-      -->
-      <div
-        v-for="item in settings"
-        :key="item.key"
-        class="setting-row"
-      >
-        <div class="setting-info">
-          <label class="setting-label">
-            <span>{{ keyLabel(item.key) }}</span>
-            <t-tag
-              v-if="item.requires_restart"
-              theme="warning"
-              variant="light"
-              size="small"
-              class="setting-badge"
-            >{{ t('system.globalSettings.badgeRequiresRestart') }}</t-tag>
-            <t-tag
-              v-if="item.is_secret"
-              theme="primary"
-              variant="light"
-              size="small"
-              class="setting-badge"
-            >{{ t('system.globalSettings.badgeSecret') }}</t-tag>
-            <t-tag
-              v-if="hasOverride(item)"
-              theme="success"
-              variant="light"
-              size="small"
-              class="setting-badge"
-              :title="t('system.globalSettings.badgeOverrideTooltip')"
-            >{{ t('system.globalSettings.badgeOverride') }}</t-tag>
-          </label>
-          <p v-if="settingDescription(item)" class="desc">{{ settingDescription(item) }}</p>
-          <div v-if="modifiedMeta(item)" class="setting-meta">
-            {{ t('system.globalSettings.modifiedAt', { value: modifiedMeta(item) }) }}
-          </div>
-        </div>
+                  <template v-else-if="activeTab === 'system-admins'">
+                    <div class="settings-group system-settings-group">
+                      <div class="setting-group-header">
+                        <h3>{{ t('system.globalSettings.groups.admins.title') }}</h3>
+                        <p>{{ t('system.globalSettings.groups.admins.description') }}</p>
+                      </div>
+                      <div class="setting-row">
+                        <div class="setting-info">
+                          <label class="setting-label">
+                            <span>{{ t('system.globalSettings.admins.label') }}</span>
+                          </label>
+                          <p class="desc">{{ t('system.globalSettings.admins.description') }}</p>
+                        </div>
+                        <div class="setting-control">
+                          <div class="setting-control-row">
+                            <t-popconfirm
+                              v-model:visible="adminPopconfirm.visible"
+                              :content="adminPopconfirm.content"
+                              :theme="adminPopconfirm.theme"
+                              :confirm-btn="adminPopconfirm.confirmBtn"
+                              :cancel-btn="t('system.globalSettings.confirm.cancelBtn')"
+                              :popup-props="PROGRAMMATIC_POPCONFIRM_PROPS"
+                              placement="left"
+                              @confirm="adminPopconfirm.finish(true)"
+                              @cancel="adminPopconfirm.finish(false)"
+                              @visible-change="adminPopconfirm.onVisibleChange"
+                            >
+                              <div class="setting-control-anchor">
+                                <t-tag-input
+                                  v-model="adminEmails"
+                                  :placeholder="t('system.globalSettings.admins.placeholder')"
+                                  :disabled="adminBusy"
+                                  class="setting-input setting-input--wide"
+                                  clearable
+                                  @change="onAdminsChange"
+                                />
+                              </div>
+                            </t-popconfirm>
+                            <t-loading v-if="adminBusy" size="small" class="setting-saving" />
+                          </div>
+                        </div>
+                      </div>
 
-        <div class="setting-control">
-          <!--
-            Two-row layout: input + spinner on top, secondary actions
-            (currently just Reset) on a second row below, right-aligned
-            under the input. We tried inlining the reset button on the
-            same row as the input but the cluster of input + spinner +
-            text-button read as visual noise; pushing reset down keeps
-            the primary control visually clean while still placing the
-            action close to the value it affects.
-          -->
-          <div class="setting-control-row">
-          <t-popconfirm
-            v-if="hasEnum(item) && isHighRiskKey(item.key)"
-            v-model:visible="highRiskPopconfirm.visible"
-            :content="highRiskPopconfirm.content"
-            :theme="highRiskPopconfirm.theme"
-            :confirm-btn="highRiskPopconfirm.confirmBtn"
-            :cancel-btn="t('system.globalSettings.confirm.cancelBtn')"
-            :popup-props="PROGRAMMATIC_POPCONFIRM_PROPS"
-            placement="left"
-            @confirm="highRiskPopconfirm.finish(true)"
-            @cancel="highRiskPopconfirm.finish(false)"
-            @visible-change="highRiskPopconfirm.onVisibleChange"
-          >
-            <div class="setting-control-anchor">
-              <t-select
-                v-model="editValues[item.key]"
-                :options="enumOptions(item)"
-                :disabled="savingKey === item.key"
-                class="setting-input"
-                @change="onHighRiskSelectChange(item)"
-              />
+                      <div class="setting-row">
+                        <div class="setting-info">
+                          <label class="setting-label">
+                            <span>{{ t('system.globalSettings.audit.tabLabel') }}</span>
+                          </label>
+                          <p class="desc">{{ t('system.globalSettings.audit.description') }}</p>
+                        </div>
+                        <div class="setting-control">
+                          <div class="setting-control-row">
+                            <t-button variant="outline" size="small" @click="openAuditDrawer">
+                              <template #icon><t-icon name="history" /></template>
+                              {{ t('system.globalSettings.admins.auditButton') }}
+                            </t-button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+
+                  <template v-else>
+                    <div class="priority-hint">
+                      <div class="priority-hint-header">
+                        <t-icon name="info-circle-filled" class="priority-hint-icon" />
+                        <span class="priority-hint-title">
+                          {{ t('system.globalSettings.priorityHint.title') }}
+                        </span>
+                      </div>
+                      <ul class="priority-hint-list">
+                        <li>{{ t('system.globalSettings.priorityHint.tier1') }}</li>
+                        <li>{{ t('system.globalSettings.priorityHint.tier2') }}</li>
+                        <li>{{ t('system.globalSettings.priorityHint.tier3') }}</li>
+                      </ul>
+                    </div>
+
+                    <div v-if="loading && settings.length === 0" class="loading-state">
+                      <t-loading :text="t('system.globalSettings.loading')" />
+                    </div>
+
+                    <div v-else-if="settings.length === 0" class="empty-state">
+                      <t-icon name="info-circle" size="24px" />
+                      <span>{{ t('system.globalSettings.empty') }}</span>
+                    </div>
+
+                    <div v-else>
+                      <div
+                        v-for="group in settingGroupsForActiveTab"
+                        :key="group.key"
+                        class="settings-group system-settings-group"
+                        :data-setting-group="group.key"
+                      >
+                        <div class="setting-group-header">
+                          <h3>{{ t(group.titleKey) }}</h3>
+                          <p>{{ t(group.descriptionKey) }}</p>
+                        </div>
+
+                        <div v-if="groupItems(group).length === 0" class="empty-state empty-state--group">
+                          <t-icon name="info-circle" size="20px" />
+                          <span>{{ t('system.globalSettings.emptyGroup') }}</span>
+                        </div>
+
+                        <div
+                          v-for="item in groupItems(group)"
+                          :key="item.key"
+                          class="setting-row"
+                        >
+                          <div class="setting-info">
+                            <label class="setting-label">
+                              <span>{{ keyLabel(item.key) }}</span>
+                              <t-tag
+                                v-if="item.requires_restart"
+                                theme="warning"
+                                variant="light"
+                                size="small"
+                                class="setting-badge"
+                              >{{ t('system.globalSettings.badgeRequiresRestart') }}</t-tag>
+                              <t-tag
+                                v-if="item.is_secret"
+                                theme="primary"
+                                variant="light"
+                                size="small"
+                                class="setting-badge"
+                              >{{ t('system.globalSettings.badgeSecret') }}</t-tag>
+                              <t-tag
+                                v-if="hasOverride(item)"
+                                theme="success"
+                                variant="light"
+                                size="small"
+                                class="setting-badge"
+                                :title="t('system.globalSettings.badgeOverrideTooltip')"
+                              >{{ t('system.globalSettings.badgeOverride') }}</t-tag>
+                            </label>
+                            <p v-if="settingDescription(item)" class="desc">{{ settingDescription(item) }}</p>
+                            <div v-if="modifiedMeta(item)" class="setting-meta">
+                              {{ t('system.globalSettings.modifiedAt', { value: modifiedMeta(item) }) }}
+                            </div>
+                          </div>
+
+                          <div class="setting-control">
+                            <div class="setting-control-row">
+                              <t-popconfirm
+                                v-if="hasEnum(item) && isHighRiskKey(item.key)"
+                                v-model:visible="highRiskPopconfirm.visible"
+                                :content="highRiskPopconfirm.content"
+                                :theme="highRiskPopconfirm.theme"
+                                :confirm-btn="highRiskPopconfirm.confirmBtn"
+                                :cancel-btn="t('system.globalSettings.confirm.cancelBtn')"
+                                :popup-props="PROGRAMMATIC_POPCONFIRM_PROPS"
+                                placement="left"
+                                @confirm="highRiskPopconfirm.finish(true)"
+                                @cancel="highRiskPopconfirm.finish(false)"
+                                @visible-change="highRiskPopconfirm.onVisibleChange"
+                              >
+                                <div class="setting-control-anchor">
+                                  <t-select
+                                    v-model="editValues[item.key]"
+                                    :options="enumOptions(item)"
+                                    :disabled="savingKey === item.key"
+                                    class="setting-input"
+                                    @change="onHighRiskSelectChange(item)"
+                                  />
+                                </div>
+                              </t-popconfirm>
+                              <t-select
+                                v-else-if="hasEnum(item)"
+                                v-model="editValues[item.key]"
+                                :options="enumOptions(item)"
+                                :disabled="savingKey === item.key"
+                                class="setting-input"
+                                @change="onChange(item)"
+                              />
+                              <ModelSelector
+                                v-else-if="isModelSetting(item.key)"
+                                :model-type="modelSettingType(item.key)"
+                                :selected-model-id="String(editValues[item.key] || '')"
+                                :placeholder="t('model.selectModelPlaceholder')"
+                                :disabled="savingKey === item.key"
+                                class="setting-input setting-input--wide"
+                                @update:selected-model-id="(value) => onModelSettingChange(item, value)"
+                                @add-model="openModelSettings(item.key)"
+                              />
+                              <t-switch
+                                v-else-if="item.value_type === 'bool'"
+                                v-model="editValues[item.key]"
+                                :disabled="savingKey === item.key"
+                                @change="onChange(item)"
+                              />
+                              <t-input-number
+                                v-else-if="item.value_type === 'int'"
+                                v-model="editValues[item.key]"
+                                :placeholder="placeholderFor(item)"
+                                :disabled="savingKey === item.key"
+                                theme="normal"
+                                :step="1"
+                                :min="0"
+                                class="setting-input"
+                                @blur="onChange(item)"
+                              />
+                              <t-popconfirm
+                                v-else-if="item.value_type === 'string_list' && item.key === 'ssrf.whitelist'"
+                                v-model:visible="ssrfPopconfirm.visible"
+                                :content="ssrfPopconfirm.content"
+                                :theme="ssrfPopconfirm.theme"
+                                :confirm-btn="ssrfPopconfirm.confirmBtn"
+                                :cancel-btn="t('system.globalSettings.confirm.cancelBtn')"
+                                :popup-props="PROGRAMMATIC_POPCONFIRM_PROPS"
+                                placement="left"
+                                @confirm="ssrfPopconfirm.finish(true)"
+                                @cancel="ssrfPopconfirm.finish(false)"
+                                @visible-change="ssrfPopconfirm.onVisibleChange"
+                              >
+                                <div class="setting-control-anchor">
+                                  <t-tag-input
+                                    :key="`ssrf-tag-${ssrfTagInputKey()}`"
+                                    :model-value="ssrfWhitelistModelValue()"
+                                    :placeholder="emptyListPlaceholder"
+                                    :disabled="savingKey === item.key"
+                                    class="setting-input setting-input--wide"
+                                    clearable
+                                    @update:model-value="onSsrfWhitelistModelUpdate"
+                                  />
+                                </div>
+                              </t-popconfirm>
+                              <t-input
+                                v-else
+                                v-model="editValues[item.key]"
+                                :placeholder="placeholderFor(item)"
+                                :disabled="savingKey === item.key"
+                                class="setting-input"
+                                clearable
+                                @blur="onChange(item)"
+                              />
+
+                              <t-loading
+                                v-if="savingKey === item.key"
+                                size="small"
+                                class="setting-saving"
+                              />
+                            </div>
+
+                            <div
+                              v-if="hasOverride(item) || hasBulkAction(item) || hasRelatedAction(item)"
+                              class="setting-control-actions"
+                            >
+                              <t-button
+                                v-if="hasRelatedAction(item)"
+                                variant="text"
+                                size="small"
+                                class="setting-related-btn"
+                                @click="openRelatedArea(item)"
+                              >
+                                <template #icon><t-icon :name="relatedActionIcon(item)" /></template>
+                                {{ relatedActionLabel(item) }}
+                              </t-button>
+
+                              <t-popconfirm
+                                v-if="hasBulkAction(item)"
+                                :content="bulkActionConfirmBody(item)"
+                                :confirm-btn="{ content: t('system.globalSettings.bulkApply.confirmBtn'), theme: 'primary' }"
+                                :cancel-btn="{ content: t('system.globalSettings.confirm.cancelBtn') }"
+                                placement="left"
+                                @confirm="runBulkAction(item)"
+                              >
+                                <t-button
+                                  variant="text"
+                                  size="small"
+                                  :disabled="savingKey === item.key || isDirty(item)"
+                                  :title="t('system.globalSettings.bulkApply.tooltip')"
+                                  class="setting-bulk-btn"
+                                >
+                                  <template #icon><t-icon name="usergroup" /></template>
+                                  {{ t('system.globalSettings.bulkApply.label') }}
+                                </t-button>
+                              </t-popconfirm>
+
+                              <t-popconfirm
+                                v-if="hasOverride(item)"
+                                :content="t('system.globalSettings.reset.confirmBody', { label: keyLabel(item.key) })"
+                                :confirm-btn="{ content: t('system.globalSettings.reset.confirmBtn'), theme: 'warning' }"
+                                :cancel-btn="{ content: t('system.globalSettings.confirm.cancelBtn') }"
+                                placement="left"
+                                @confirm="resetSetting(item)"
+                              >
+                                <t-button
+                                  variant="text"
+                                  size="small"
+                                  :disabled="savingKey === item.key"
+                                  :title="t('system.globalSettings.reset.tooltip')"
+                                  class="setting-reset-btn"
+                                >
+                                  <template #icon><t-icon name="refresh" /></template>
+                                  {{ t('system.globalSettings.reset.label') }}
+                                </t-button>
+                              </t-popconfirm>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </main>
             </div>
-          </t-popconfirm>
-          <t-select
-            v-else-if="hasEnum(item)"
-            v-model="editValues[item.key]"
-            :options="enumOptions(item)"
-            :disabled="savingKey === item.key"
-            class="setting-input"
-            @change="onChange(item)"
-          />
-          <t-switch
-            v-else-if="item.value_type === 'bool'"
-            v-model="editValues[item.key]"
-            :disabled="savingKey === item.key"
-            @change="onChange(item)"
-          />
-          <t-input-number
-            v-else-if="item.value_type === 'int'"
-            v-model="editValues[item.key]"
-            :placeholder="placeholderFor(item)"
-            :disabled="savingKey === item.key"
-            theme="normal"
-            :step="1"
-            :min="0"
-            class="setting-input"
-            @blur="onChange(item)"
-          />
-          <t-popconfirm
-            v-else-if="item.value_type === 'string_list' && item.key === 'ssrf.whitelist'"
-            v-model:visible="ssrfPopconfirm.visible"
-            :content="ssrfPopconfirm.content"
-            :theme="ssrfPopconfirm.theme"
-            :confirm-btn="ssrfPopconfirm.confirmBtn"
-            :cancel-btn="t('system.globalSettings.confirm.cancelBtn')"
-            :popup-props="PROGRAMMATIC_POPCONFIRM_PROPS"
-            placement="left"
-            @confirm="ssrfPopconfirm.finish(true)"
-            @cancel="ssrfPopconfirm.finish(false)"
-            @visible-change="ssrfPopconfirm.onVisibleChange"
-          >
-            <div class="setting-control-anchor">
-              <t-tag-input
-                :key="`ssrf-tag-${ssrfTagInputKey()}`"
-                :model-value="ssrfWhitelistModelValue()"
-                :placeholder="emptyListPlaceholder"
-                :disabled="savingKey === item.key"
-                class="setting-input setting-input--wide"
-                clearable
-                @update:model-value="onSsrfWhitelistModelUpdate"
-              />
-            </div>
-          </t-popconfirm>
-          <t-input
-            v-else
-            v-model="editValues[item.key]"
-            :placeholder="placeholderFor(item)"
-            :disabled="savingKey === item.key"
-            class="setting-input"
-            clearable
-            @blur="onChange(item)"
-          />
-
-          <!--
-            Per-row saving spinner. Appears next to the control while
-            a PUT is in flight; the controls stay disabled (see
-            :disabled bindings above) so concurrent edits can't race.
-          -->
-          <t-loading
-            v-if="savingKey === item.key"
-            size="small"
-            class="setting-saving"
-          />
-          </div>
-
-          <!--
-            Reset-to-default lives on the row below the input, right-
-            aligned under it. Hidden entirely for virtual (ENV / default)
-            rows so the layout collapses to a single row in the common
-            case — the "已覆盖" badge is already the cue that an
-            override exists, so the button only appears where it can do
-            something.
-          -->
-          <div
-            v-if="hasOverride(item) || hasBulkAction(item)"
-            class="setting-control-actions"
-          >
-            <!--
-              Per-key bulk action. Currently only one key
-              (tenant.default_storage_quota_gb) carries one — clicking
-              writes the current setting value onto every existing
-              tenant. We do this as a separate explicit action rather
-              than auto-cascade on save so a SystemAdmin who tweaks the
-              default while triaging a single new-tenant question
-              doesn't accidentally rewrite production quotas. Hidden
-              when the row is dirty because applying a not-yet-saved
-              value would confuse "what just happened".
-            -->
-            <t-popconfirm
-              v-if="hasBulkAction(item)"
-              :content="bulkActionConfirmBody(item)"
-              :confirm-btn="{ content: t('system.globalSettings.bulkApply.confirmBtn'), theme: 'primary' }"
-              :cancel-btn="{ content: t('system.globalSettings.confirm.cancelBtn') }"
-              placement="left"
-              @confirm="runBulkAction(item)"
-            >
-              <t-button
-                variant="text"
-                size="small"
-                :disabled="savingKey === item.key || isDirty(item)"
-                :title="t('system.globalSettings.bulkApply.tooltip')"
-                class="setting-bulk-btn"
-              >
-                <template #icon><t-icon name="usergroup" /></template>
-                {{ t('system.globalSettings.bulkApply.label') }}
-              </t-button>
-            </t-popconfirm>
-
-            <t-popconfirm
-              v-if="hasOverride(item)"
-              :content="t('system.globalSettings.reset.confirmBody', { label: keyLabel(item.key) })"
-              :confirm-btn="{ content: t('system.globalSettings.reset.confirmBtn'), theme: 'warning' }"
-              :cancel-btn="{ content: t('system.globalSettings.confirm.cancelBtn') }"
-              placement="left"
-              @confirm="resetSetting(item)"
-            >
-              <t-button
-                variant="text"
-                size="small"
-                :disabled="savingKey === item.key"
-                :title="t('system.globalSettings.reset.tooltip')"
-                class="setting-reset-btn"
-              >
-                <template #icon><t-icon name="refresh" /></template>
-                {{ t('system.globalSettings.reset.label') }}
-              </t-button>
-            </t-popconfirm>
           </div>
         </div>
-      </div>
-    </div>
+      </Transition>
+    </Teleport>
 
     <!-- Platform audit-log drawer. Lazy-loaded on first open; closing
          and reopening doesn't re-fetch (refresh is explicit via the
@@ -513,11 +536,294 @@ import {
   type AuditOutcome,
 } from '@/api/system'
 import { useAuthStore } from '@/stores/auth'
+import { useUIStore } from '@/stores/ui'
+import ModelSelector from '@/components/ModelSelector.vue'
+import ModelSettings from '@/views/settings/ModelSettings.vue'
 
 const authStore = useAuthStore()
+const uiStore = useUIStore()
 const currentUserId = computed(() => authStore.currentUserId)
 
 const { t, tm, te, locale } = useI18n()
+
+type SystemTabKey =
+  | 'platform-runtime'
+  | 'account-tenant'
+  | 'kb-defaults'
+  | 'models-services'
+  | 'security-network'
+  | 'governance'
+  | 'system-admins'
+
+type ServiceSectionKey = 'chat' | 'embedding' | 'vllm' | 'asr' | 'storage' | 'vectorstore' | 'parser'
+type ModelSettingsInitialType = 'all' | 'chat' | 'embedding' | 'vllm' | 'asr'
+
+type SystemSettingTab = {
+  key: SystemTabKey
+  icon: string
+  labelKey: string
+  descriptionKey: string
+}
+
+type SettingGroupDefinition = {
+  key: string
+  tab: SystemTabKey
+  titleKey: string
+  descriptionKey: string
+  settingKeys: string[]
+}
+
+const systemSettingTabs: SystemSettingTab[] = [
+  {
+    key: 'platform-runtime',
+    icon: 'server',
+    labelKey: 'system.globalSettings.tabs.platformRuntime.label',
+    descriptionKey: 'system.globalSettings.tabs.platformRuntime.description',
+  },
+  {
+    key: 'account-tenant',
+    icon: 'user-circle',
+    labelKey: 'system.globalSettings.tabs.accountTenant.label',
+    descriptionKey: 'system.globalSettings.tabs.accountTenant.description',
+  },
+  {
+    key: 'kb-defaults',
+    icon: 'book',
+    labelKey: 'system.globalSettings.tabs.kbDefaults.label',
+    descriptionKey: 'system.globalSettings.tabs.kbDefaults.description',
+  },
+  {
+    key: 'models-services',
+    icon: 'control-platform',
+    labelKey: 'system.globalSettings.tabs.modelsServices.label',
+    descriptionKey: 'system.globalSettings.tabs.modelsServices.description',
+  },
+  {
+    key: 'security-network',
+    icon: 'secured',
+    labelKey: 'system.globalSettings.tabs.securityNetwork.label',
+    descriptionKey: 'system.globalSettings.tabs.securityNetwork.description',
+  },
+  {
+    key: 'governance',
+    icon: 'chart-bubble',
+    labelKey: 'system.globalSettings.tabs.governance.label',
+    descriptionKey: 'system.globalSettings.tabs.governance.description',
+  },
+  {
+    key: 'system-admins',
+    icon: 'usergroup',
+    labelKey: 'system.globalSettings.tabs.systemAdmins.label',
+    descriptionKey: 'system.globalSettings.tabs.systemAdmins.description',
+  },
+]
+
+const SYSTEM_SETTING_GROUPS: SettingGroupDefinition[] = [
+  {
+    key: 'runtime-worker',
+    tab: 'platform-runtime',
+    titleKey: 'system.globalSettings.groups.runtimeWorker.title',
+    descriptionKey: 'system.globalSettings.groups.runtimeWorker.description',
+    settingKeys: ['asynq.concurrency'],
+  },
+  {
+    key: 'account-registration',
+    tab: 'account-tenant',
+    titleKey: 'system.globalSettings.groups.accountRegistration.title',
+    descriptionKey: 'system.globalSettings.groups.accountRegistration.description',
+    settingKeys: ['auth.registration_mode'],
+  },
+  {
+    key: 'tenant-defaults',
+    tab: 'account-tenant',
+    titleKey: 'system.globalSettings.groups.tenantDefaults.title',
+    descriptionKey: 'system.globalSettings.groups.tenantDefaults.description',
+    settingKeys: ['tenant.max_owned_per_user', 'tenant.default_storage_quota_gb'],
+  },
+  {
+    key: 'kb-models',
+    tab: 'kb-defaults',
+    titleKey: 'system.globalSettings.groups.kbModels.title',
+    descriptionKey: 'system.globalSettings.groups.kbModels.description',
+    settingKeys: [
+      'kb.default_llm_model_id',
+      'kb.default_embedding_model_id',
+      'kb.default_vlm_model_id',
+      'kb.default_asr_model_id',
+    ],
+  },
+  {
+    key: 'kb-storage',
+    tab: 'kb-defaults',
+    titleKey: 'system.globalSettings.groups.kbStorage.title',
+    descriptionKey: 'system.globalSettings.groups.kbStorage.description',
+    settingKeys: ['kb.default_storage_provider'],
+  },
+  {
+    key: 'kb-index',
+    tab: 'kb-defaults',
+    titleKey: 'system.globalSettings.groups.kbIndex.title',
+    descriptionKey: 'system.globalSettings.groups.kbIndex.description',
+    settingKeys: [
+      'kb.default_index_vector_enabled',
+      'kb.default_index_keyword_enabled',
+      'kb.default_index_wiki_enabled',
+      'kb.default_index_graph_enabled',
+    ],
+  },
+  {
+    key: 'kb-chunking',
+    tab: 'kb-defaults',
+    titleKey: 'system.globalSettings.groups.kbChunking.title',
+    descriptionKey: 'system.globalSettings.groups.kbChunking.description',
+    settingKeys: [
+      'kb.default_chunk_size',
+      'kb.default_chunk_overlap',
+      'kb.default_chunk_separators',
+      'kb.default_parent_child_enabled',
+      'kb.default_parent_chunk_size',
+      'kb.default_child_chunk_size',
+    ],
+  },
+  {
+    key: 'kb-multimodal',
+    tab: 'kb-defaults',
+    titleKey: 'system.globalSettings.groups.kbMultimodal.title',
+    descriptionKey: 'system.globalSettings.groups.kbMultimodal.description',
+    settingKeys: ['kb.default_vlm_enabled', 'kb.default_asr_enabled'],
+  },
+  {
+    key: 'kb-production',
+    tab: 'kb-defaults',
+    titleKey: 'system.globalSettings.groups.kbProduction.title',
+    descriptionKey: 'system.globalSettings.groups.kbProduction.description',
+    settingKeys: ['kb.default_question_generation_enabled', 'kb.default_question_generation_count'],
+  },
+  {
+    key: 'network-ssrf',
+    tab: 'security-network',
+    titleKey: 'system.globalSettings.groups.networkSsrf.title',
+    descriptionKey: 'system.globalSettings.groups.networkSsrf.description',
+    settingKeys: ['ssrf.whitelist'],
+  },
+  {
+    key: 'governance-switches',
+    tab: 'governance',
+    titleKey: 'system.globalSettings.groups.governanceSwitches.title',
+    descriptionKey: 'system.globalSettings.groups.governanceSwitches.description',
+    settingKeys: [
+      'wika.governance.conflict.enabled',
+      'wika.governance.version.enabled',
+      'wika.governance.url_refresh.enabled',
+      'wika.governance.eval_schedule.enabled',
+      'wika.governance.org_share.enabled',
+    ],
+  },
+]
+
+const modelServiceSections: Array<{
+  key: ServiceSectionKey
+  icon: string
+  labelKey: string
+  descriptionKey: string
+}> = [
+  {
+    key: 'chat',
+    icon: 'chat',
+    labelKey: 'system.globalSettings.modelServices.chat.label',
+    descriptionKey: 'system.globalSettings.modelServices.chat.description',
+  },
+  {
+    key: 'embedding',
+    icon: 'data-base',
+    labelKey: 'system.globalSettings.modelServices.embedding.label',
+    descriptionKey: 'system.globalSettings.modelServices.embedding.description',
+  },
+  {
+    key: 'vllm',
+    icon: 'image',
+    labelKey: 'system.globalSettings.modelServices.vllm.label',
+    descriptionKey: 'system.globalSettings.modelServices.vllm.description',
+  },
+  {
+    key: 'asr',
+    icon: 'sound',
+    labelKey: 'system.globalSettings.modelServices.asr.label',
+    descriptionKey: 'system.globalSettings.modelServices.asr.description',
+  },
+  {
+    key: 'storage',
+    icon: 'cloud',
+    labelKey: 'system.globalSettings.modelServices.storage.label',
+    descriptionKey: 'system.globalSettings.modelServices.storage.description',
+  },
+  {
+    key: 'vectorstore',
+    icon: 'data-base',
+    labelKey: 'system.globalSettings.modelServices.vectorstore.label',
+    descriptionKey: 'system.globalSettings.modelServices.vectorstore.description',
+  },
+  {
+    key: 'parser',
+    icon: 'file-search',
+    labelKey: 'system.globalSettings.modelServices.parser.label',
+    descriptionKey: 'system.globalSettings.modelServices.parser.description',
+  },
+]
+
+const activeTab = ref<SystemTabKey>('platform-runtime')
+const activeServiceSection = ref<ServiceSectionKey>('chat')
+
+const visible = computed(() => uiStore.showSystemSettingsModal && authStore.isSystemAdmin)
+
+const currentTab = computed(() => {
+  return systemSettingTabs.find((tab) => tab.key === activeTab.value) ?? systemSettingTabs[0]
+})
+
+const settingsByKey = computed(() => {
+  return new Map(settings.value.map((item) => [item.key, item]))
+})
+
+const settingGroupsForActiveTab = computed(() => {
+  return SYSTEM_SETTING_GROUPS.filter((group) => group.tab === activeTab.value)
+})
+
+const activeModelSettingsType = computed<ModelSettingsInitialType>(() => {
+  if (
+    activeServiceSection.value === 'chat' ||
+    activeServiceSection.value === 'embedding' ||
+    activeServiceSection.value === 'vllm' ||
+    activeServiceSection.value === 'asr'
+  ) {
+    return activeServiceSection.value
+  }
+  return 'all'
+})
+
+function setActiveTab(key: SystemTabKey) {
+  activeTab.value = key
+}
+
+function setActiveServiceSection(key: ServiceSectionKey) {
+  activeServiceSection.value = key
+}
+
+function groupItems(group: SettingGroupDefinition): SystemSettingItem[] {
+  return group.settingKeys
+    .map((key) => settingsByKey.value.get(key))
+    .filter((item): item is SystemSettingItem => Boolean(item))
+}
+
+function handleClose() {
+  uiStore.closeSystemSettings()
+  auditDrawerVisible.value = false
+}
+
+function handleEscape(e: KeyboardEvent) {
+  if (e.key === 'Escape' && visible.value) {
+    handleClose()
+  }
+}
 
 // Friendly labels per key live in i18n (system.globalSettings.keyLabels.*).
 // Adding a new entry there must accompany every new key registered in
@@ -652,6 +958,90 @@ function hasEnum(item: SystemSettingItem): boolean {
 function enumOptions(item: SystemSettingItem): { label: string; value: string }[] {
   const opts = item.enum ?? []
   return opts.map((v) => ({ label: enumLabel(item.key, v), value: v }))
+}
+
+type ModelSettingType = 'KnowledgeQA' | 'Embedding' | 'VLLM' | 'ASR'
+
+const MODEL_SETTING_TYPES: Record<string, ModelSettingType> = {
+  'kb.default_llm_model_id': 'KnowledgeQA',
+  'kb.default_embedding_model_id': 'Embedding',
+  'kb.default_vlm_model_id': 'VLLM',
+  'kb.default_asr_model_id': 'ASR',
+}
+
+const MODEL_SETTING_SUB_SECTIONS: Record<ModelSettingType, ServiceSectionKey> = {
+  KnowledgeQA: 'chat',
+  Embedding: 'embedding',
+  VLLM: 'vllm',
+  ASR: 'asr',
+}
+
+const RELATED_SETTING_ACTIONS: Record<string, { labelKey: string; icon: string; serviceSection: ServiceSectionKey }> = {
+  'kb.default_storage_provider': {
+    labelKey: 'system.globalSettings.relatedActions.manageStorage',
+    icon: 'cloud',
+    serviceSection: 'storage',
+  },
+  'kb.default_index_vector_enabled': {
+    labelKey: 'system.globalSettings.relatedActions.manageVectorStore',
+    icon: 'data-base',
+    serviceSection: 'vectorstore',
+  },
+}
+
+function isModelSetting(key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(MODEL_SETTING_TYPES, key)
+}
+
+function modelSettingType(key: string): ModelSettingType {
+  return MODEL_SETTING_TYPES[key] ?? 'KnowledgeQA'
+}
+
+function openModelSettings(key: string) {
+  activeServiceSection.value = MODEL_SETTING_SUB_SECTIONS[modelSettingType(key)]
+  activeTab.value = 'models-services'
+  scrollServiceSection(activeServiceSection.value)
+}
+
+function relatedActionFor(item: SystemSettingItem): { labelKey: string; icon: string; serviceSection: ServiceSectionKey } | null {
+  if (isModelSetting(item.key)) {
+    return {
+      labelKey: 'system.globalSettings.relatedActions.manageModel',
+      icon: 'control-platform',
+      serviceSection: MODEL_SETTING_SUB_SECTIONS[modelSettingType(item.key)],
+    }
+  }
+  return RELATED_SETTING_ACTIONS[item.key] ?? null
+}
+
+function hasRelatedAction(item: SystemSettingItem): boolean {
+  return relatedActionFor(item) !== null
+}
+
+function relatedActionIcon(item: SystemSettingItem): string {
+  return relatedActionFor(item)?.icon ?? 'link'
+}
+
+function relatedActionLabel(item: SystemSettingItem): string {
+  const action = relatedActionFor(item)
+  return action ? t(action.labelKey) : ''
+}
+
+function openRelatedArea(item: SystemSettingItem) {
+  const action = relatedActionFor(item)
+  if (!action) return
+  activeServiceSection.value = action.serviceSection
+  activeTab.value = 'models-services'
+  scrollServiceSection(action.serviceSection)
+}
+
+function scrollServiceSection(section: ServiceSectionKey) {
+  nextTick(() => {
+    const el = document.querySelector(`[data-service-section="${section}"]`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  })
 }
 
 // hasOverride reports whether the row carries a real DB override (vs a
@@ -795,6 +1185,11 @@ async function onChange(item: SystemSettingItem) {
   // per "save". This matches the operator's mental model: every tag
   // they touch is acknowledged on its own.
   await persistSetting(item)
+}
+
+async function onModelSettingChange(item: SystemSettingItem, value: string) {
+  editValues[item.key] = value
+  await onChange(item)
 }
 
 async function onHighRiskSelectChange(item: SystemSettingItem) {
@@ -1125,9 +1520,37 @@ async function onAdminsChange(next: string[]) {
   }
 }
 
+watch(
+  () => uiStore.showSystemSettingsModal,
+  async (open) => {
+    if (!open) return
+    if (!authStore.isSystemAdmin) {
+      uiStore.closeSystemSettings()
+      return
+    }
+    const initialSection = uiStore.systemSettingsInitialSection
+    if (initialSection && systemSettingTabs.some((tab) => tab.key === initialSection)) {
+      activeTab.value = initialSection as SystemTabKey
+    }
+    const initialSubSection = uiStore.systemSettingsInitialSubSection
+    if (initialSubSection && modelServiceSections.some((section) => section.key === initialSubSection)) {
+      activeServiceSection.value = initialSubSection as ServiceSectionKey
+    }
+    await Promise.all([loadSettings(), loadAdmins()])
+  },
+)
+
+watch(
+  () => authStore.isSystemAdmin,
+  (isSystemAdmin) => {
+    if (!isSystemAdmin && uiStore.showSystemSettingsModal) {
+      uiStore.closeSystemSettings()
+    }
+  },
+)
+
 onMounted(() => {
-  loadSettings()
-  loadAdmins()
+  window.addEventListener('keydown', handleEscape)
 })
 
 // ---- Platform audit log (system-scope, tenant_id=0) ---------------------
@@ -1476,12 +1899,247 @@ watch(
   { flush: 'post' },
 )
 
-onUnmounted(() => detachAuditInfiniteScroll())
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleEscape)
+  detachAuditInfiniteScroll()
+})
 </script>
 
 <style lang="less" scoped>
 .system-settings {
   width: 100%;
+}
+
+.system-settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+}
+
+.system-settings-modal {
+  position: relative;
+  width: 100%;
+  max-width: 1120px;
+  height: 820px;
+  max-height: calc(100vh - 40px);
+  background: var(--td-bg-color-container);
+  border-radius: 12px;
+  box-shadow: 0 6px 28px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+
+.system-settings-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 10;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--td-text-color-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  &:hover {
+    background: var(--td-bg-color-container-hover);
+    color: var(--td-text-color-primary);
+  }
+}
+
+.system-settings-container {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.system-settings-sidebar {
+  width: 224px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--td-bg-color-settings-modal);
+  border-right: 1px solid var(--td-component-stroke);
+  overflow: hidden;
+}
+
+.system-settings-sidebar-header {
+  padding: 18px 16px 14px;
+  border-bottom: 1px solid var(--td-component-stroke);
+
+  h2 {
+    margin: 0 0 8px;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--td-text-color-primary);
+  }
+
+  p {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--td-text-color-secondary);
+  }
+}
+
+.system-settings-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 8px 12px;
+}
+
+.system-settings-nav-item {
+  width: 100%;
+  height: 34px;
+  border: none;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--td-text-color-primary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 14px;
+  text-align: left;
+
+  &:hover {
+    background: var(--td-bg-color-container-hover);
+  }
+
+  &.active {
+    background: var(--td-bg-color-secondarycontainer);
+    color: var(--td-brand-color);
+    font-weight: 500;
+  }
+}
+
+.system-settings-nav-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.system-settings-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.system-settings-content-header {
+  min-height: 88px;
+  flex-shrink: 0;
+  padding: 22px 56px 16px 28px;
+  border-bottom: 1px solid var(--td-component-stroke);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+
+  h2 {
+    margin: 0 0 8px;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--td-text-color-primary);
+  }
+
+  p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--td-text-color-secondary);
+  }
+}
+
+.system-settings-content-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px 28px 32px;
+}
+
+.system-settings-group {
+  margin-bottom: 26px;
+}
+
+.setting-group-header {
+  margin-bottom: 4px;
+
+  h3 {
+    margin: 0 0 6px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--td-text-color-primary);
+  }
+
+  p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--td-text-color-secondary);
+  }
+}
+
+.model-service-intro {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.model-service-item {
+  min-height: 78px;
+  border: 1px solid var(--td-component-stroke);
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  background: var(--td-bg-color-container);
+
+  &:hover,
+  &.active {
+    border-color: var(--td-brand-color);
+    background: var(--td-bg-color-secondarycontainer);
+  }
+
+  p {
+    margin: 4px 0 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--td-text-color-secondary);
+  }
+}
+
+.model-service-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--td-brand-color);
+}
+
+.model-service-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--td-text-color-primary);
+}
+
+.embedded-model-settings {
+  &:deep(.section-header) {
+    margin-top: 0;
+  }
 }
 
 .section-header {
@@ -1889,6 +2547,11 @@ onUnmounted(() => detachAuditInfiniteScroll())
   font-size: 13px;
 }
 
+.empty-state--group {
+  justify-content: flex-start;
+  padding: 18px 0;
+}
+
 // Skeleton mirrors GeneralSettings.vue 1:1 so the two panes feel like
 // they came from the same hand. Values that diverge intentionally:
 //   - .setting-label is a flex container (vs General's plain <label>)
@@ -1969,6 +2632,8 @@ onUnmounted(() => detachAuditInfiniteScroll())
 .setting-control-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .setting-saving {
@@ -2016,6 +2681,23 @@ onUnmounted(() => detachAuditInfiniteScroll())
 
   .desc {
     max-width: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .system-settings-container {
+    flex-direction: column;
+  }
+
+  .system-settings-sidebar {
+    width: 100%;
+    max-height: 248px;
+    border-right: none;
+    border-bottom: 1px solid var(--td-component-stroke);
+  }
+
+  .system-settings-content-header {
+    padding-right: 52px;
   }
 }
 </style>

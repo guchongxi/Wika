@@ -12,6 +12,7 @@ type fakePersonalSpaceStore struct {
 	existingTenant *types.Tenant
 	createTenant   *types.Tenant
 	createMember   *types.TenantMember
+	teamTenant     *types.Tenant
 }
 
 func (f *fakePersonalSpaceStore) GetPersonalSpace(ctx context.Context, userID string) (*types.Tenant, error) {
@@ -26,6 +27,11 @@ func (f *fakePersonalSpaceStore) CreatePersonalSpace(ctx context.Context, userID
 	f.createMember = member
 	tenant.ID = 42
 	return tenant, nil
+}
+
+func (f *fakePersonalSpaceStore) EnsureTeamDefaults(ctx context.Context, userID string, tenant *types.Tenant) error {
+	f.teamTenant = tenant
+	return nil
 }
 
 func TestGetOrCreatePersonalSpaceReturnsExisting(t *testing.T) {
@@ -85,6 +91,19 @@ func TestGetOrCreatePersonalSpacePropagatesStoreErrors(t *testing.T) {
 	}
 }
 
+func TestEnsureTeamDefaultsDelegatesToStore(t *testing.T) {
+	store := &fakePersonalSpaceStore{}
+	service := NewService(store)
+	team := &types.Tenant{ID: 80, SpaceType: types.SpaceTypeTeam}
+
+	if err := service.EnsureTeamDefaults(context.Background(), "user-1", team); err != nil {
+		t.Fatalf("expected team defaults delegation, got error: %v", err)
+	}
+	if store.teamTenant != team {
+		t.Fatalf("expected team tenant to be passed through, got %+v", store.teamTenant)
+	}
+}
+
 type failingPersonalSpaceStore struct {
 	err error
 }
@@ -95,4 +114,8 @@ func (f *failingPersonalSpaceStore) GetPersonalSpace(ctx context.Context, userID
 
 func (f *failingPersonalSpaceStore) CreatePersonalSpace(ctx context.Context, userID string, tenant *types.Tenant, member *types.TenantMember) (*types.Tenant, error) {
 	return nil, f.err
+}
+
+func (f *failingPersonalSpaceStore) EnsureTeamDefaults(ctx context.Context, userID string, tenant *types.Tenant) error {
+	return f.err
 }

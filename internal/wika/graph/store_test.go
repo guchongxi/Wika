@@ -52,6 +52,11 @@ func TestGormGraphStoreListsEntitiesEdgesAndOverview(t *testing.T) {
 	if overview.EntityCount != 2 || overview.EdgeCount != 1 {
 		t.Fatalf("unexpected overview: %+v", overview)
 	}
+	systemOverview, err := store.OverviewByKB(context.Background(), "kb-team")
+	require.NoError(t, err)
+	if systemOverview.TenantID != 80 || systemOverview.EntityCount != 2 || systemOverview.EdgeCount != 1 {
+		t.Fatalf("unexpected system overview: %+v", systemOverview)
+	}
 
 	entities, total, err := store.ListEntities(context.Background(), ListEntitiesInput{
 		TenantID: 80,

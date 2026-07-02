@@ -87,6 +87,11 @@ func TestGormSuggestionStoreSavesAndFindsByIdempotencyKey(t *testing.T) {
 	if saved.ID == 0 {
 		t.Fatal("expected saved suggestion id")
 	}
+	var humanDecision *string
+	require.NoError(t, db.Raw("SELECT human_decision FROM knowledge_suggestions WHERE id = ?", saved.ID).Scan(&humanDecision).Error)
+	if humanDecision != nil {
+		t.Fatalf("expected initial human_decision to be NULL, got %q", *humanDecision)
+	}
 
 	existing, err := store.FindByIdempotencyKey(context.Background(), "user-1", 80, "idem-1")
 	require.NoError(t, err)

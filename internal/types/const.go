@@ -33,6 +33,12 @@ const (
 	LangfuseTraceContextKey ContextKey = "LangfuseTrace"
 	// SystemAdminContextKey is the context key indicating whether the user is a system administrator
 	SystemAdminContextKey ContextKey = "SystemAdmin"
+	// WikaPATUsageContextKey carries verified Wika PAT metadata for usage recording.
+	WikaPATUsageContextKey ContextKey = "WikaPATUsage"
+	// WikaKnowledgeIDContextKey carries a knowledge ID produced by a Wika daily route.
+	WikaKnowledgeIDContextKey ContextKey = "WikaKnowledgeID"
+	// WikaPATUsageRecordedContextKey marks that a Wika PAT usage record has already been written.
+	WikaPATUsageRecordedContextKey ContextKey = "WikaPATUsageRecorded"
 )
 
 // String returns the string representation of the context key

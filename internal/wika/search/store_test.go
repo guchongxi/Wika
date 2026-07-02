@@ -90,12 +90,42 @@ func TestGormSearchStoreListReadableScopesIncludesActiveOrgShares(t *testing.T) 
 	}
 }
 
+func TestGormSearchStoreIgnoresOrgShareWhenTargetNotOrgMember(t *testing.T) {
+	db := setupSearchStoreTestDB(t)
+	require.NoError(t, db.Create(&types.Tenant{ID: 90, Name: "target", SpaceType: types.SpaceTypeTeam}).Error)
+	require.NoError(t, db.Create(&types.TenantMember{UserID: "u-target", TenantID: 90, Role: types.TenantRoleViewer, Status: types.TenantMemberStatusActive}).Error)
+	require.NoError(t, db.Create(&types.Organization{ID: "org-1", Name: "org"}).Error)
+	require.NoError(t, db.Create(&types.OrganizationTenantMember{ID: "otm-source", OrganizationID: "org-1", TenantID: 80, Role: types.OrgRoleAdmin}).Error)
+	allowedFields, err := json.Marshal([]string{"id", "title"})
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&types.WikaOrgShare{
+		OrgID:          "org-1",
+		SourceTenantID: 80,
+		SourceKBID:     "kb-team",
+		TargetTenantID: 90,
+		Mode:           types.WikaOrgShareModeReference,
+		AllowedFields:  types.JSON(allowedFields),
+		Status:         types.WikaOrgShareStatusActive,
+		CreatedBy:      "u-source",
+	}).Error)
+
+	scopes, err := NewGormStore(db).ListReadableScopes(context.Background(), "u-target", true)
+	require.NoError(t, err)
+	for _, scope := range scopes {
+		if scope.Source == SourceShared {
+			t.Fatalf("shared scope must require target tenant to belong to org, got %+v", scopes)
+		}
+	}
+}
+
 func TestGormSearchStoreSanitizesUnsafeSharedAllowedFields(t *testing.T) {
 	db := setupSearchStoreTestDB(t)
 	require.NoError(t, db.Create(&types.Tenant{ID: 90, Name: "target", SpaceType: types.SpaceTypeTeam}).Error)
 	require.NoError(t, db.Create(&types.TenantMember{UserID: "u-target", TenantID: 90, Role: types.TenantRoleViewer, Status: types.TenantMemberStatusActive}).Error)
 	require.NoError(t, db.Create(&types.Organization{ID: "org-1", Name: "org"}).Error)
-	allowedFields, err := json.Marshal([]string{"id", "title", "content", "file", "freshness_status"})
+	require.NoError(t, db.Create(&types.OrganizationTenantMember{ID: "otm-source", OrganizationID: "org-1", TenantID: 80, Role: types.OrgRoleAdmin}).Error)
+	require.NoError(t, db.Create(&types.OrganizationTenantMember{ID: "otm-target", OrganizationID: "org-1", TenantID: 90, Role: types.OrgRoleViewer}).Error)
+	allowedFields, err := json.Marshal([]string{"id", "title", "content", "file", "updated_at", "freshness_status"})
 	require.NoError(t, err)
 	require.NoError(t, db.Create(&types.WikaOrgShare{
 		OrgID:          "org-1",
@@ -121,7 +151,7 @@ func TestGormSearchStoreSanitizesUnsafeSharedAllowedFields(t *testing.T) {
 	if shared == nil {
 		t.Fatalf("expected shared scope, got %+v", scopes)
 	}
-	require.Equal(t, []string{"id", "title", "freshness_status"}, shared.AllowedFields)
+	require.Equal(t, []string{"id", "title", "updated_at", "freshness_status"}, shared.AllowedFields)
 }
 
 func TestGormSearchStoreRecordAccessUpsertsDailyRollup(t *testing.T) {
@@ -144,5 +174,24 @@ func TestGormSearchStoreRecordAccessUpsertsDailyRollup(t *testing.T) {
 	}
 	if !access.LastAccessedAt.Equal(second) {
 		t.Fatalf("expected last_accessed_at=%s, got %s", second, access.LastAccessedAt)
+	}
+}
+
+func TestGormSearchStoreRecordAccessDoesNotTouchKnowledgeMainTable(t *testing.T) {
+	db := setupSearchStoreTestDB(t)
+	originalUpdatedAt := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+	require.NoError(t, db.Model(&types.Knowledge{}).
+		Where("id = ?", "k-1").
+		Update("updated_at", originalUpdatedAt).Error)
+
+	store := NewGormStore(db)
+	require.NoError(t, store.RecordAccess(context.Background(), []AccessRecord{
+		{TenantID: 80, KBID: "kb-team", KnowledgeID: "k-1", AccessedAt: time.Date(2026, 6, 29, 18, 0, 0, 0, time.UTC)},
+	}))
+
+	var knowledge types.Knowledge
+	require.NoError(t, db.First(&knowledge, "id = ?", "k-1").Error)
+	if !knowledge.UpdatedAt.Equal(originalUpdatedAt) {
+		t.Fatalf("RecordAccess must not update knowledges.updated_at, got %s", knowledge.UpdatedAt)
 	}
 }

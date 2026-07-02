@@ -3,6 +3,8 @@ package orgshare
 import (
 	"errors"
 	"time"
+
+	"github.com/Tencent/WeKnora/internal/types"
 )
 
 var ErrFeatureDisabled = errors.New("wika org share feature disabled")
@@ -19,6 +21,20 @@ type CreateShareInput struct {
 	TargetTenantID uint64
 	AllowedFields  []string
 	Now            time.Time
+}
+
+type ListSharesInput struct {
+	ActorID  string
+	TenantID uint64
+	OrgID    string
+	Status   string
+	Limit    int
+	Offset   int
+}
+
+type ListSharesResult struct {
+	Items []*types.WikaOrgShare `json:"items"`
+	Total int64                 `json:"total"`
 }
 
 type AcceptShareInput struct {

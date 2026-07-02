@@ -1185,6 +1185,16 @@ export default {
     versionInfo: 'Version Info',
     tenantInfo: 'Tenant Info',
     apiInfo: 'API Info',
+    wikaTokens: {
+      title: 'AI Tool Access',
+      description: 'Create Wika PATs, configure MCP/API knowledge intake, and review call usage.',
+      guide: 'Guide',
+      myTokens: 'My Tokens',
+      usage: 'Usage',
+      createToken: 'Create Token',
+      createdToken: 'Token created',
+      createdTokenDesc: 'The plaintext token is shown only once. Copy it into your local tool config now.',
+    },
     navGroups: {
       account: 'Account',
       workspace: 'Workspace',
@@ -3391,12 +3401,128 @@ export default {
       description: 'Platform-wide runtime configuration. Saves take effect immediately for every tenant. Visible and editable by system administrators only.',
       loading: 'Loading...',
       empty: 'No configurable system settings available',
+      emptyGroup: 'No configurable items in this group',
       badgeRequiresRestart: 'Restart required',
       badgeSecret: 'Secret',
       badgeOverride: 'Overridden',
       badgeOverrideTooltip: 'This value has been saved to the database by an administrator, overriding the environment variable and built-in default.',
       modifiedAt: 'Last modified: {value}',
       tagInputPlaceholder: 'Press Enter to add an entry, e.g. example.com / *.foo.com / 10.0.0.0/8',
+      tabs: {
+        platformRuntime: {
+          label: 'Platform runtime',
+          description: 'Manage runtime settings and background worker parameters that may require a restart.',
+        },
+        accountTenant: {
+          label: 'Accounts and tenants',
+          description: 'Manage registration policy, tenant creation limits, and defaults for new tenants.',
+        },
+        kbDefaults: {
+          label: 'Knowledge defaults',
+          description: 'Manage model, index, chunking, and production defaults inherited by newly created knowledge bases.',
+        },
+        modelsServices: {
+          label: 'Models and services',
+          description: 'Manage the base model and service capability pool used by system defaults.',
+        },
+        securityNetwork: {
+          label: 'Security and network',
+          description: 'Manage external access, fetching, and SSRF protection settings.',
+        },
+        governance: {
+          label: 'Governance',
+          description: 'Centralize switches for conflict, version, URL freshness, evaluation schedule, and organization sharing.',
+        },
+        systemAdmins: {
+          label: 'System admins',
+          description: 'Manage platform administrators and inspect platform-level audit events.',
+        },
+      },
+      groups: {
+        runtimeWorker: {
+          title: 'Async workers',
+          description: 'Runtime parameters for background queues such as document parsing, embedding, and refresh jobs.',
+        },
+        accountRegistration: {
+          title: 'Registration policy',
+          description: 'Control self-service account registration and the risk boundary of public sign-up.',
+        },
+        tenantDefaults: {
+          title: 'Tenant defaults',
+          description: 'Control how many tenants users may create and the storage quota assigned to new tenants.',
+        },
+        kbModels: {
+          title: 'Base models',
+          description: 'Default LLM, Embedding, VLM, and ASR models inherited by new knowledge bases.',
+        },
+        kbStorage: {
+          title: 'Storage',
+          description: 'Default storage engine used by newly created knowledge bases.',
+        },
+        kbIndex: {
+          title: 'Index capabilities',
+          description: 'Default enablement for vector, keyword, Wiki, and knowledge graph indexes.',
+        },
+        kbChunking: {
+          title: 'Chunking strategy',
+          description: 'Default sizes, overlap, and separators for plain text and parent-child chunking.',
+        },
+        kbMultimodal: {
+          title: 'Multimodal',
+          description: 'Default enablement for image understanding and audio transcription.',
+        },
+        kbProduction: {
+          title: 'Production capabilities',
+          description: 'Default knowledge-production features such as question generation.',
+        },
+        networkSsrf: {
+          title: 'External access',
+          description: 'SSRF allowlist shared by Web Fetch, URL freshness, and other external fetching features.',
+        },
+        governanceSwitches: {
+          title: 'Governance switches',
+          description: 'Controls whether P5 governance capabilities are enabled platform-wide.',
+        },
+        admins: {
+          title: 'Administrators and audit',
+          description: 'Manage platform administrators and open the audit log for system-level operations.',
+        },
+      },
+      relatedActions: {
+        manageModel: 'Manage models',
+        manageStorage: 'Manage storage',
+        manageVectorStore: 'Manage vector store',
+      },
+      modelServices: {
+        chat: {
+          label: 'LLM',
+          description: 'Text generation models for Q&A, summaries, and question generation.',
+        },
+        embedding: {
+          label: 'Embedding',
+          description: 'Embedding models required by vector indexes and semantic retrieval.',
+        },
+        vllm: {
+          label: 'VLM',
+          description: 'Vision models used by image understanding and multimodal parsing.',
+        },
+        asr: {
+          label: 'ASR',
+          description: 'Speech recognition models used by audio transcription.',
+        },
+        storage: {
+          label: 'Storage engine',
+          description: 'Backends for originals, images, and parsed knowledge-base artifacts.',
+        },
+        vectorstore: {
+          label: 'Vector database',
+          description: 'Retrieval engine used by vector indexes and recall.',
+        },
+        parser: {
+          label: 'Parser engine',
+          description: 'Document parsing, chunking, and multi-format extraction capabilities.',
+        },
+      },
       priorityHint: {
         title: 'About priority',
         tier1: 'Items saved on this page (marked "Overridden") always win — the environment variable is ignored for them.',
@@ -3413,6 +3539,27 @@ export default {
         tenant: {
           max_owned_per_user: 'Max tenants owned per user',
           default_storage_quota_gb: 'Default storage quota for new tenants (GB)',
+        },
+        kb: {
+          default_llm_model_id: 'Default KB LLM model',
+          default_embedding_model_id: 'Default KB embedding model',
+          default_storage_provider: 'Default KB storage engine',
+          default_chunk_size: 'Default chunk size',
+          default_chunk_overlap: 'Default chunk overlap',
+          default_chunk_separators: 'Default separators',
+          default_parent_child_enabled: 'Enable parent-child chunks by default',
+          default_parent_chunk_size: 'Default parent chunk size',
+          default_child_chunk_size: 'Default child chunk size',
+          default_index_vector_enabled: 'Enable vector index by default',
+          default_index_keyword_enabled: 'Enable keyword index by default',
+          default_index_wiki_enabled: 'Enable Wiki index by default',
+          default_index_graph_enabled: 'Enable graph index by default',
+          default_vlm_enabled: 'Enable VLM by default',
+          default_vlm_model_id: 'Default VLM model',
+          default_asr_enabled: 'Enable ASR by default',
+          default_asr_model_id: 'Default ASR model',
+          default_question_generation_enabled: 'Enable question generation by default',
+          default_question_generation_count: 'Default generated question count',
         },
         asynq: {
           concurrency: 'Async task worker concurrency',
@@ -3432,6 +3579,27 @@ export default {
             'Maximum number of tenants a non-superuser may own via self-service creation. Read on every tenant creation and takes effect immediately after saving. 0 uses the built-in default of 10; a negative value disables the cap entirely (not recommended on public deployments).',
           default_storage_quota_gb:
             'Default storage quota (GB) assigned when a new tenant is created, covering vectors, originals, text, indexes, and related data. Read only at creation time — changes apply to newly created tenants only and do not retroactively update existing tenants. 0 or a negative value uses the built-in default of 10 GB.',
+        },
+        kb: {
+          default_llm_model_id: 'Default summary/QA model used when ordinary users create a knowledge base. Empty falls back to env or built-in defaults.',
+          default_embedding_model_id: 'Default embedding model used when ordinary users create a knowledge base. Configure this when vector or keyword index is enabled.',
+          default_storage_provider: 'Default storage engine for new knowledge bases, such as local or minio.',
+          default_chunk_size: 'Default chunk size for new knowledge bases.',
+          default_chunk_overlap: 'Default chunk overlap for new knowledge bases.',
+          default_chunk_separators: 'Default text separator list for new knowledge bases.',
+          default_parent_child_enabled: 'Whether new knowledge bases enable parent-child chunking by default.',
+          default_parent_chunk_size: 'Default parent chunk size when parent-child chunking is enabled.',
+          default_child_chunk_size: 'Default child chunk size when parent-child chunking is enabled.',
+          default_index_vector_enabled: 'Whether new knowledge bases enable vector index by default.',
+          default_index_keyword_enabled: 'Whether new knowledge bases enable keyword index by default.',
+          default_index_wiki_enabled: 'Whether new knowledge bases enable Wiki index by default.',
+          default_index_graph_enabled: 'Whether new knowledge bases enable knowledge graph index by default.',
+          default_vlm_enabled: 'Whether new knowledge bases enable image understanding by default.',
+          default_vlm_model_id: 'Default VLM model for image understanding.',
+          default_asr_enabled: 'Whether new knowledge bases enable audio transcription by default.',
+          default_asr_model_id: 'Default ASR model for audio transcription.',
+          default_question_generation_enabled: 'Whether new knowledge bases enable question generation by default.',
+          default_question_generation_count: 'Default number of generated questions when question generation is enabled.',
         },
         asynq: {
           concurrency:
@@ -3487,6 +3655,7 @@ export default {
         label: 'System administrators',
         description: 'Users with platform-level privileges. Type an email and press Enter to promote a user; click × on a tag to revoke. You (yourself) are an administrator and are not shown in the list — you cannot revoke your own access.',
         placeholder: 'Type a user email and press Enter',
+        auditButton: 'View audit log',
         loadFailed: 'Failed to load system administrators',
         saveSuccess: 'System administrators updated',
         saveFailed: 'Failed to update system administrators',

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/config"
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -66,6 +67,7 @@ func isNoAuthAPI(path string, method string) bool {
 // WikaPATVerifier 校验 Wika 用户级 PAT，并检查调用所需 scope。
 type WikaPATVerifier interface {
 	VerifyToken(ctx context.Context, plaintext, requiredScope string) (*types.WikaUserToken, error)
+	RecordUsage(ctx context.Context, record wikaauth.TokenUsageRecord) error
 }
 
 // Auth 认证中间件
@@ -207,6 +209,13 @@ func Auth(
 		// 尝试X-API-Key认证（兼容模式）
 		apiKey := c.GetHeader("X-API-Key")
 		if apiKey != "" {
+			if _, isWikaDailyRoute := wikaPATRequiredScope(c.Request.Method, c.Request.URL.Path); isWikaDailyRoute {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error": "Forbidden: Wika PAT routes require user JWT or Wika PAT",
+				})
+				c.Abort()
+				return
+			}
 			// Get tenant information
 			tenantID, err := tenantService.ExtractTenantIDFromAPIKey(apiKey)
 			if err != nil {
@@ -306,13 +315,8 @@ func authenticateWikaPAT(
 		c.Abort()
 		return
 	}
-	requiredScope, ok := wikaPATRequiredScope(c.Request.Method, c.Request.URL.Path)
-	if !ok {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: Wika PAT is not allowed for this route"})
-		c.Abort()
-		return
-	}
-	token, err := verifier.VerifyToken(c.Request.Context(), plaintext, requiredScope)
+	routeMeta := wikaPATRouteMetaForRequest(c.Request.Method, c.Request.URL.Path)
+	token, err := verifier.VerifyToken(c.Request.Context(), plaintext, routeMeta.Scope)
 	if err != nil {
 		if errors.Is(err, wikaauth.ErrTokenScopeDenied) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: insufficient Wika PAT scope"})
@@ -350,13 +354,24 @@ func authenticateWikaPAT(
 
 	logger.Infof(c.Request.Context(),
 		"[auth] resolved Wika PAT scope=%s role=%s for user=%s in tenant=%d",
-		requiredScope, role, user.ID, token.TenantID)
+		routeMeta.Scope, role, user.ID, token.TenantID)
 	c.Set(types.TenantIDContextKey.String(), token.TenantID)
 	c.Set(types.TenantInfoContextKey.String(), tenant)
 	c.Set(types.UserContextKey.String(), user)
 	c.Set(types.UserIDContextKey.String(), user.ID)
 	c.Set(types.TenantRoleContextKey.String(), role)
 	c.Set(types.SystemAdminContextKey.String(), false)
+	usageContext := types.WikaPATUsageContext{
+		TokenID:       token.ID,
+		TokenPrefix:   token.TokenPrefix,
+		UserID:        token.UserID,
+		TenantID:      token.TenantID,
+		RequiredScope: routeMeta.Scope,
+		ToolName:      routeMeta.ToolName,
+		APIMethod:     routeMeta.Method,
+		APIPath:       routeMeta.Path,
+	}
+	c.Set(types.WikaPATUsageContextKey.String(), usageContext)
 	ctx := c.Request.Context()
 	ctx = context.WithValue(ctx, types.TenantIDContextKey, token.TenantID)
 	ctx = context.WithValue(ctx, types.TenantInfoContextKey, tenant)
@@ -364,24 +379,55 @@ func authenticateWikaPAT(
 	ctx = context.WithValue(ctx, types.UserIDContextKey, user.ID)
 	ctx = context.WithValue(ctx, types.TenantRoleContextKey, role)
 	ctx = context.WithValue(ctx, types.SystemAdminContextKey, false)
+	ctx = context.WithValue(ctx, types.WikaPATUsageContextKey, usageContext)
 	c.Request = c.Request.WithContext(ctx)
+	startedAt := time.Now()
 	c.Next()
+	if _, recorded := c.Get(types.WikaPATUsageRecordedContextKey.String()); !recorded {
+		recordWikaPATUsage(c, verifier, usageContext, startedAt)
+	}
+}
+
+type wikaPATRouteMeta struct {
+	Method   string
+	Path     string
+	Scope    string
+	ToolName string
 }
 
 func wikaPATRequiredScope(method, path string) (string, bool) {
+	meta, ok := wikaPATRouteMetaFor(method, path)
+	return meta.Scope, ok
+}
+
+func wikaPATRouteMetaForRequest(method, path string) wikaPATRouteMeta {
+	if meta, ok := wikaPATRouteMetaFor(method, path); ok {
+		return meta
+	}
+	return wikaPATRouteMeta{
+		Method:   method,
+		Path:     path,
+		Scope:    "mcp:admin",
+		ToolName: "mcp_admin_api",
+	}
+}
+
+func wikaPATRouteMetaFor(method, path string) (wikaPATRouteMeta, bool) {
 	switch {
 	case method == http.MethodPost && path == "/api/v1/wika/knowledge/push":
-		return "knowledge:push", true
+		return wikaPATRouteMeta{Method: method, Path: path, Scope: "knowledge:push", ToolName: "push_knowledge"}, true
 	case method == http.MethodPost && path == "/api/v1/wika/knowledge/search":
-		return "knowledge:search", true
+		return wikaPATRouteMeta{Method: method, Path: path, Scope: "knowledge:search", ToolName: "search_knowledge"}, true
 	case method == http.MethodPost && path == "/api/v1/wika/knowledge/expand":
-		return "knowledge:read", true
+		return wikaPATRouteMeta{Method: method, Path: path, Scope: "knowledge:read", ToolName: "expand_knowledge_result"}, true
 	case method == http.MethodGet && path == "/api/v1/wika/knowledge/mine":
-		return "knowledge:read", true
+		return wikaPATRouteMeta{Method: method, Path: path, Scope: "knowledge:read", ToolName: "get_my_knowledge"}, true
 	case method == http.MethodPost && path == "/api/v1/wika/suggestions":
-		return "suggestion:create", true
+		return wikaPATRouteMeta{Method: method, Path: path, Scope: "suggestion:create", ToolName: "suggest_to_team"}, true
+	case method == http.MethodGet && path == "/api/v1/wika/mcp/admin/authorize":
+		return wikaPATRouteMeta{Method: method, Path: path, Scope: "mcp:admin", ToolName: "mcp_admin_toolset"}, true
 	default:
-		return "", false
+		return wikaPATRouteMeta{}, false
 	}
 }
 

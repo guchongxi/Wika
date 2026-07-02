@@ -1,5 +1,6 @@
 import { get, post, postUpload, put, del } from '../../utils/request';
 import i18n from '@/i18n'
+import { normalizeModelListResponse } from './modelResponse'
 
 const t = (key: string) => i18n.global.t(key)
 
@@ -70,14 +71,7 @@ export function listModels(type?: string): Promise<ModelConfig[]> {
     const url = `/api/v1/models`;
     get(url)
       .then((response: any) => {
-        if (response.success && response.data) {
-          if (type) {
-            response.data = response.data.filter((item: ModelConfig) => item.type === type);
-          }
-          resolve(response.data);
-        } else {
-          resolve([]);
-        }
+        resolve(normalizeModelListResponse<ModelConfig>(response, type));
       })
       .catch((error: any) => {
         console.error('Failed to list models:', error);

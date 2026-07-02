@@ -287,6 +287,9 @@ func redactKnowledgeForWikaSharedScope(ctx context.Context, knowledge *types.Kno
 	if access.allows("source_kb_id") {
 		redacted.KnowledgeBaseID = knowledge.KnowledgeBaseID
 	}
+	if access.allows("updated_at") {
+		redacted.UpdatedAt = knowledge.UpdatedAt
+	}
 	return redacted
 }
 

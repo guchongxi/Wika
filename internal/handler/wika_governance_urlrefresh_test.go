@@ -16,16 +16,58 @@ import (
 
 type stubWikaURLRefreshService struct {
 	createInput   *wikaurlrefresh.CreateJobInput
+	listInput     *wikaurlrefresh.ListInput
 	scheduleInput *wikaurlrefresh.CreateOrUpdateScheduleInput
 	updateInput   *wikaurlrefresh.UpdateScheduleInput
 	disableInput  *wikaurlrefresh.DisableScheduleInput
 	reviewInput   *wikaurlrefresh.ReviewJobInput
+	createErr     error
+	scheduleErr   error
 	reviewErr     error
+}
+
+type stubWikaURLRefreshKnowledgeReader struct {
+	knowledge *types.Knowledge
+	err       error
+}
+
+func (s *stubWikaURLRefreshKnowledgeReader) GetKnowledgeByID(_ context.Context, id string) (*types.Knowledge, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.knowledge != nil {
+		return s.knowledge, nil
+	}
+	return &types.Knowledge{ID: id, KnowledgeBaseID: "kb-url"}, nil
 }
 
 func (s *stubWikaURLRefreshService) CreateJob(_ context.Context, input wikaurlrefresh.CreateJobInput) (*types.WikaURLRefreshJob, error) {
 	s.createInput = &input
+	if s.createErr != nil {
+		return nil, s.createErr
+	}
 	return &types.WikaURLRefreshJob{ID: 11, TenantID: input.TenantID, KBID: input.KBID, KnowledgeID: input.KnowledgeID, SourceURL: input.SourceURL, Status: wikaurlrefresh.JobStatusPending}, nil
+}
+
+func (s *stubWikaURLRefreshService) List(_ context.Context, input wikaurlrefresh.ListInput) (*wikaurlrefresh.ListResult, error) {
+	s.listInput = &input
+	return &wikaurlrefresh.ListResult{
+		Jobs: []*types.WikaURLRefreshJob{{
+			ID:             11,
+			TenantID:       input.TenantID,
+			KBID:           input.KBID,
+			KnowledgeID:    input.KnowledgeID,
+			Status:         wikaurlrefresh.JobStatusPendingReview,
+			FetchedContent: "待确认正文不应在列表泄露",
+		}},
+		Schedules: []*types.WikaURLRefreshSchedule{{
+			ID:          21,
+			TenantID:    input.TenantID,
+			KBID:        input.KBID,
+			KnowledgeID: input.KnowledgeID,
+			Enabled:     true,
+		}},
+	}, nil
 }
 
 func (s *stubWikaURLRefreshService) ReviewJob(_ context.Context, input wikaurlrefresh.ReviewJobInput) (*wikaurlrefresh.ReviewJobResult, error) {
@@ -42,6 +84,9 @@ func (s *stubWikaURLRefreshService) ReviewJob(_ context.Context, input wikaurlre
 
 func (s *stubWikaURLRefreshService) CreateOrUpdateSchedule(_ context.Context, input wikaurlrefresh.CreateOrUpdateScheduleInput) (*types.WikaURLRefreshSchedule, error) {
 	s.scheduleInput = &input
+	if s.scheduleErr != nil {
+		return nil, s.scheduleErr
+	}
 	return &types.WikaURLRefreshSchedule{ID: 21, TenantID: input.TenantID, KBID: input.KBID, KnowledgeID: input.KnowledgeID, SourceURL: input.SourceURL, Enabled: input.Enabled, CronExpr: input.CronExpr, CreatedBy: input.ActorID}, nil
 }
 
@@ -64,12 +109,41 @@ func newWikaURLRefreshTestRouter(service *stubWikaURLRefreshService) *gin.Engine
 		c.Set(types.TenantIDContextKey.String(), uint64(90))
 		c.Next()
 	})
-	h := &WikaURLRefreshHandler{service: service}
+	h := &WikaURLRefreshHandler{service: service, knowledge: &stubWikaURLRefreshKnowledgeReader{}}
+	r.GET("/api/v1/wika/knowledge/:id/url-refresh", h.List)
 	r.POST("/api/v1/wika/knowledge/:id/url-refresh", h.CreateJob)
 	r.PUT("/api/v1/wika/knowledge/:id/url-refresh/schedules/:schedule_id", h.UpdateSchedule)
 	r.DELETE("/api/v1/wika/knowledge/:id/url-refresh/schedules/:schedule_id", h.DisableSchedule)
 	r.PUT("/api/v1/wika/url-refresh/:id/review", h.ReviewJob)
 	return r
+}
+
+func TestWikaURLRefreshListPassesActorTenantKnowledgeAndFilters(t *testing.T) {
+	service := &stubWikaURLRefreshService{}
+	r := newWikaURLRefreshTestRouter(service)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/wika/knowledge/k-url/url-refresh?status=pending_review&limit=20", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if service.listInput == nil ||
+		service.listInput.ActorID != "u-reviewer" ||
+		service.listInput.TenantID != 90 ||
+		service.listInput.KBID != "kb-url" ||
+		service.listInput.KnowledgeID != "k-url" ||
+		service.listInput.Status != wikaurlrefresh.JobStatusPendingReview ||
+		service.listInput.Limit != 20 {
+		t.Fatalf("unexpected list input: %+v", service.listInput)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"jobs"`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"schedules"`)) {
+		t.Fatalf("expected jobs and schedules response, got %s", w.Body.String())
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte("待确认正文不应在列表泄露")) || bytes.Contains(w.Body.Bytes(), []byte("fetched_content")) {
+		t.Fatalf("list response must not expose fetched content, got %s", w.Body.String())
+	}
 }
 
 func TestWikaURLRefreshCreateJobPassesActorTenantKnowledgeAndURL(t *testing.T) {
@@ -87,6 +161,7 @@ func TestWikaURLRefreshCreateJobPassesActorTenantKnowledgeAndURL(t *testing.T) {
 	if service.createInput == nil ||
 		service.createInput.ActorID != "u-reviewer" ||
 		service.createInput.TenantID != 90 ||
+		service.createInput.KBID != "kb-url" ||
 		service.createInput.KnowledgeID != "k-url" ||
 		service.createInput.SourceURL != "https://example.com/doc" {
 		t.Fatalf("unexpected create input: %+v", service.createInput)
@@ -108,6 +183,7 @@ func TestWikaURLRefreshCreateSchedulePassesCronAndEnabled(t *testing.T) {
 	if service.scheduleInput == nil ||
 		service.scheduleInput.ActorID != "u-reviewer" ||
 		service.scheduleInput.TenantID != 90 ||
+		service.scheduleInput.KBID != "kb-url" ||
 		service.scheduleInput.KnowledgeID != "k-url" ||
 		service.scheduleInput.SourceURL != "https://example.com/doc" ||
 		service.scheduleInput.CronExpr != "0 * * * *" ||
@@ -190,5 +266,33 @@ func TestWikaURLRefreshFeatureDisabledReturnsNotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestWikaURLRefreshCreateUnsafeURLReturnsBadRequest(t *testing.T) {
+	service := &stubWikaURLRefreshService{createErr: wikaurlrefresh.ErrUnsafeSourceURL}
+	r := newWikaURLRefreshTestRouter(service)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/knowledge/k-url/url-refresh", bytes.NewBufferString(`{"source_url":"http://127.0.0.1/admin"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestWikaURLRefreshCreateUnsafeScheduleReturnsBadRequest(t *testing.T) {
+	service := &stubWikaURLRefreshService{scheduleErr: wikaurlrefresh.ErrUnsafeSourceURL}
+	r := newWikaURLRefreshTestRouter(service)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/wika/knowledge/k-url/url-refresh", bytes.NewBufferString(`{"source_url":"http://127.0.0.1/admin","schedule":{"enabled":true,"cron_expr":"0 * * * *"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
 	}
 }

@@ -12,24 +12,31 @@ import (
 
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	wikaurlrefresh "github.com/Tencent/WeKnora/internal/wika/governance/urlrefresh"
 )
 
 type wikaURLRefreshService interface {
 	CreateJob(ctx context.Context, input wikaurlrefresh.CreateJobInput) (*types.WikaURLRefreshJob, error)
+	List(ctx context.Context, input wikaurlrefresh.ListInput) (*wikaurlrefresh.ListResult, error)
 	CreateOrUpdateSchedule(ctx context.Context, input wikaurlrefresh.CreateOrUpdateScheduleInput) (*types.WikaURLRefreshSchedule, error)
 	UpdateSchedule(ctx context.Context, input wikaurlrefresh.UpdateScheduleInput) (*types.WikaURLRefreshSchedule, error)
 	DisableSchedule(ctx context.Context, input wikaurlrefresh.DisableScheduleInput) (*types.WikaURLRefreshSchedule, error)
 	ReviewJob(ctx context.Context, input wikaurlrefresh.ReviewJobInput) (*wikaurlrefresh.ReviewJobResult, error)
 }
 
-// WikaURLRefreshHandler 暴露 P5 URL 重抓任务和审核接口。
-type WikaURLRefreshHandler struct {
-	service wikaURLRefreshService
+type wikaURLRefreshKnowledgeReader interface {
+	GetKnowledgeByID(ctx context.Context, id string) (*types.Knowledge, error)
 }
 
-func NewWikaURLRefreshHandler(service *wikaurlrefresh.Service) *WikaURLRefreshHandler {
-	return &WikaURLRefreshHandler{service: service}
+// WikaURLRefreshHandler 暴露 P5 URL 重抓任务和审核接口。
+type WikaURLRefreshHandler struct {
+	service   wikaURLRefreshService
+	knowledge wikaURLRefreshKnowledgeReader
+}
+
+func NewWikaURLRefreshHandler(service *wikaurlrefresh.Service, knowledge interfaces.KnowledgeService) *WikaURLRefreshHandler {
+	return &WikaURLRefreshHandler{service: service, knowledge: knowledge}
 }
 
 type createURLRefreshJobRequest struct {
@@ -52,6 +59,41 @@ type updateURLRefreshScheduleRequest struct {
 	CronExpr string `json:"cron_expr"`
 }
 
+func (h *WikaURLRefreshHandler) List(c *gin.Context) {
+	userID, tenantID, ok := wikaKnowledgeContext(c)
+	if !ok {
+		return
+	}
+	if h.service == nil {
+		c.Error(apperrors.NewInternalServerError("wika url refresh service unavailable"))
+		return
+	}
+	knowledge, ok := h.resolveKnowledge(c, strings.TrimSpace(c.Param("id")))
+	if !ok {
+		return
+	}
+	limit := parseURLRefreshIntQuery(c.Query("limit"), 50)
+	offset := parseURLRefreshIntQuery(c.Query("offset"), 0)
+	result, err := h.service.List(c.Request.Context(), wikaurlrefresh.ListInput{
+		ActorID:     userID,
+		TenantID:    tenantID,
+		KBID:        knowledge.KnowledgeBaseID,
+		KnowledgeID: strings.TrimSpace(c.Param("id")),
+		Status:      strings.TrimSpace(c.Query("status")),
+		Limit:       limit,
+		Offset:      offset,
+	})
+	if err != nil {
+		if stderrors.Is(err, wikaurlrefresh.ErrFeatureDisabled) {
+			c.Error(apperrors.NewNotFoundError("wika url refresh feature disabled"))
+			return
+		}
+		c.Error(apperrors.NewInternalServerError("failed to list url refresh jobs"))
+		return
+	}
+	c.JSON(http.StatusOK, sanitizeURLRefreshListResult(result))
+}
+
 func (h *WikaURLRefreshHandler) CreateJob(c *gin.Context) {
 	userID, tenantID, ok := wikaKnowledgeContext(c)
 	if !ok {
@@ -66,10 +108,15 @@ func (h *WikaURLRefreshHandler) CreateJob(c *gin.Context) {
 		c.Error(apperrors.NewBadRequestError("invalid request body").WithDetails(err.Error()))
 		return
 	}
+	knowledge, ok := h.resolveKnowledge(c, strings.TrimSpace(c.Param("id")))
+	if !ok {
+		return
+	}
 	if req.Schedule != nil {
 		schedule, err := h.service.CreateOrUpdateSchedule(c.Request.Context(), wikaurlrefresh.CreateOrUpdateScheduleInput{
 			ActorID:     userID,
 			TenantID:    tenantID,
+			KBID:        knowledge.KnowledgeBaseID,
 			KnowledgeID: strings.TrimSpace(c.Param("id")),
 			SourceURL:   strings.TrimSpace(req.SourceURL),
 			CronExpr:    strings.TrimSpace(req.Schedule.CronExpr),
@@ -80,6 +127,8 @@ func (h *WikaURLRefreshHandler) CreateJob(c *gin.Context) {
 			switch {
 			case stderrors.Is(err, wikaurlrefresh.ErrFeatureDisabled):
 				c.Error(apperrors.NewNotFoundError("wika url refresh feature disabled"))
+			case stderrors.Is(err, wikaurlrefresh.ErrUnsafeSourceURL):
+				c.Error(apperrors.NewBadRequestError("unsafe url refresh source url"))
 			case stderrors.Is(err, wikaurlrefresh.ErrInvalidSchedule):
 				c.Error(apperrors.NewBadRequestError("invalid url refresh schedule"))
 			default:
@@ -93,6 +142,7 @@ func (h *WikaURLRefreshHandler) CreateJob(c *gin.Context) {
 	job, err := h.service.CreateJob(c.Request.Context(), wikaurlrefresh.CreateJobInput{
 		ActorID:     userID,
 		TenantID:    tenantID,
+		KBID:        knowledge.KnowledgeBaseID,
 		KnowledgeID: strings.TrimSpace(c.Param("id")),
 		SourceURL:   strings.TrimSpace(req.SourceURL),
 		Now:         time.Now(),
@@ -102,10 +152,57 @@ func (h *WikaURLRefreshHandler) CreateJob(c *gin.Context) {
 			c.Error(apperrors.NewNotFoundError("wika url refresh feature disabled"))
 			return
 		}
+		if stderrors.Is(err, wikaurlrefresh.ErrUnsafeSourceURL) {
+			c.Error(apperrors.NewBadRequestError("unsafe url refresh source url"))
+			return
+		}
 		c.Error(apperrors.NewInternalServerError("failed to create url refresh job"))
 		return
 	}
 	c.JSON(http.StatusOK, job)
+}
+
+func parseURLRefreshIntQuery(raw string, fallback int) int {
+	if strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
+func sanitizeURLRefreshListResult(result *wikaurlrefresh.ListResult) *wikaurlrefresh.ListResult {
+	if result == nil {
+		return &wikaurlrefresh.ListResult{}
+	}
+	jobs := make([]*types.WikaURLRefreshJob, 0, len(result.Jobs))
+	for _, job := range result.Jobs {
+		if job == nil {
+			continue
+		}
+		copied := *job
+		copied.FetchedContent = ""
+		jobs = append(jobs, &copied)
+	}
+	return &wikaurlrefresh.ListResult{
+		Jobs:      jobs,
+		Schedules: result.Schedules,
+	}
+}
+
+func (h *WikaURLRefreshHandler) resolveKnowledge(c *gin.Context, knowledgeID string) (*types.Knowledge, bool) {
+	if h.knowledge == nil {
+		c.Error(apperrors.NewInternalServerError("wika url refresh knowledge reader unavailable"))
+		return nil, false
+	}
+	knowledge, err := h.knowledge.GetKnowledgeByID(c.Request.Context(), knowledgeID)
+	if err != nil || knowledge == nil || strings.TrimSpace(knowledge.KnowledgeBaseID) == "" {
+		c.Error(apperrors.NewNotFoundError("knowledge not found"))
+		return nil, false
+	}
+	return knowledge, true
 }
 
 func (h *WikaURLRefreshHandler) UpdateSchedule(c *gin.Context) {

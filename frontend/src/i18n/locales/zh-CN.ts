@@ -1043,6 +1043,16 @@ export default {
     versionInfo: "版本信息",
     tenantInfo: "空间信息",
     apiInfo: "API信息",
+    wikaTokens: {
+      title: "AI 工具接入",
+      description: "创建 Wika PAT，配置 MCP/API 知识生产入口，并查看调用统计。",
+      guide: "接入指南",
+      myTokens: "我的 Token",
+      usage: "调用统计",
+      createToken: "创建 Token",
+      createdToken: "Token 已创建",
+      createdTokenDesc: "明文只显示一次，请立即复制到本地工具配置中。",
+    },
     navGroups: {
       account: "账户",
       workspace: "空间",
@@ -2404,12 +2414,128 @@ export default {
       description: "平台级运行时配置，保存后立即对所有租户生效。仅系统管理员可见可改。",
       loading: "加载中...",
       empty: "暂无可配置的系统设置",
+      emptyGroup: "当前分组暂无可配置项",
       badgeRequiresRestart: "需重启",
       badgeSecret: "敏感",
       badgeOverride: "已覆盖",
       badgeOverrideTooltip: "该值已由管理员保存到数据库，覆盖了环境变量与默认值",
       modifiedAt: "上次修改：{value}",
       tagInputPlaceholder: "回车添加条目，例：example.com / *.foo.com / 10.0.0.0/8",
+      tabs: {
+        platformRuntime: {
+          label: "平台运行",
+          description: "管理运行期配置和需要重启后生效的后台任务参数。",
+        },
+        accountTenant: {
+          label: "账号与租户",
+          description: "管理平台注册策略、租户创建限制和新租户默认资源。",
+        },
+        kbDefaults: {
+          label: "知识库默认值",
+          description: "管理普通用户新建知识库时继承的基础模型、索引、分块和生产能力默认值。",
+        },
+        modelsServices: {
+          label: "模型与服务",
+          description: "管理系统默认值可选择的基础模型和底层服务能力池。",
+        },
+        securityNetwork: {
+          label: "安全与网络",
+          description: "管理外部访问、抓取和 SSRF 防护相关配置。",
+        },
+        governance: {
+          label: "治理能力",
+          description: "集中管理冲突、版本、URL 保鲜、评测计划和组织共享能力开关。",
+        },
+        systemAdmins: {
+          label: "系统管理员",
+          description: "管理平台管理员名单，并查看平台级审计事件。",
+        },
+      },
+      groups: {
+        runtimeWorker: {
+          title: "异步任务",
+          description: "影响文档解析、嵌入、刷新等后台队列的运行参数。",
+        },
+        accountRegistration: {
+          title: "注册策略",
+          description: "控制账号能否自助注册，以及公网开放注册的风险边界。",
+        },
+        tenantDefaults: {
+          title: "租户默认策略",
+          description: "控制普通用户可创建的租户数量和新租户默认存储配额。",
+        },
+        kbModels: {
+          title: "基础模型",
+          description: "普通用户新建知识库时默认继承的 LLM、Embedding、VLM 和 ASR 模型。",
+        },
+        kbStorage: {
+          title: "存储",
+          description: "普通用户新建知识库时默认使用的存储引擎。",
+        },
+        kbIndex: {
+          title: "索引能力",
+          description: "控制向量、关键词、Wiki 和知识图谱索引的默认启用状态。",
+        },
+        kbChunking: {
+          title: "分块策略",
+          description: "控制普通文本和父子分块的默认大小、重叠和分隔符。",
+        },
+        kbMultimodal: {
+          title: "多模态",
+          description: "控制图片理解和音频转写能力是否默认启用。",
+        },
+        kbProduction: {
+          title: "生产能力",
+          description: "控制知识库创建后的问题生成等知识生产默认能力。",
+        },
+        networkSsrf: {
+          title: "外部访问",
+          description: "管理 Web Fetch、URL 保鲜等外部抓取能力共享的 SSRF 白名单。",
+        },
+        governanceSwitches: {
+          title: "治理开关",
+          description: "控制 P5 治理能力是否在平台范围启用。",
+        },
+        admins: {
+          title: "管理员与审计",
+          description: "管理平台级管理员名单，并进入审计日志查看系统级操作。",
+        },
+      },
+      relatedActions: {
+        manageModel: "管理模型",
+        manageStorage: "管理存储",
+        manageVectorStore: "管理向量库",
+      },
+      modelServices: {
+        chat: {
+          label: "LLM",
+          description: "问答、摘要、问题生成等文本生成模型。",
+        },
+        embedding: {
+          label: "Embedding",
+          description: "向量索引和语义检索依赖的嵌入模型。",
+        },
+        vllm: {
+          label: "VLM",
+          description: "图片理解和多模态文档解析依赖的视觉模型。",
+        },
+        asr: {
+          label: "ASR",
+          description: "音频转写依赖的语音识别模型。",
+        },
+        storage: {
+          label: "存储引擎",
+          description: "知识库原文、图片和解析结果的存储后端。",
+        },
+        vectorstore: {
+          label: "向量数据库",
+          description: "向量索引和召回使用的底层检索引擎。",
+        },
+        parser: {
+          label: "解析引擎",
+          description: "文档解析、切分和多格式抽取能力。",
+        },
+      },
       priorityHint: {
         title: "关于优先级",
         tier1: "在此页面保存过的项（带「已覆盖」徽章）— 始终以这里的值为准，环境变量会被忽略。",
@@ -2426,6 +2552,27 @@ export default {
         tenant: {
           max_owned_per_user: "每用户最大租户数",
           default_storage_quota_gb: "新租户默认存储配额 (GB)",
+        },
+        kb: {
+          default_llm_model_id: "知识库默认 LLM 模型",
+          default_embedding_model_id: "知识库默认 Embedding 模型",
+          default_storage_provider: "知识库默认存储引擎",
+          default_chunk_size: "默认分块大小",
+          default_chunk_overlap: "默认分块重叠",
+          default_chunk_separators: "默认分隔符",
+          default_parent_child_enabled: "默认启用父子分块",
+          default_parent_chunk_size: "默认父分块大小",
+          default_child_chunk_size: "默认子分块大小",
+          default_index_vector_enabled: "默认启用向量索引",
+          default_index_keyword_enabled: "默认启用关键词索引",
+          default_index_wiki_enabled: "默认启用 Wiki 索引",
+          default_index_graph_enabled: "默认启用图谱索引",
+          default_vlm_enabled: "默认启用 VLM",
+          default_vlm_model_id: "默认 VLM 模型",
+          default_asr_enabled: "默认启用 ASR",
+          default_asr_model_id: "默认 ASR 模型",
+          default_question_generation_enabled: "默认启用问题生成",
+          default_question_generation_count: "默认生成问题数量",
         },
         asynq: {
           concurrency: "异步任务并发数",
@@ -2450,6 +2597,27 @@ export default {
             "新建租户时默认分配的存储配额（GB），包含向量、原文、文本、索引等。" +
             "仅在创建时读取，修改后只对之后新建的租户生效，不会回写已存在的租户。" +
             "0 或负数表示使用内置默认值 10GB。",
+        },
+        kb: {
+          default_llm_model_id: "普通用户创建知识库时默认使用的摘要/问答模型。留空则回退到环境变量或内置默认值。",
+          default_embedding_model_id: "普通用户创建知识库时默认使用的 Embedding 模型。启用向量或关键词索引时应配置。",
+          default_storage_provider: "普通用户创建知识库时默认使用的存储引擎，例如 local 或 minio。",
+          default_chunk_size: "新建知识库的默认分块大小。",
+          default_chunk_overlap: "新建知识库的默认分块重叠长度。",
+          default_chunk_separators: "新建知识库的默认文本分隔符列表。",
+          default_parent_child_enabled: "新建知识库是否默认启用父子分块。",
+          default_parent_chunk_size: "父子分块开启时的默认父分块大小。",
+          default_child_chunk_size: "父子分块开启时的默认子分块大小。",
+          default_index_vector_enabled: "新建知识库是否默认启用向量索引。",
+          default_index_keyword_enabled: "新建知识库是否默认启用关键词索引。",
+          default_index_wiki_enabled: "新建知识库是否默认启用 Wiki 索引。",
+          default_index_graph_enabled: "新建知识库是否默认启用知识图谱索引。",
+          default_vlm_enabled: "新建知识库是否默认启用图片理解。",
+          default_vlm_model_id: "图片理解默认使用的 VLM 模型。",
+          default_asr_enabled: "新建知识库是否默认启用音频转写。",
+          default_asr_model_id: "音频转写默认使用的 ASR 模型。",
+          default_question_generation_enabled: "新建知识库是否默认启用问题生成。",
+          default_question_generation_count: "启用问题生成时默认生成的问题数量。",
         },
         asynq: {
           concurrency:
@@ -2507,6 +2675,7 @@ export default {
         label: "系统管理员",
         description: "拥有平台级权限的用户。在右侧输入邮箱并回车即可提升用户为管理员；点击 × 即为撤销其权限。当前你（自己）已是管理员，不在列表中显示，也无法被自己撤销。",
         placeholder: "输入用户邮箱并回车",
+        auditButton: "查看审计日志",
         loadFailed: "加载系统管理员失败",
         saveSuccess: "已更新系统管理员",
         saveFailed: "更新系统管理员失败",

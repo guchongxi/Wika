@@ -60,7 +60,9 @@ const (
 	AuditActionWikaConflictCheckCreated AuditAction = "wika.conflict.check_created"
 	// AuditActionWikaConflictItemResolved fires when a maintainer changes
 	// a conflict item status. Evidence正文不进入审计日志。
-	AuditActionWikaConflictItemResolved AuditAction = "wika.conflict.item_resolved"
+	AuditActionWikaConflictItemConfirmed AuditAction = "wika.conflict.item_confirmed"
+	AuditActionWikaConflictItemDismissed AuditAction = "wika.conflict.item_dismissed"
+	AuditActionWikaConflictItemResolved  AuditAction = "wika.conflict.item_resolved"
 	// AuditActionWikaVersionRecorded fires when Wika records a knowledge
 	// version snapshot. Content and diff正文不进入审计日志。
 	AuditActionWikaVersionRecorded AuditAction = "wika.version.recorded"
@@ -76,6 +78,12 @@ const (
 	// AuditActionWikaURLRefreshScheduleDisabled fires when URL refresh
 	// consecutive failures disable a schedule. URL 和抓取正文不进入审计日志。
 	AuditActionWikaURLRefreshScheduleDisabled AuditAction = "wika.url_refresh.schedule_disabled"
+	// AuditActionWikaEvalScheduleUpdated fires when an eval schedule is
+	// created, updated, or disabled. QA 正文不进入审计日志。
+	AuditActionWikaEvalScheduleUpdated AuditAction = "wika.eval_schedule.updated"
+	// AuditActionWikaEvalScheduleRunFailed fires when a scheduled eval
+	// run fails and advances schedule failure counters. expected_answer 不进入审计日志。
+	AuditActionWikaEvalScheduleRunFailed AuditAction = "wika.eval_schedule.run_failed"
 	// AuditActionWikaOrgShareCreated fires when a source team creates a
 	// Wika Organization share. Details must not contain正文、证据或 snippet。
 	AuditActionWikaOrgShareCreated AuditAction = "wika.org_share.created"

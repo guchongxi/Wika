@@ -85,6 +85,32 @@ func TestGormConflictStoreSavesCandidatesAndCompletesCheck(t *testing.T) {
 	}
 }
 
+func TestGormConflictStoreCanonicalizesCandidatePair(t *testing.T) {
+	db := setupConflictStoreTestDB(t)
+	require.NoError(t, db.Create(&types.Tenant{ID: 80, Name: "team", SpaceType: types.SpaceTypeTeam}).Error)
+	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb-team", TenantID: 80, Type: types.KnowledgeBaseTypeDocument}).Error)
+	require.NoError(t, db.Create(&types.Knowledge{ID: "k-1", TenantID: 80, KnowledgeBaseID: "kb-team", Title: "A"}).Error)
+	require.NoError(t, db.Create(&types.Knowledge{ID: "k-2", TenantID: 80, KnowledgeBaseID: "kb-team", Title: "B"}).Error)
+	check := &types.WikaConflictCheck{TenantID: 80, KBID: "kb-team", Trigger: TriggerManual, Status: CheckStatusRunning, LockedBy: "worker-1", CreatedBy: "u-owner"}
+	require.NoError(t, db.Create(check).Error)
+	store := NewGormStore(db)
+
+	err := store.SaveConflictItems(context.Background(), check, []Candidate{
+		{SourceKnowledgeID: "k-2", TargetKnowledgeID: "k-1", ConflictType: ConflictTypeDuplicate, ConfidenceScore: 0.91},
+		{SourceKnowledgeID: "k-1", TargetKnowledgeID: "k-2", ConflictType: ConflictTypeDuplicate, ConfidenceScore: 0.88},
+	})
+	require.NoError(t, err)
+
+	var items []types.WikaConflictItem
+	require.NoError(t, db.Find(&items, "check_id = ?", check.ID).Error)
+	if len(items) != 1 {
+		t.Fatalf("expected one canonical conflict item, got %+v", items)
+	}
+	if items[0].SourceKnowledgeID != "k-1" || items[0].TargetKnowledgeID != "k-2" {
+		t.Fatalf("expected canonical pair k-1/k-2, got %+v", items[0])
+	}
+}
+
 func TestGormConflictStoreResolveItemRejectsTerminalTransition(t *testing.T) {
 	db := setupConflictStoreTestDB(t)
 	require.NoError(t, db.Create(&types.Tenant{ID: 80, Name: "team", SpaceType: types.SpaceTypeTeam}).Error)

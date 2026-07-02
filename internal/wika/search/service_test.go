@@ -46,9 +46,10 @@ type fakeKnowledgeSearcher struct {
 	resp   []*types.Knowledge
 	more   bool
 
-	listKBID string
-	listPage *types.Pagination
-	listResp *types.PageResult
+	listKBID     string
+	listTenantID uint64
+	listPage     *types.Pagination
+	listResp     *types.PageResult
 
 	byID map[string]*types.Knowledge
 }
@@ -62,6 +63,9 @@ func (s *fakeKnowledgeSearcher) SearchKnowledgeForScopes(ctx context.Context, sc
 
 func (s *fakeKnowledgeSearcher) ListPagedKnowledgeByKnowledgeBaseID(ctx context.Context, kbID string, page *types.Pagination, filter types.KnowledgeListFilter) (*types.PageResult, error) {
 	s.listKBID = kbID
+	if tenantID, ok := ctx.Value(types.TenantIDContextKey).(uint64); ok {
+		s.listTenantID = tenantID
+	}
 	s.listPage = page
 	if s.listResp != nil {
 		return s.listResp, nil
@@ -211,6 +215,77 @@ func TestSearchKnowledgeReturnsGraphContribution(t *testing.T) {
 	}
 }
 
+func TestSearchKnowledgeCanRestrictToSingleKB(t *testing.T) {
+	store := &fakeSearchStore{
+		scopes: []ReadableScope{
+			{TenantID: 70, KBID: "kb-personal", Source: SourcePersonal},
+			{TenantID: 80, KBID: "kb-team", Source: SourceTeam},
+			{TenantID: 81, KBID: "kb-other", Source: SourceTeam},
+		},
+	}
+	searcher := &fakeKnowledgeSearcher{
+		resp: []*types.Knowledge{{ID: "k-team", TenantID: 80, KnowledgeBaseID: "kb-team", Title: "团队运行手册"}},
+	}
+	graph := &fakeGraphSearcher{}
+	svc := &Service{store: store, knowledge: searcher, graph: graph}
+
+	got, err := svc.SearchKnowledge(context.Background(), SearchInput{
+		UserID:      "u-test",
+		Query:       "运行手册",
+		Limit:       5,
+		IncludeTeam: true,
+		KBID:        "kb-team",
+	})
+	if err != nil {
+		t.Fatalf("SearchKnowledge returned error: %v", err)
+	}
+	if len(searcher.scopes) != 1 || searcher.scopes[0].KBID != "kb-team" || searcher.scopes[0].TenantID != 80 {
+		t.Fatalf("expected main search to be restricted to kb-team, got %+v", searcher.scopes)
+	}
+	if len(graph.scopes) != 1 || graph.scopes[0].KBID != "kb-team" || graph.scopes[0].TenantID != 80 {
+		t.Fatalf("expected graph search to be restricted to kb-team, got %+v", graph.scopes)
+	}
+	if len(got.Results) != 1 || got.Results[0].KnowledgeID != "k-team" {
+		t.Fatalf("unexpected restricted search result: %+v", got)
+	}
+}
+
+func TestSearchKnowledgeSnippetUsesManualContentWhenDescriptionMissing(t *testing.T) {
+	store := &fakeSearchStore{
+		scopes: []ReadableScope{{TenantID: 70, KBID: "kb-personal", Source: SourcePersonal}},
+	}
+	knowledge := &types.Knowledge{
+		ID:              "k-personal",
+		TenantID:        70,
+		KnowledgeBaseID: "kb-personal",
+		Title:           "个人知识",
+	}
+	if err := knowledge.SetManualMetadata(types.NewManualKnowledgeMetadata(
+		"排查服务启动失败时先检查全局默认模型和 KB defaults。",
+		types.ManualKnowledgeStatusPublish,
+		1,
+	)); err != nil {
+		t.Fatalf("set manual metadata: %v", err)
+	}
+	searcher := &fakeKnowledgeSearcher{resp: []*types.Knowledge{knowledge}}
+	svc := &Service{store: store, knowledge: searcher}
+
+	got, err := svc.SearchKnowledge(context.Background(), SearchInput{
+		UserID: "u-test",
+		Query:  "全局默认模型",
+		Limit:  5,
+	})
+	if err != nil {
+		t.Fatalf("SearchKnowledge returned error: %v", err)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("expected one result, got %+v", got.Results)
+	}
+	if got.Results[0].Snippet != "排查服务启动失败时先检查全局默认模型和 KB defaults。" {
+		t.Fatalf("expected manual content snippet, got %q", got.Results[0].Snippet)
+	}
+}
+
 func TestSearchKnowledgeCanExcludeTeamScopes(t *testing.T) {
 	store := &fakeSearchStore{scopes: []ReadableScope{
 		{TenantID: 70, KBID: "kb-personal", Source: SourcePersonal},
@@ -266,6 +341,58 @@ func TestSearchKnowledgeRedactsSharedSnippetWhenContentIsNotAllowed(t *testing.T
 	}
 	if got.Results[0].FreshnessStatus != "" || !got.Results[0].UpdatedAt.IsZero() {
 		t.Fatalf("shared result must redact fields outside allowed_fields, got %+v", got.Results[0])
+	}
+}
+
+func TestSearchKnowledgeSharedDefaultFieldsExposeOnlyAllowedMetadata(t *testing.T) {
+	updatedAt := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	store := &fakeSearchStore{
+		scopes: []ReadableScope{{
+			TenantID:      80,
+			KBID:          "kb-shared",
+			Source:        SourceShared,
+			AllowedFields: []string{"id", "title", "source_tenant_id", "source_kb_id", "updated_at", "quality_score", "freshness_status"},
+		}},
+		states: map[string]*types.WikaKnowledgeState{
+			"k-shared": {KnowledgeID: "k-shared", QualityScore: 88, FreshnessStatus: "expiring"},
+		},
+	}
+	searcher := &fakeKnowledgeSearcher{
+		resp: []*types.Knowledge{{
+			ID:              "k-shared",
+			TenantID:        80,
+			KnowledgeBaseID: "kb-shared",
+			Title:           "共享标题",
+			Description:     "不允许返回的共享正文摘要",
+			UpdatedAt:       updatedAt,
+		}},
+	}
+	svc := &Service{store: store, knowledge: searcher}
+
+	got, err := svc.SearchKnowledge(context.Background(), SearchInput{
+		UserID:      "u-target",
+		Query:       "共享",
+		IncludeTeam: true,
+	})
+	if err != nil {
+		t.Fatalf("SearchKnowledge returned error: %v", err)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("expected shared result, got %+v", got.Results)
+	}
+	item := got.Results[0]
+	if item.KnowledgeID != "k-shared" ||
+		item.Title != "共享标题" ||
+		item.SourceSpace != SourceShared ||
+		item.SourceTenantID != 80 ||
+		item.SourceKBID != "kb-shared" ||
+		!item.UpdatedAt.Equal(updatedAt) ||
+		item.QualityScore != 88 ||
+		item.FreshnessStatus != "expiring" {
+		t.Fatalf("unexpected shared metadata result: %+v", item)
+	}
+	if item.Snippet != "" {
+		t.Fatalf("shared metadata result must not expose snippet, got %q", item.Snippet)
 	}
 }
 
@@ -365,6 +492,9 @@ func TestListMyKnowledgeUsesPersonalDefaultScope(t *testing.T) {
 	if searcher.listKBID != "kb-personal" {
 		t.Fatalf("expected personal default KB, got %q", searcher.listKBID)
 	}
+	if searcher.listTenantID != 70 {
+		t.Fatalf("expected personal tenant context 70, got %d", searcher.listTenantID)
+	}
 	if searcher.listPage == nil || searcher.listPage.PageSize != 10 {
 		t.Fatalf("unexpected pagination: %+v", searcher.listPage)
 	}
@@ -463,5 +593,60 @@ func TestExpandKnowledgeRedactsSharedContentWhenContentIsNotAllowed(t *testing.T
 	}
 	if got.Results[0].FreshnessStatus != "" || !got.Results[0].UpdatedAt.IsZero() {
 		t.Fatalf("shared expanded result must redact fields outside allowed_fields, got %+v", got.Results[0])
+	}
+}
+
+func TestExpandKnowledgeSharedDefaultFieldsExposeOnlyAllowedMetadata(t *testing.T) {
+	updatedAt := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	store := &fakeSearchStore{
+		scopes: []ReadableScope{
+			{
+				TenantID:      80,
+				KBID:          "kb-shared",
+				Source:        SourceShared,
+				AllowedFields: []string{"id", "title", "source_tenant_id", "source_kb_id", "updated_at", "quality_score", "freshness_status"},
+			},
+		},
+		states: map[string]*types.WikaKnowledgeState{
+			"k-shared": {KnowledgeID: "k-shared", QualityScore: 88, FreshnessStatus: "expiring"},
+		},
+	}
+	shared := &types.Knowledge{
+		ID:              "k-shared",
+		TenantID:        80,
+		KnowledgeBaseID: "kb-shared",
+		Title:           "共享标题",
+		Description:     "共享摘要",
+		UpdatedAt:       updatedAt,
+	}
+	if err := shared.SetManualMetadata(types.NewManualKnowledgeMetadata("不允许返回的共享正文", types.ManualKnowledgeStatusPublish, 1)); err != nil {
+		t.Fatalf("set manual metadata: %v", err)
+	}
+	searcher := &fakeKnowledgeSearcher{byID: map[string]*types.Knowledge{"k-shared": shared}}
+	svc := &Service{store: store, knowledge: searcher}
+
+	got, err := svc.ExpandKnowledge(context.Background(), ExpandInput{
+		UserID: "u-target",
+		IDs:    []string{"k-shared"},
+	})
+	if err != nil {
+		t.Fatalf("ExpandKnowledge returned error: %v", err)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("expected one shared result, got %+v", got.Results)
+	}
+	item := got.Results[0]
+	if item.KnowledgeID != "k-shared" ||
+		item.Title != "共享标题" ||
+		item.SourceSpace != SourceShared ||
+		item.SourceTenantID != 80 ||
+		item.SourceKBID != "kb-shared" ||
+		!item.UpdatedAt.Equal(updatedAt) ||
+		item.QualityScore != 88 ||
+		item.FreshnessStatus != "expiring" {
+		t.Fatalf("unexpected shared expanded metadata result: %+v", item)
+	}
+	if item.Content != "" || item.Source != "" {
+		t.Fatalf("shared expanded metadata must not expose content/source, got %+v", item)
 	}
 }

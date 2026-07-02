@@ -24,6 +24,7 @@ var ErrFeatureDisabled = errors.New("wika url refresh feature disabled")
 var ErrInvalidSchedule = errors.New("invalid url refresh schedule")
 var ErrScheduleNotFound = errors.New("url refresh schedule not found")
 var ErrScheduleLeaseUnavailable = errors.New("url refresh schedule lease unavailable")
+var ErrUnsafeSourceURL = errors.New("unsafe source url")
 
 const (
 	ReviewDecisionApply  = "apply"
@@ -47,6 +48,21 @@ type RunJobInput struct {
 	WorkerID      string
 	Now           time.Time
 	LeaseDuration time.Duration
+}
+
+type ListInput struct {
+	ActorID     string
+	TenantID    uint64
+	KBID        string
+	KnowledgeID string
+	Status      string
+	Limit       int
+	Offset      int
+}
+
+type ListResult struct {
+	Jobs      []*types.WikaURLRefreshJob      `json:"jobs"`
+	Schedules []*types.WikaURLRefreshSchedule `json:"schedules"`
 }
 
 type CreateOrUpdateScheduleInput struct {

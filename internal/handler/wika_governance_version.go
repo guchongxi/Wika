@@ -47,6 +47,10 @@ func (h *WikaVersionHandler) ListVersions(c *gin.Context) {
 		SystemAdmin: types.IsSystemAdminFromContext(c.Request.Context()),
 	})
 	if err != nil {
+		if stderrors.Is(err, wikaversion.ErrFeatureDisabled) {
+			c.Error(apperrors.NewNotFoundError("wika version feature disabled"))
+			return
+		}
 		c.Error(apperrors.NewInternalServerError("failed to list knowledge versions"))
 		return
 	}
@@ -81,6 +85,10 @@ func (h *WikaVersionHandler) Diff(c *gin.Context) {
 		SystemAdmin: types.IsSystemAdminFromContext(c.Request.Context()),
 	})
 	if err != nil {
+		if stderrors.Is(err, wikaversion.ErrFeatureDisabled) {
+			c.Error(apperrors.NewNotFoundError("wika version feature disabled"))
+			return
+		}
 		if stderrors.Is(err, wikaversion.ErrVersionNotFound) {
 			c.Error(apperrors.NewNotFoundError("knowledge version not found"))
 			return

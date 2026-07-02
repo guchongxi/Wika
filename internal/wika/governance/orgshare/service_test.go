@@ -47,8 +47,100 @@ func setupOrgShareTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&types.WikaOrgShare{}))
+	require.NoError(t, db.AutoMigrate(
+		&types.Tenant{},
+		&types.KnowledgeBase{},
+		&types.Organization{},
+		&types.OrganizationTenantMember{},
+		&types.WikaOrgShare{},
+	))
+	require.NoError(t, db.Create(&types.Tenant{ID: 80, Name: "source", SpaceType: types.SpaceTypeTeam}).Error)
+	require.NoError(t, db.Create(&types.Tenant{ID: 90, Name: "target", SpaceType: types.SpaceTypeTeam}).Error)
+	require.NoError(t, db.Create(&types.Organization{ID: "org-1", Name: "org"}).Error)
+	require.NoError(t, db.Create(&types.OrganizationTenantMember{ID: "otm-source", OrganizationID: "org-1", TenantID: 80, Role: types.OrgRoleAdmin}).Error)
+	require.NoError(t, db.Create(&types.OrganizationTenantMember{ID: "otm-target", OrganizationID: "org-1", TenantID: 90, Role: types.OrgRoleViewer}).Error)
+	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb-source", TenantID: 80, Type: types.KnowledgeBaseTypeDocument}).Error)
 	return db
+}
+
+func TestServiceListSharesFiltersByOrgTenantAndStatus(t *testing.T) {
+	db := setupOrgShareTestDB(t)
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, db.Create(&types.WikaOrgShare{
+		OrgID:          "org-1",
+		SourceTenantID: 80,
+		SourceKBID:     "kb-source-active",
+		TargetTenantID: 90,
+		Status:         types.WikaOrgShareStatusActive,
+		Mode:           types.WikaOrgShareModeReference,
+		AllowedFields:  types.JSON(`["id","title"]`),
+		CreatedBy:      "u-source",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}).Error)
+	require.NoError(t, db.Create(&types.WikaOrgShare{
+		OrgID:          "org-1",
+		SourceTenantID: 81,
+		SourceKBID:     "kb-target-pending",
+		TargetTenantID: 90,
+		Status:         types.WikaOrgShareStatusPending,
+		Mode:           types.WikaOrgShareModeReference,
+		AllowedFields:  types.JSON(`["id","title"]`),
+		CreatedBy:      "u-source",
+		CreatedAt:      now,
+		UpdatedAt:      now.Add(time.Minute),
+	}).Error)
+	require.NoError(t, db.Create(&types.WikaOrgShare{
+		OrgID:          "org-2",
+		SourceTenantID: 80,
+		SourceKBID:     "kb-other-org",
+		TargetTenantID: 90,
+		Status:         types.WikaOrgShareStatusActive,
+		Mode:           types.WikaOrgShareModeReference,
+		AllowedFields:  types.JSON(`["id","title"]`),
+		CreatedBy:      "u-source",
+		CreatedAt:      now,
+		UpdatedAt:      now.Add(2 * time.Minute),
+	}).Error)
+
+	svc := NewService(NewGormStore(db), fakeTeamAdminChecker{}, WithFeatureGate(fakeOrgShareGate{enabled: true}))
+	result, err := svc.ListShares(context.Background(), ListSharesInput{
+		ActorID:  "u-source",
+		TenantID: 80,
+		OrgID:    "org-1",
+		Status:   types.WikaOrgShareStatusActive,
+		Limit:    10,
+	})
+	require.NoError(t, err)
+	if result.Total != 1 || len(result.Items) != 1 || result.Items[0].SourceKBID != "kb-source-active" {
+		t.Fatalf("expected only active source share for tenant 80, got %+v", result)
+	}
+
+	targetResult, err := svc.ListShares(context.Background(), ListSharesInput{
+		ActorID:  "u-target",
+		TenantID: 90,
+		OrgID:    "org-1",
+		Status:   types.WikaOrgShareStatusPending,
+		Limit:    10,
+	})
+	require.NoError(t, err)
+	if targetResult.Total != 1 || len(targetResult.Items) != 1 || targetResult.Items[0].SourceKBID != "kb-target-pending" {
+		t.Fatalf("expected pending target share for tenant 90, got %+v", targetResult)
+	}
+}
+
+func TestServiceListSharesRejectsUnknownStatus(t *testing.T) {
+	svc := NewService(NewGormStore(setupOrgShareTestDB(t)), fakeTeamAdminChecker{}, WithFeatureGate(fakeOrgShareGate{enabled: true}))
+
+	_, err := svc.ListShares(context.Background(), ListSharesInput{
+		ActorID:  "u-source",
+		TenantID: 80,
+		OrgID:    "org-1",
+		Status:   "deleted",
+	})
+	if err != ErrInvalidShareState {
+		t.Fatalf("expected ErrInvalidShareState, got %v", err)
+	}
 }
 
 func TestServiceCreateShareRejectsUnsafeAllowedFields(t *testing.T) {
@@ -65,6 +157,24 @@ func TestServiceCreateShareRejectsUnsafeAllowedFields(t *testing.T) {
 	})
 	if err != ErrInvalidAllowedFields {
 		t.Fatalf("expected ErrInvalidAllowedFields, got %v", err)
+	}
+}
+
+func TestDefaultAllowedFieldsIncludeSharedMetadata(t *testing.T) {
+	got := DefaultAllowedFields()
+	required := []string{"id", "title", "source_tenant_id", "source_kb_id", "updated_at", "quality_score", "freshness_status"}
+	for _, field := range required {
+		if !containsString(got, field) {
+			t.Fatalf("expected default allowed fields to include %q, got %+v", field, got)
+		}
+		if !IsAllowedField(field) {
+			t.Fatalf("expected %q to be an allowed org share field", field)
+		}
+	}
+	for _, forbidden := range []string{"content", "snippet", "chunk", "evidence_text", "file", "metadata"} {
+		if IsAllowedField(forbidden) {
+			t.Fatalf("field %q must not be allowed for org share", forbidden)
+		}
 	}
 }
 
@@ -101,6 +211,65 @@ func TestServiceCreateShareActiveWhenActorAdminsBothTeams(t *testing.T) {
 	require.NoError(t, err)
 	if share.Status != types.WikaOrgShareStatusActive || share.AcceptedBy != "u-owner" || share.AcceptedAt == nil {
 		t.Fatalf("expected active share accepted by actor, got %+v", share)
+	}
+}
+
+func TestServiceCreateShareRejectsPersonalSourceKB(t *testing.T) {
+	db := setupOrgShareTestDB(t)
+	require.NoError(t, db.Create(&types.Tenant{ID: 70, Name: "personal", SpaceType: types.SpaceTypePersonal}).Error)
+	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb-personal", TenantID: 70, Type: types.KnowledgeBaseTypeDocument}).Error)
+	require.NoError(t, db.Create(&types.OrganizationTenantMember{ID: "otm-personal", OrganizationID: "org-1", TenantID: 70, Role: types.OrgRoleAdmin}).Error)
+	svc := NewService(NewGormStore(db), fakeTeamAdminChecker{adminTenants: map[uint64]bool{70: true, 90: true}}, WithFeatureGate(fakeOrgShareGate{enabled: true}))
+
+	_, err := svc.CreateShare(context.Background(), CreateShareInput{
+		ActorID:        "u-owner",
+		OrgID:          "org-1",
+		SourceTenantID: 70,
+		SourceKBID:     "kb-personal",
+		TargetTenantID: 90,
+		AllowedFields:  []string{"id", "title"},
+		Now:            time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC),
+	})
+	if err != ErrScopeDenied {
+		t.Fatalf("expected ErrScopeDenied for personal source KB, got %v", err)
+	}
+}
+
+func TestServiceCreateShareRejectsTargetOutsideOrganization(t *testing.T) {
+	db := setupOrgShareTestDB(t)
+	require.NoError(t, db.Create(&types.Tenant{ID: 91, Name: "outside", SpaceType: types.SpaceTypeTeam}).Error)
+	svc := NewService(NewGormStore(db), fakeTeamAdminChecker{adminTenants: map[uint64]bool{80: true, 91: true}}, WithFeatureGate(fakeOrgShareGate{enabled: true}))
+
+	_, err := svc.CreateShare(context.Background(), CreateShareInput{
+		ActorID:        "u-owner",
+		OrgID:          "org-1",
+		SourceTenantID: 80,
+		SourceKBID:     "kb-source",
+		TargetTenantID: 91,
+		AllowedFields:  []string{"id", "title"},
+		Now:            time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC),
+	})
+	if err != ErrScopeDenied {
+		t.Fatalf("expected ErrScopeDenied for target outside organization, got %v", err)
+	}
+}
+
+func TestServiceCreateShareRejectsSourceKBFromAnotherTenant(t *testing.T) {
+	db := setupOrgShareTestDB(t)
+	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb-target-owned", TenantID: 90, Type: types.KnowledgeBaseTypeDocument}).Error)
+	svc := NewService(NewGormStore(db), fakeTeamAdminChecker{adminTenants: map[uint64]bool{80: true, 90: true}}, WithFeatureGate(fakeOrgShareGate{enabled: true}))
+
+	_, err := svc.CreateShare(context.Background(), CreateShareInput{
+		ActorID:        "u-owner",
+		OrgID:          "org-1",
+		SourceTenantID: 80,
+		SourceKBID:     "kb-target-owned",
+		TargetTenantID: 90,
+		AllowedFields:  []string{"id", "title"},
+		Now:            time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC),
+	})
+	if err != ErrScopeDenied {
+		t.Fatalf("expected ErrScopeDenied for source KB owned by another tenant, got %v", err)
 	}
 }
 
@@ -335,4 +504,13 @@ func TestServiceDoesNotAdvanceShareStateWhenAuditFails(t *testing.T) {
 	if persisted.Status != types.WikaOrgShareStatusActive || persisted.RevokedBy != "" || persisted.RevokedAt != nil {
 		t.Fatalf("audit-failed revoke must keep active state, got %+v", persisted)
 	}
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }

@@ -7,6 +7,7 @@ A Model Context Protocol server that provides access to the WeKnora knowledge ma
 
 import argparse
 import asyncio
+import contextvars
 import functools
 import json
 import logging
@@ -30,12 +31,78 @@ logger = logging.getLogger(__name__)
 WEKNORA_BASE_URL = os.getenv("WEKNORA_BASE_URL", "http://localhost:8080/api/v1")
 WEKNORA_API_KEY = os.getenv("WEKNORA_API_KEY", "")
 WEKNORA_PAT = os.getenv("WEKNORA_PAT", "")
+WIKA_DAILY_TOOL_NAMES = frozenset(
+    {
+        "push_knowledge",
+        "search_knowledge",
+        "expand_knowledge_result",
+        "get_my_knowledge",
+        "suggest_to_team",
+    }
+)
+_REMOTE_AUTHORIZATION_HEADER = contextvars.ContextVar(
+    "weknora_remote_authorization_header", default=""
+)
+_REMOTE_API_KEY_HEADER = contextvars.ContextVar(
+    "weknora_remote_api_key_header", default=""
+)
+_REMOTE_TOOLSET_HEADER = contextvars.ContextVar(
+    "weknora_remote_toolset_header", default=""
+)
 # Chat SSE read timeout in seconds. LLM responses can be slow; default 300s.
 try:
     WEKNORA_CHAT_TIMEOUT = int(os.getenv("WEKNORA_CHAT_TIMEOUT", "300"))
 except ValueError:
     logger.warning("WEKNORA_CHAT_TIMEOUT is not a valid integer; falling back to 300s.")
     WEKNORA_CHAT_TIMEOUT = 300
+
+
+def _server_toolset_cap() -> str:
+    """返回服务端允许的最大工具集；dynamic 表示可按请求验权切换。"""
+    toolset = os.getenv("WEKNORA_MCP_TOOLSET", "dynamic").strip().lower()
+    if toolset in {"daily", "dynamic", "all"}:
+        return toolset
+    return "dynamic"
+
+
+def _requested_toolset() -> str:
+    requested = _REMOTE_TOOLSET_HEADER.get().strip().lower()
+    if requested in {"admin", "all", "management"}:
+        return "admin"
+    return "daily"
+
+
+def _admin_permission_denied() -> PermissionError:
+    return PermissionError(
+        "Permission denied: admin MCP toolset requires X-Wika-MCP-Toolset: admin, "
+        "a valid Wika PAT with mcp:admin scope, and tenant Admin/Owner permission."
+    )
+
+
+def _effective_toolset() -> str:
+    cap = _server_toolset_cap()
+    requested = _requested_toolset()
+    if cap == "all":
+        return "admin"
+    if requested == "daily":
+        return "daily"
+    if cap == "daily":
+        raise _admin_permission_denied()
+    if client.authorize_mcp_admin_toolset():
+        return "admin"
+    raise _admin_permission_denied()
+
+
+def _is_tool_enabled(name: str) -> bool:
+    if _effective_toolset() == "admin":
+        return True
+    return name in WIKA_DAILY_TOOL_NAMES
+
+
+def _filter_tools_for_current_toolset(tools: list[types.Tool]) -> list[types.Tool]:
+    if _effective_toolset() == "admin":
+        return tools
+    return [tool for tool in tools if tool.name in WIKA_DAILY_TOOL_NAMES]
 
 
 class WeKnoraClient:
@@ -66,6 +133,21 @@ class WeKnoraClient:
             headers["X-API-Key"] = api_key
         self.session.headers.update(headers)
 
+    def _request_headers(self, extra_headers: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        """构造单次请求 headers，远程 MCP 请求头优先于服务端环境变量。"""
+        headers = self.session.headers.copy()
+        if extra_headers:
+            headers.update(extra_headers)
+        remote_authorization = _REMOTE_AUTHORIZATION_HEADER.get()
+        remote_api_key = _REMOTE_API_KEY_HEADER.get()
+        if remote_authorization:
+            headers["Authorization"] = remote_authorization
+            headers.pop("X-API-Key", None)
+        elif remote_api_key:
+            headers["X-API-Key"] = remote_api_key
+            headers.pop("Authorization", None)
+        return headers
+
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """Make a request to the WeKnora API
 
@@ -79,8 +161,9 @@ class WeKnoraClient:
         """
         url = f"{self.base_url}{endpoint}"
         try:
+            headers = self._request_headers(kwargs.pop("headers", None))
             # Execute HTTP request with the specified method
-            response = self.session.request(method, url, **kwargs)
+            response = self.session.request(method, url, headers=headers, **kwargs)
             # Raise exception for HTTP error status codes (4xx, 5xx)
             response.raise_for_status()
             # Parse and return JSON response
@@ -208,7 +291,7 @@ class WeKnoraClient:
             data = {"enable_multimodel": str(enable_multimodel).lower()}
             # Temporarily remove Content-Type header for multipart/form-data request
             # (requests will set it automatically with boundary)
-            headers = self.session.headers.copy()
+            headers = self._request_headers()
             headers.pop("Content-Type", None)
             # Use requests.post directly instead of session to avoid header conflicts
             response = requests.post(
@@ -216,6 +299,7 @@ class WeKnoraClient:
                 headers=headers,
                 files=files,
                 data=data,
+                verify=self.verify_ssl,
             )
             response.raise_for_status()
             return response.json()
@@ -323,6 +407,24 @@ class WeKnoraClient:
         data.update({key: value for key, value in optional.items() if value is not None})
         return self._request("POST", "/wika/suggestions", json=data)
 
+    def authorize_mcp_admin_toolset(self) -> bool:
+        """校验当前请求 PAT 是否可启用 MCP 管理工具集。"""
+        url = f"{self.base_url}/wika/mcp/admin/authorize"
+        try:
+            response = self.session.get(
+                url,
+                headers=self._request_headers(),
+                timeout=(5, 10),
+            )
+            if response.status_code in (401, 403):
+                return False
+            response.raise_for_status()
+            data = response.json()
+            return data.get("allowed") is True and data.get("toolset") == "admin"
+        except RequestException as e:
+            logger.warning(f"MCP admin toolset authorization failed: {e}")
+            return False
+
     # Model Management - Methods for managing AI models (LLM, Embedding, Rerank)
     def create_model(
         self,
@@ -416,6 +518,7 @@ class WeKnoraClient:
             # Timeout: 10s to establish connection, WEKNORA_CHAT_TIMEOUT for reading response
             response = self.session.post(
                 url, json=body, stream=True,
+                headers=self._request_headers(),
                 timeout=(10, WEKNORA_CHAT_TIMEOUT),
             )
             response.raise_for_status()
@@ -573,7 +676,7 @@ client = WeKnoraClient(WEKNORA_BASE_URL, WEKNORA_API_KEY, WEKNORA_PAT)
 @app.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
     """List all available WeKnora tools with their schemas"""
-    return [
+    tools = [
         # Tenant Management
         types.Tool(
             name="create_tenant",
@@ -1193,6 +1296,7 @@ async def handle_list_tools() -> list[types.Tool]:
             },
         ),
     ]
+    return _filter_tools_for_current_toolset(tools)
 
 
 @app.call_tool()
@@ -1212,6 +1316,16 @@ async def handle_call_tool(
     try:
         # Use empty dict if no arguments provided
         args = arguments or {}
+        if not _is_tool_enabled(name):
+            return [
+                types.TextContent(
+                    type="text",
+                    text=(
+                        f"Tool '{name}' is not available in the daily MCP toolset. "
+                        "Use X-Wika-MCP-Toolset: admin with an authorized PAT for admin tools."
+                    ),
+                )
+            ]
 
         # Tenant Management - Route tenant-related operations
         if name == "create_tenant":
@@ -1486,6 +1600,8 @@ async def handle_call_tool(
             )
         ]
 
+    except PermissionError as e:
+        return [types.TextContent(type="text", text=str(e))]
     except Exception as e:
         # Log and return error message
         logger.error(f"Tool execution failed: {e}")
@@ -1504,6 +1620,32 @@ def _init_options() -> InitializationOptions:
             experimental_capabilities={},
         ),
     )
+
+
+class MCPAuthContextMiddleware:
+    """从远程 MCP HTTP 请求读取认证头，并绑定到当前异步上下文。"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        authorization = headers.get(b"authorization", b"").decode("latin-1")
+        api_key = headers.get(b"x-api-key", b"").decode("latin-1")
+        toolset = headers.get(b"x-wika-mcp-toolset", b"").decode("latin-1")
+        auth_token = _REMOTE_AUTHORIZATION_HEADER.set(authorization)
+        api_key_token = _REMOTE_API_KEY_HEADER.set(api_key)
+        toolset_token = _REMOTE_TOOLSET_HEADER.set(toolset)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _REMOTE_AUTHORIZATION_HEADER.reset(auth_token)
+            _REMOTE_API_KEY_HEADER.reset(api_key_token)
+            _REMOTE_TOOLSET_HEADER.reset(toolset_token)
 
 
 async def run_stdio():
@@ -1532,12 +1674,12 @@ async def run_sse(host: str, port: int):
         async with sse.connect_sse(scope, receive, send) as streams:
             await app.run(streams[0], streams[1], _init_options())
 
-    starlette_app = Starlette(
+    starlette_app = MCPAuthContextMiddleware(Starlette(
         routes=[
             Mount("/sse", app=handle_sse),
             Mount("/messages/", app=sse.handle_post_message),
         ]
-    )
+    ))
 
     logger.info("Starting SSE MCP server on %s:%d", host, port)
     logger.info("SSE endpoint:  http://%s:%d/sse", host, port)
@@ -1571,10 +1713,10 @@ async def run_http(host: str, port: int):
         async with session_manager.run():
             yield
 
-    starlette_app = Starlette(
+    starlette_app = MCPAuthContextMiddleware(Starlette(
         routes=[Mount("/", app=session_manager.handle_request)],
         lifespan=lifespan,
-    )
+    ))
 
     logger.info("Starting Streamable HTTP MCP server on %s:%d", host, port)
     logger.info("MCP endpoint:  http://%s:%d/mcp", host, port)

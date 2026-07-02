@@ -107,6 +107,9 @@ func (h *WikaKnowledgeHandler) PushKnowledge(c *gin.Context) {
 		c.Error(apperrors.NewInternalServerError("failed to push knowledge"))
 		return
 	}
+	if result.KnowledgeID != "" {
+		c.Set(types.WikaKnowledgeIDContextKey.String(), result.KnowledgeID)
+	}
 	c.JSON(http.StatusOK, result)
 }
 

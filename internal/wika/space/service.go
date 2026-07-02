@@ -17,6 +17,7 @@ var ErrPersonalSpaceNotFound = errors.New("personal space not found")
 type PersonalSpaceStore interface {
 	GetPersonalSpace(ctx context.Context, userID string) (*types.Tenant, error)
 	CreatePersonalSpace(ctx context.Context, userID string, tenant *types.Tenant, member *types.TenantMember) (*types.Tenant, error)
+	EnsureTeamDefaults(ctx context.Context, userID string, tenant *types.Tenant) error
 }
 
 // Service 编排 Wika 空间行为，不直接暴露 Tenant 的底层实现细节。
@@ -54,6 +55,14 @@ func (s *Service) GetOrCreatePersonalSpace(ctx context.Context, userID, displayN
 		JoinedAt: now,
 	}
 	return s.store.CreatePersonalSpace(ctx, userID, tenant, member)
+}
+
+// EnsureTeamDefaults 为团队空间补齐 Wika 默认知识库和安全默认策略。
+func (s *Service) EnsureTeamDefaults(ctx context.Context, userID string, tenant *types.Tenant) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	return s.store.EnsureTeamDefaults(ctx, userID, tenant)
 }
 
 func personalSpaceName(displayName string) string {

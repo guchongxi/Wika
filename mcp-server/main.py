@@ -41,16 +41,22 @@ def check_environment_variables():
     """检查环境变量配置"""
     base_url = os.getenv("WEKNORA_BASE_URL")
     api_key = os.getenv("WEKNORA_API_KEY")
+    pat = os.getenv("WEKNORA_PAT")
+    toolset = os.getenv("WEKNORA_MCP_TOOLSET", "dynamic")
 
     print("=== WeKnora MCP Server 环境检查 ===")
     print(f"Base URL: {base_url or 'http://localhost:8080/api/v1 (默认)'}")
-    print(f"API Key: {'已设置' if api_key else '未设置 (警告)'}")
+    print(f"Toolset: {toolset}")
+    print(f"PAT: {'已设置' if pat else '未设置'}")
+    print(f"API Key: {'已设置' if api_key else '未设置'}")
 
     if not base_url:
         print("提示: 可以设置 WEKNORA_BASE_URL 环境变量")
 
-    if not api_key:
-        print("警告: 建议设置 WEKNORA_API_KEY 环境变量")
+    if toolset in ("daily", "dynamic") and not pat:
+        print("提示: 云端模式通常通过每个请求的 Authorization 传入用户 PAT")
+    elif toolset == "all" and not api_key and not pat:
+        print("警告: all 模式需要配置 WEKNORA_API_KEY 或 WEKNORA_PAT")
 
     print("=" * 40)
     return True
@@ -69,7 +75,9 @@ def parse_arguments():
   
 环境变量:
   WEKNORA_BASE_URL    WeKnora API 基础 URL (默认: http://localhost:8080/api/v1)
-  WEKNORA_API_KEY     WeKnora API 密钥
+  WEKNORA_MCP_TOOLSET daily、dynamic 或 all，默认 dynamic
+  WEKNORA_PAT         用户级 PAT，stdio/单用户调试使用
+  WEKNORA_API_KEY     管理型工具的服务端 API 密钥
         """,
     )
 

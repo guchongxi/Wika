@@ -26,6 +26,12 @@ type featureGate interface {
 	GetBool(ctx context.Context, key string, envName string, def bool) bool
 }
 
+type Recorder struct {
+	store Store
+	audit auditLogger
+	flags featureGate
+}
+
 type Service struct {
 	store     Store
 	audit     auditLogger
@@ -35,23 +41,38 @@ type Service struct {
 
 const versionFeatureFlagKey = "wika.governance.version.enabled"
 
+func NewRecorder(store *GormStore, audit interfaces.AuditLogService, flags interfaces.SystemSettingService) *Recorder {
+	return &Recorder{store: store, audit: audit, flags: flags}
+}
+
 func NewService(store *GormStore, audit interfaces.AuditLogService, knowledge interfaces.KnowledgeService, flags interfaces.SystemSettingService) *Service {
 	return &Service{store: store, audit: audit, knowledge: knowledge, flags: flags}
 }
 
 func (s *Service) RecordVersion(ctx context.Context, input RecordVersionInput) (*types.WikaKnowledgeVersion, error) {
-	if s.store == nil {
+	return recordVersion(ctx, s.store, s.audit, s.flags, input)
+}
+
+func (r *Recorder) RecordVersion(ctx context.Context, input RecordVersionInput) (*types.WikaKnowledgeVersion, error) {
+	return recordVersion(ctx, r.store, r.audit, r.flags, input)
+}
+
+func recordVersion(ctx context.Context, store Store, audit auditLogger, flags featureGate, input RecordVersionInput) (*types.WikaKnowledgeVersion, error) {
+	if flags != nil && !flags.GetBool(ctx, versionFeatureFlagKey, "", false) {
+		return nil, nil
+	}
+	if store == nil {
 		return nil, nil
 	}
 	if strings.TrimSpace(input.ContentHash) == "" {
 		input.ContentHash = hashContent(input.Content)
 	}
-	version, err := s.store.RecordVersion(ctx, input)
+	version, err := store.RecordVersion(ctx, input)
 	if err != nil {
 		return nil, err
 	}
-	if s.audit != nil && version != nil {
-		if err := s.audit.Log(ctx, &types.AuditLog{
+	if audit != nil && version != nil {
+		if err := audit.Log(ctx, &types.AuditLog{
 			TenantID:    input.TenantID,
 			ActorUserID: strings.TrimSpace(input.ActorID),
 			Action:      types.AuditActionWikaVersionRecorded,
@@ -65,6 +86,9 @@ func (s *Service) RecordVersion(ctx context.Context, input RecordVersionInput) (
 }
 
 func (s *Service) ListVersions(ctx context.Context, input ListVersionsInput) ([]*types.WikaKnowledgeVersion, error) {
+	if !s.versionFeatureEnabled(ctx) {
+		return nil, ErrFeatureDisabled
+	}
 	if s.store == nil {
 		return nil, nil
 	}
@@ -72,6 +96,9 @@ func (s *Service) ListVersions(ctx context.Context, input ListVersionsInput) ([]
 }
 
 func (s *Service) Diff(ctx context.Context, input DiffInput) (*DiffResult, error) {
+	if !s.versionFeatureEnabled(ctx) {
+		return nil, ErrFeatureDisabled
+	}
 	if s.store == nil {
 		return nil, ErrVersionNotFound
 	}
@@ -138,11 +165,12 @@ func (s *Service) Restore(ctx context.Context, input RestoreInput) (*RestoreResu
 		}, nil
 	}
 	updated, err := s.knowledge.UpdateManualKnowledge(ctx, input.KnowledgeID, &types.ManualKnowledgePayload{
-		Title:   version.Title,
-		Content: version.Content,
-		Status:  restoreManualStatus(version),
-		TagIDs:  restoreTagIDs(version),
-		Channel: types.ChannelWeb,
+		Title:             version.Title,
+		Content:           version.Content,
+		Status:            restoreManualStatus(version),
+		TagIDs:            restoreTagIDs(version),
+		Channel:           types.ChannelWeb,
+		SkipVersionRecord: true,
 	})
 	if err != nil {
 		return nil, err

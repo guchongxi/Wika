@@ -28,12 +28,16 @@ func TestAuditAction_DotNamespaceConvention(t *testing.T) {
 		// Wika governance namespace
 		AuditActionWikaFreshnessItemHandled,
 		AuditActionWikaConflictCheckCreated,
+		AuditActionWikaConflictItemConfirmed,
+		AuditActionWikaConflictItemDismissed,
 		AuditActionWikaConflictItemResolved,
 		AuditActionWikaVersionRecorded,
 		AuditActionWikaVersionRestored,
 		AuditActionWikaURLRefreshReviewed,
 		AuditActionWikaURLRefreshScheduleUpdated,
 		AuditActionWikaURLRefreshScheduleDisabled,
+		AuditActionWikaEvalScheduleUpdated,
+		AuditActionWikaEvalScheduleRunFailed,
 		AuditActionWikaOrgShareCreated,
 		AuditActionWikaOrgShareAccepted,
 		AuditActionWikaOrgShareRevoked,
@@ -123,12 +127,16 @@ func TestAuditAction_NoCollisionsAcrossNamespaces(t *testing.T) {
 	register("AuditActionInvitationExpired", AuditActionInvitationExpired)
 	register("AuditActionWikaFreshnessItemHandled", AuditActionWikaFreshnessItemHandled)
 	register("AuditActionWikaConflictCheckCreated", AuditActionWikaConflictCheckCreated)
+	register("AuditActionWikaConflictItemConfirmed", AuditActionWikaConflictItemConfirmed)
+	register("AuditActionWikaConflictItemDismissed", AuditActionWikaConflictItemDismissed)
 	register("AuditActionWikaConflictItemResolved", AuditActionWikaConflictItemResolved)
 	register("AuditActionWikaVersionRecorded", AuditActionWikaVersionRecorded)
 	register("AuditActionWikaVersionRestored", AuditActionWikaVersionRestored)
 	register("AuditActionWikaURLRefreshReviewed", AuditActionWikaURLRefreshReviewed)
 	register("AuditActionWikaURLRefreshScheduleUpdated", AuditActionWikaURLRefreshScheduleUpdated)
 	register("AuditActionWikaURLRefreshScheduleDisabled", AuditActionWikaURLRefreshScheduleDisabled)
+	register("AuditActionWikaEvalScheduleUpdated", AuditActionWikaEvalScheduleUpdated)
+	register("AuditActionWikaEvalScheduleRunFailed", AuditActionWikaEvalScheduleRunFailed)
 	register("AuditActionWikaOrgShareCreated", AuditActionWikaOrgShareCreated)
 	register("AuditActionWikaOrgShareAccepted", AuditActionWikaOrgShareAccepted)
 	register("AuditActionWikaOrgShareRevoked", AuditActionWikaOrgShareRevoked)
@@ -196,6 +204,19 @@ func TestAuditAction_Phase3WireValues(t *testing.T) {
 		{AuditActionOpenSearchIndexCreated, "opensearch.index_created"},
 		{AuditActionOpenSearchIndexDeleted, "opensearch.index_deleted"},
 		{AuditActionOpenSearchReindexExecuted, "opensearch.reindex_executed"},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.wire, string(c.constant))
+	}
+}
+
+func TestAuditAction_WikaEvalScheduleWireValues(t *testing.T) {
+	cases := []struct {
+		constant AuditAction
+		wire     string
+	}{
+		{AuditActionWikaEvalScheduleUpdated, "wika.eval_schedule.updated"},
+		{AuditActionWikaEvalScheduleRunFailed, "wika.eval_schedule.run_failed"},
 	}
 	for _, c := range cases {
 		assert.Equal(t, c.wire, string(c.constant))

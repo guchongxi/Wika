@@ -18,16 +18,24 @@ type stubWikaVersionService struct {
 	listInput    wikaversion.ListVersionsInput
 	diffInput    wikaversion.DiffInput
 	restoreInput wikaversion.RestoreInput
+	listErr      error
+	diffErr      error
 	restoreErr   error
 }
 
 func (s *stubWikaVersionService) ListVersions(_ context.Context, input wikaversion.ListVersionsInput) ([]*types.WikaKnowledgeVersion, error) {
 	s.listInput = input
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
 	return []*types.WikaKnowledgeVersion{{ID: 2, KnowledgeID: input.KnowledgeID, TenantID: input.TenantID, VersionNo: 2, ContentHash: "hash-2"}}, nil
 }
 
 func (s *stubWikaVersionService) Diff(_ context.Context, input wikaversion.DiffInput) (*wikaversion.DiffResult, error) {
 	s.diffInput = input
+	if s.diffErr != nil {
+		return nil, s.diffErr
+	}
 	return &wikaversion.DiffResult{FromVersionNo: 1, ToVersionNo: 2, TitleChanged: true, ContentChanged: true}, nil
 }
 
@@ -108,6 +116,34 @@ func TestWikaVersionRestoreFeatureDisabledReturnsNotFound(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d body=%s", w.Code, w.Body.String())
 	}
+}
+
+func TestWikaVersionReadFeatureDisabledReturnsNotFound(t *testing.T) {
+	t.Run("list", func(t *testing.T) {
+		service := &stubWikaVersionService{listErr: wikaversion.ErrFeatureDisabled}
+		r := newWikaVersionTestRouter(service)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/wika/knowledge/k-1/versions", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("diff", func(t *testing.T) {
+		service := &stubWikaVersionService{diffErr: wikaversion.ErrFeatureDisabled}
+		r := newWikaVersionTestRouter(service)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/wika/knowledge/k-1/versions/1/diff?to_version_id=2", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
 }
 
 func TestWikaVersionDiffParsesVersionIDs(t *testing.T) {

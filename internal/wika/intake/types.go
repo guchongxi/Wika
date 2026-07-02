@@ -37,6 +37,10 @@ type DuplicateCandidate struct {
 // PushKnowledgeResult 是 push_knowledge 的统一响应。
 type PushKnowledgeResult struct {
 	KnowledgeID         string               `json:"knowledge_id,omitempty"`
+	TenantID            uint64               `json:"tenant_id,omitempty"`
+	KBID                string               `json:"kb_id,omitempty"`
+	SourceChannel       string               `json:"source_channel,omitempty"`
+	CreatedAt           time.Time            `json:"created_at,omitempty"`
 	Normalized          NormalizedKnowledge  `json:"normalized"`
 	QualityScore        int                  `json:"quality_score"`
 	DuplicateCandidates []DuplicateCandidate `json:"duplicate_candidates"`

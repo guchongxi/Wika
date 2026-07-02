@@ -22,11 +22,17 @@ func NewGormStore(db *gorm.DB) *GormStore {
 func (s *GormStore) GetPersonalDefaultKB(ctx context.Context, userID string) (DefaultKB, error) {
 	var mapping types.UserPersonalSpace
 	if err := s.db.WithContext(ctx).Where("user_id = ?", userID).First(&mapping).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return DefaultKB{}, ErrPersonalDefaultKBNotFound
+		}
 		return DefaultKB{}, err
 	}
 
 	var defaults types.WikaSpaceDefault
 	if err := s.db.WithContext(ctx).Where("tenant_id = ?", mapping.TenantID).First(&defaults).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return DefaultKB{}, ErrPersonalDefaultKBNotFound
+		}
 		return DefaultKB{}, err
 	}
 	return DefaultKB{TenantID: mapping.TenantID, KBID: defaults.DefaultKBID}, nil

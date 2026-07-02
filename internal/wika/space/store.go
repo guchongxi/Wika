@@ -15,6 +15,78 @@ type GormStore struct {
 	db *gorm.DB
 }
 
+// EnsureTeamDefaults 在团队空间创建默认知识库和默认关闭的团队推荐策略。
+func (s *GormStore) EnsureTeamDefaults(ctx context.Context, userID string, tenant *types.Tenant) error {
+	if tenant == nil || tenant.ID == 0 {
+		return errors.New("team tenant is required")
+	}
+	tenant.EnsureSpaceType()
+	if tenant.SpaceType == types.SpaceTypePersonal {
+		return nil
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		now := time.Now()
+		var defaults types.WikaSpaceDefault
+		err := tx.Where("tenant_id = ?", tenant.ID).First(&defaults).Error
+		switch {
+		case err == nil:
+			return ensureDefaultPolicy(tx, tenant.ID, now)
+		case !errors.Is(err, gorm.ErrRecordNotFound):
+			return err
+		}
+
+		defaultKB := &types.KnowledgeBase{
+			ID:          uuid.New().String(),
+			Name:        "团队知识",
+			Description: "团队空间默认知识库",
+			TenantID:    tenant.ID,
+			CreatorID:   userID,
+			Type:        types.KnowledgeBaseTypeDocument,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		defaultKB.EnsureDefaults()
+		defaultKB.Normalize()
+		if err := tx.Create(defaultKB).Error; err != nil {
+			return err
+		}
+
+		defaults = types.WikaSpaceDefault{
+			TenantID:    tenant.ID,
+			DefaultKBID: defaultKB.ID,
+			CreatedBy:   userID,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		if err := tx.Create(&defaults).Error; err != nil {
+			return err
+		}
+		return ensureDefaultPolicy(tx, tenant.ID, now)
+	})
+}
+
+func ensureDefaultPolicy(tx *gorm.DB, tenantID uint64, now time.Time) error {
+	var policy types.WikaSpacePolicy
+	err := tx.Where("tenant_id = ?", tenantID).First(&policy).Error
+	switch {
+	case err == nil:
+		return nil
+	case !errors.Is(err, gorm.ErrRecordNotFound):
+		return err
+	}
+	if tenantID == 0 {
+		return errors.New("tenant id is required")
+	}
+	return tx.Create(&types.WikaSpacePolicy{
+		TenantID:          tenantID,
+		AutoApplyApproved: false,
+		PolicyVersion:     1,
+		SafetyPolicy:      types.JSON([]byte("{}")),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}).Error
+}
+
 // NewGormStore 创建 GORM 版本的个人空间存储。
 func NewGormStore(db *gorm.DB) *GormStore {
 	return &GormStore{db: db}

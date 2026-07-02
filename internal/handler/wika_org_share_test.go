@@ -15,12 +15,27 @@ import (
 )
 
 type stubWikaOrgShareService struct {
+	listInput   *wikaorgshare.ListSharesInput
+	listErr     error
 	createInput *wikaorgshare.CreateShareInput
 	createErr   error
 	acceptInput *wikaorgshare.AcceptShareInput
 	acceptErr   error
 	revokeInput *wikaorgshare.RevokeShareInput
 	revokeErr   error
+}
+
+func (s *stubWikaOrgShareService) ListShares(_ context.Context, input wikaorgshare.ListSharesInput) (*wikaorgshare.ListSharesResult, error) {
+	s.listInput = &input
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	return &wikaorgshare.ListSharesResult{
+		Items: []*types.WikaOrgShare{
+			{ID: 41, OrgID: input.OrgID, SourceTenantID: 80, SourceKBID: "kb-source", TargetTenantID: 90, Status: types.WikaOrgShareStatusActive},
+		},
+		Total: 1,
+	}, nil
 }
 
 func (s *stubWikaOrgShareService) CreateShare(_ context.Context, input wikaorgshare.CreateShareInput) (*types.WikaOrgShare, error) {
@@ -57,10 +72,36 @@ func newWikaOrgShareTestRouter(service *stubWikaOrgShareService) *gin.Engine {
 		c.Next()
 	})
 	h := &WikaOrgShareHandler{service: service}
+	r.GET("/api/v1/wika/orgs/:org_id/shares", h.ListShares)
 	r.POST("/api/v1/wika/orgs/:org_id/shares", h.CreateShare)
 	r.PUT("/api/v1/wika/orgs/:org_id/shares/:share_id/accept", h.AcceptShare)
 	r.DELETE("/api/v1/wika/orgs/:org_id/shares/:share_id", h.RevokeShare)
 	return r
+}
+
+func TestWikaOrgShareListPassesActorTenantOrgAndFilters(t *testing.T) {
+	service := &stubWikaOrgShareService{}
+	r := newWikaOrgShareTestRouter(service)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/wika/orgs/org-1/shares?status=active&limit=20&offset=40", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if service.listInput == nil ||
+		service.listInput.ActorID != "u-test" ||
+		service.listInput.TenantID != 80 ||
+		service.listInput.OrgID != "org-1" ||
+		service.listInput.Status != types.WikaOrgShareStatusActive ||
+		service.listInput.Limit != 20 ||
+		service.listInput.Offset != 40 {
+		t.Fatalf("unexpected list input: %+v", service.listInput)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"items"`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"total":1`)) {
+		t.Fatalf("expected items and total response, got %s", w.Body.String())
+	}
 }
 
 func TestWikaOrgShareCreatePassesCurrentTenantAsSource(t *testing.T) {

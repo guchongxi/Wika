@@ -22,6 +22,7 @@ type ReadableScope struct {
 type SearchInput struct {
 	UserID      string
 	TenantID    uint64
+	KBID        string
 	Query       string
 	Limit       int
 	IncludeTeam bool
@@ -67,6 +68,8 @@ type ResultItem struct {
 	Title           string      `json:"title"`
 	Snippet         string      `json:"snippet"`
 	SourceSpace     SourceSpace `json:"source_space"`
+	SourceTenantID  uint64      `json:"source_tenant_id,omitempty"`
+	SourceKBID      string      `json:"source_kb_id,omitempty"`
 	Score           float64     `json:"score"`
 	QualityScore    int         `json:"quality_score"`
 	FreshnessStatus string      `json:"freshness_status"`
@@ -80,6 +83,8 @@ type ExpandedItem struct {
 	Content         string      `json:"content"`
 	Source          string      `json:"source,omitempty"`
 	SourceSpace     SourceSpace `json:"source_space"`
+	SourceTenantID  uint64      `json:"source_tenant_id,omitempty"`
+	SourceKBID      string      `json:"source_kb_id,omitempty"`
 	QualityScore    int         `json:"quality_score"`
 	FreshnessStatus string      `json:"freshness_status"`
 	UpdatedAt       time.Time   `json:"updated_at"`

@@ -171,6 +171,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 
 	// 认证中间件
 	r.Use(middleware.Auth(params.TenantService, params.UserService, params.TenantMemberService, params.Config, params.WikaTokenService))
+	r.Use(middleware.WikaPATUsageRecorder(params.WikaTokenService))
 
 	// 文件服务：统一代理本地/MinIO/COS/TOS存储后端（需要认证）
 	serveFiles(r, params.FileService)
@@ -268,15 +269,25 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 	}
 	wika := r.Group("/wika")
 	viewerGuards := []gin.HandlerFunc{}
+	contributorGuards := []gin.HandlerFunc{}
+	adminGuards := []gin.HandlerFunc{}
 	if g != nil {
 		viewerGuards = append(viewerGuards, g.Viewer())
+		contributorGuards = append(contributorGuards, g.Contributor())
+		adminGuards = append(adminGuards, g.Admin())
 	}
 	if tokenHandler != nil {
 		tokens := wika.Group("/tokens", viewerGuards...)
 		{
 			tokens.GET("", tokenHandler.ListTokens)
+			tokens.GET("/usage", tokenHandler.ListTokenUsage)
+			tokens.GET("/usage/events", tokenHandler.ListTokenUsageEvents)
 			tokens.POST("", tokenHandler.CreateToken)
 			tokens.DELETE("/:id", tokenHandler.RevokeToken)
+		}
+		mcp := wika.Group("/mcp", viewerGuards...)
+		{
+			mcp.GET("/admin/authorize", tokenHandler.AuthorizeMCPAdminToolset)
 		}
 	}
 	if knowledgeHandler != nil {
@@ -292,34 +303,40 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 		suggestions := wika.Group("/suggestions", viewerGuards...)
 		{
 			suggestions.POST("", suggestionHandler.CreateSuggestion)
-			suggestions.PUT("/:id/human-review", suggestionHandler.HumanReview)
-			suggestions.POST("/:id/apply", suggestionHandler.ApplySuggestion)
+			suggestions.PUT("/:id/human-review", append(adminGuards, suggestionHandler.HumanReview)...)
+			suggestions.POST("/:id/apply", append(adminGuards, suggestionHandler.ApplySuggestion)...)
 		}
 	}
 	if evaluationHandler != nil {
 		eval := wika.Group("/kb/:id/eval", viewerGuards...)
 		{
-			eval.POST("/datasets", evaluationHandler.CreateDataset)
-			eval.POST("/datasets/:dataset_id/items", evaluationHandler.AddQAItem)
-			eval.POST("/runs", evaluationHandler.RunEvaluation)
+			eval.POST("/datasets", append(adminGuards, evaluationHandler.CreateDataset)...)
+			eval.POST("/datasets/:dataset_id/items", append(adminGuards, evaluationHandler.AddQAItem)...)
+			eval.POST("/datasets/:dataset_id/import", append(adminGuards, evaluationHandler.ImportDataset)...)
+			eval.GET("/datasets/:dataset_id/export", append(adminGuards, evaluationHandler.ExportDataset)...)
+			eval.POST("/dry-run", append(contributorGuards, evaluationHandler.DryRun)...)
+			eval.POST("/runs", append(adminGuards, evaluationHandler.RunEvaluation)...)
+			eval.GET("/trend", evaluationHandler.Trend)
 		}
 	}
 	if evalScheduleHandler != nil {
 		evalSchedules := wika.Group("/kb/:id/eval/schedules", viewerGuards...)
 		{
-			evalSchedules.POST("", evalScheduleHandler.CreateSchedule)
-			evalSchedules.PUT("/:schedule_id", evalScheduleHandler.UpdateSchedule)
-			evalSchedules.DELETE("/:schedule_id", evalScheduleHandler.DisableSchedule)
+			evalSchedules.GET("", evalScheduleHandler.List)
+			evalSchedules.POST("", append(adminGuards, evalScheduleHandler.CreateSchedule)...)
+			evalSchedules.PUT("/:schedule_id", append(adminGuards, evalScheduleHandler.UpdateSchedule)...)
+			evalSchedules.DELETE("/:schedule_id", append(adminGuards, evalScheduleHandler.DisableSchedule)...)
 		}
 	}
 	if freshnessHandler != nil {
 		freshness := wika.Group("/kb/:id/freshness", viewerGuards...)
 		{
-			freshness.POST("/checks", freshnessHandler.RunCheck)
+			freshness.GET("/overview", freshnessHandler.Overview)
+			freshness.POST("/checks", append(adminGuards, freshnessHandler.RunCheck)...)
 			freshness.GET("/checks", freshnessHandler.ListChecks)
 			freshness.GET("/items", freshnessHandler.ListItems)
 		}
-		wika.PUT("/freshness/items/:id", append(viewerGuards, freshnessHandler.HandleItem)...)
+		wika.PUT("/freshness/items/:id", append(adminGuards, freshnessHandler.HandleItem)...)
 	}
 	if graphHandler != nil {
 		graph := wika.Group("/kb/:id/graph", viewerGuards...)
@@ -328,39 +345,42 @@ func RegisterWikaRoutes(r *gin.RouterGroup, tokenHandler *handler.WikaTokenHandl
 			graph.GET("/entities", graphHandler.ListEntities)
 			graph.GET("/entities/:entity_id", graphHandler.GetEntity)
 			graph.GET("/edges", graphHandler.ListEdges)
+			graph.POST("/search", graphHandler.Search)
 		}
 	}
 	if conflictHandler != nil {
 		conflicts := wika.Group("/kb/:id/conflicts", viewerGuards...)
 		{
 			conflicts.GET("", conflictHandler.ListItems)
-			conflicts.POST("/checks", conflictHandler.CreateCheck)
+			conflicts.POST("/checks", append(contributorGuards, conflictHandler.CreateCheck)...)
 		}
-		wika.PUT("/conflicts/:id", append(viewerGuards, conflictHandler.ResolveItem)...)
+		wika.PUT("/conflicts/:id", append(adminGuards, conflictHandler.ResolveItem)...)
 	}
 	if versionHandler != nil {
 		versions := wika.Group("/knowledge/:id/versions", viewerGuards...)
 		{
 			versions.GET("", versionHandler.ListVersions)
 			versions.GET("/:version_id/diff", versionHandler.Diff)
-			versions.POST("/:version_id/restore", versionHandler.Restore)
+			versions.POST("/:version_id/restore", append(adminGuards, versionHandler.Restore)...)
 		}
 	}
 	if urlRefreshHandler != nil {
 		urlRefresh := wika.Group("/knowledge/:id/url-refresh", viewerGuards...)
 		{
-			urlRefresh.POST("", urlRefreshHandler.CreateJob)
-			urlRefresh.PUT("/schedules/:schedule_id", urlRefreshHandler.UpdateSchedule)
-			urlRefresh.DELETE("/schedules/:schedule_id", urlRefreshHandler.DisableSchedule)
+			urlRefresh.GET("", urlRefreshHandler.List)
+			urlRefresh.POST("", append(contributorGuards, urlRefreshHandler.CreateJob)...)
+			urlRefresh.PUT("/schedules/:schedule_id", append(adminGuards, urlRefreshHandler.UpdateSchedule)...)
+			urlRefresh.DELETE("/schedules/:schedule_id", append(adminGuards, urlRefreshHandler.DisableSchedule)...)
 		}
-		wika.PUT("/url-refresh/:id/review", append(viewerGuards, urlRefreshHandler.ReviewJob)...)
+		wika.PUT("/url-refresh/:id/review", append(adminGuards, urlRefreshHandler.ReviewJob)...)
 	}
 	if orgShareHandler != nil {
 		orgShares := wika.Group("/orgs/:org_id/shares", viewerGuards...)
 		{
-			orgShares.POST("", orgShareHandler.CreateShare)
-			orgShares.PUT("/:share_id/accept", orgShareHandler.AcceptShare)
-			orgShares.DELETE("/:share_id", orgShareHandler.RevokeShare)
+			orgShares.GET("", orgShareHandler.ListShares)
+			orgShares.POST("", append(adminGuards, orgShareHandler.CreateShare)...)
+			orgShares.PUT("/:share_id/accept", append(adminGuards, orgShareHandler.AcceptShare)...)
+			orgShares.DELETE("/:share_id", append(adminGuards, orgShareHandler.RevokeShare)...)
 		}
 	}
 }
@@ -931,6 +951,8 @@ func RegisterSystemAdminRoutes(
 		adminRoutes.GET("/settings/:key", handler.GetSystemSetting)
 		adminRoutes.PUT("/settings/:key", handler.UpdateSystemSetting)
 		adminRoutes.DELETE("/settings/:key", handler.ResetSystemSetting)
+		adminRoutes.GET("/kb-defaults", handler.GetKnowledgeBaseDefaults)
+		adminRoutes.PUT("/kb-defaults", handler.UpdateKnowledgeBaseDefaults)
 
 		// Bulk action — write the current default-quota setting onto
 		// every existing tenant. Lives under /tenants instead of

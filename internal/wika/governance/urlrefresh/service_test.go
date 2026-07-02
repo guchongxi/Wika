@@ -22,6 +22,17 @@ func (f fakeFetcher) Fetch(ctx context.Context, raw string) (*safefetch.FetchRes
 	return f.result, f.err
 }
 
+type fakeValidatingFetcher struct {
+	fakeFetcher
+	validateErr   error
+	validateCalls []string
+}
+
+func (f *fakeValidatingFetcher) ValidateURL(ctx context.Context, raw string) error {
+	f.validateCalls = append(f.validateCalls, raw)
+	return f.validateErr
+}
+
 type fakeKnowledgeUpdater struct {
 	knowledgeID string
 	payload     *types.ManualKnowledgePayload
@@ -100,6 +111,34 @@ func TestServiceRunJobFetchesIntoPendingReviewWithoutUpdatingKnowledge(t *testin
 	require.NoError(t, db.First(&knowledge, "id = ?", "k-url").Error)
 	if knowledge.Title != "旧标题" {
 		t.Fatalf("knowledge was updated before review: %+v", knowledge)
+	}
+}
+
+func TestServiceCreateJobRejectsUnsafeURLBeforePersisting(t *testing.T) {
+	db := setupURLRefreshStoreTestDB(t)
+	store := NewGormStore(db)
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	fetcher := &fakeValidatingFetcher{validateErr: errors.New("blocked ip address")}
+	svc := NewService(store, fetcher, WithFeatureGate(fakeFeatureGate{enabled: true}))
+
+	_, err := svc.CreateJob(context.Background(), CreateJobInput{
+		ActorID:     "u-owner",
+		TenantID:    90,
+		KBID:        "kb-url",
+		KnowledgeID: "k-url",
+		SourceURL:   "http://127.0.0.1/admin",
+		Now:         now,
+	})
+	require.Error(t, err)
+	if !strings.Contains(err.Error(), "unsafe source url") {
+		t.Fatalf("expected unsafe source url error, got %v", err)
+	}
+	require.Equal(t, []string{"http://127.0.0.1/admin"}, fetcher.validateCalls)
+
+	var count int64
+	require.NoError(t, db.Model(&types.WikaURLRefreshJob{}).Count(&count).Error)
+	if count != 0 {
+		t.Fatalf("unsafe source url should not persist job, got %d rows", count)
 	}
 }
 
