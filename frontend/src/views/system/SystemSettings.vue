@@ -61,7 +61,7 @@
                       </div>
                     </div>
                     <div class="embedded-model-settings">
-                      <ModelSettings :initial-type="activeModelSettingsType" />
+                      <ModelSettings mode="system" :initial-type="activeModelSettingsType" />
                     </div>
                   </template>
 

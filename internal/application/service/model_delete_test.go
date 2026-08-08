@@ -84,7 +84,25 @@ func (s *stubModelRepoForDelete) GetByID(_ context.Context, _ uint64, id string)
 	}
 	return nil, nil
 }
+func (s *stubModelRepoForDelete) GetByIDForUser(ctx context.Context, tenantID uint64, _ string, id string) (*types.Model, error) {
+	return s.GetByID(ctx, tenantID, id)
+}
+func (s *stubModelRepoForDelete) GetSystemByID(_ context.Context, id string) (*types.Model, error) {
+	if s.model != nil && s.model.ID == id && s.model.IsSystemModel() {
+		return s.model, nil
+	}
+	return nil, nil
+}
 func (s *stubModelRepoForDelete) List(context.Context, uint64, types.ModelType, types.ModelSource) ([]*types.Model, error) {
+	return nil, nil
+}
+func (s *stubModelRepoForDelete) ListSystem(context.Context, types.ModelType) ([]*types.Model, error) {
+	return nil, nil
+}
+func (s *stubModelRepoForDelete) ListByOwner(context.Context, string, types.ModelType) ([]*types.Model, error) {
+	return nil, nil
+}
+func (s *stubModelRepoForDelete) ListSelectable(context.Context, uint64, string, types.ModelUsageContext, types.ModelType) ([]*types.Model, error) {
 	return nil, nil
 }
 func (s *stubModelRepoForDelete) Update(context.Context, *types.Model) error { return nil }
@@ -95,6 +113,9 @@ func (s *stubModelRepoForDelete) Delete(_ context.Context, _ uint64, id string) 
 	return nil
 }
 func (s *stubModelRepoForDelete) ClearDefaultByType(context.Context, uint, types.ModelType, string) error {
+	return nil
+}
+func (s *stubModelRepoForDelete) ClearSystemDefaultByType(context.Context, types.ModelType, string) error {
 	return nil
 }
 

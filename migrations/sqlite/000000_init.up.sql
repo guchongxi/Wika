@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS models (
     parameters TEXT NOT NULL,
     is_default BOOLEAN NOT NULL DEFAULT 0,
     is_builtin BOOLEAN NOT NULL DEFAULT 0,
+    scope VARCHAR(16) NOT NULL DEFAULT 'tenant',
+    owner_user_id VARCHAR(64) NOT NULL DEFAULT '',
+    user_selectable BOOLEAN NOT NULL DEFAULT 0,
     managed_by VARCHAR(32) NOT NULL DEFAULT '',
     status VARCHAR(50) NOT NULL DEFAULT 'active',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -49,6 +52,13 @@ CREATE INDEX IF NOT EXISTS idx_models_type ON models(type);
 CREATE INDEX IF NOT EXISTS idx_models_source ON models(source);
 CREATE INDEX IF NOT EXISTS idx_models_is_builtin ON models(is_builtin);
 CREATE INDEX IF NOT EXISTS idx_models_managed_by ON models(managed_by);
+CREATE INDEX IF NOT EXISTS idx_models_scope_type ON models(scope, type);
+CREATE INDEX IF NOT EXISTS idx_models_owner_user_type ON models(owner_user_id, type)
+    WHERE scope = 'user' AND deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_models_system_selectable_type ON models(type, user_selectable)
+    WHERE scope = 'system' AND deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_models_system_default_type ON models(type)
+    WHERE scope = 'system' AND is_default = 1 AND deleted_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS knowledge_bases (
     id VARCHAR(36) PRIMARY KEY,

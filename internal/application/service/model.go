@@ -92,11 +92,99 @@ func (s *modelService) resolveWeKnoraCloudCredentials(ctx context.Context, param
 	return
 }
 
+func normalizeModelScopeForCreate(model *types.Model) {
+	if model.Scope == "" {
+		if model.IsBuiltin {
+			model.Scope = types.ModelScopeSystem
+		} else {
+			model.Scope = types.ModelScopeTenant
+		}
+	}
+	switch model.Scope {
+	case types.ModelScopeSystem:
+		model.IsBuiltin = true
+		model.OwnerUserID = ""
+	case types.ModelScopeUser:
+		model.IsBuiltin = false
+		model.IsDefault = false
+		model.UserSelectable = false
+	default:
+		model.Scope = types.ModelScopeTenant
+		model.IsBuiltin = false
+		model.OwnerUserID = ""
+		model.UserSelectable = false
+	}
+}
+
+func (s *modelService) getModelForCaller(ctx context.Context, tenantID uint64, id string) (*types.Model, error) {
+	if userID, ok := types.UserIDFromContext(ctx); ok {
+		return s.repo.GetByIDForUser(ctx, tenantID, userID, id)
+	}
+	return s.repo.GetByID(ctx, tenantID, id)
+}
+
+func prepareScopedModelUpdate(model, existing *types.Model) {
+	if model.Name == "" {
+		model.Name = existing.Name
+	}
+	if model.Type == "" {
+		model.Type = existing.Type
+	}
+	if model.Source == "" {
+		model.Source = existing.Source
+	}
+	model.CreatedAt = existing.CreatedAt
+	model.UpdatedAt = existing.UpdatedAt
+	model.DeletedAt = existing.DeletedAt
+	if model.Parameters.APIKey == "" {
+		model.Parameters.APIKey = existing.Parameters.APIKey
+	}
+	if model.Parameters.AppSecret == "" {
+		model.Parameters.AppSecret = existing.Parameters.AppSecret
+	}
+	if model.Parameters.ParameterSize == "" {
+		model.Parameters.ParameterSize = existing.Parameters.ParameterSize
+	}
+	if model.Parameters.ExtraConfig == nil {
+		model.Parameters.ExtraConfig = existing.Parameters.ExtraConfig
+	}
+	if model.Parameters.CustomHeaders == nil {
+		model.Parameters.CustomHeaders = existing.Parameters.CustomHeaders
+	}
+}
+
+func (s *modelService) ensureModelNotReferenced(ctx context.Context, tenantID uint64, id string) error {
+	var kbCount int64
+	if s.kbRepo != nil {
+		count, err := s.kbRepo.CountByModelID(ctx, tenantID, id)
+		if err != nil {
+			logger.ErrorWithFields(ctx, err, map[string]interface{}{"model_id": id})
+			return err
+		}
+		kbCount = count
+	}
+	var agentCount int64
+	if s.agentRepo != nil {
+		count, err := s.agentRepo.CountByModelID(ctx, tenantID, id)
+		if err != nil {
+			logger.ErrorWithFields(ctx, err, map[string]interface{}{"model_id": id})
+			return err
+		}
+		agentCount = count
+	}
+	if kbCount > 0 || agentCount > 0 {
+		logger.Warnf(ctx, "Model %s is in use: kb=%d agent=%d", id, kbCount, agentCount)
+		return apperrors.NewBadRequestError(formatModelInUseMessage(kbCount, agentCount))
+	}
+	return nil
+}
+
 // CreateModel creates a new model in the repository
 // For local models, it initiates an asynchronous download process
 // Remote models are immediately set to active status
 func (s *modelService) CreateModel(ctx context.Context, model *types.Model) error {
 	logger.Infof(ctx, "Creating model: %s, type: %s, source: %s", model.Name, model.Type, model.Source)
+	normalizeModelScopeForCreate(model)
 
 	// Handle remote models (e.g., OpenAI, Azure)
 	if model.Source == types.ModelSourceRemote {
@@ -166,7 +254,7 @@ func (s *modelService) GetModelByID(ctx context.Context, id string) (*types.Mode
 	tenantID := types.MustTenantIDFromContext(ctx)
 
 	// Fetch model from repository
-	model, err := s.repo.GetByID(ctx, tenantID, id)
+	model, err := s.getModelForCaller(ctx, tenantID, id)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"model_id":  id,
@@ -222,6 +310,185 @@ func (s *modelService) ListModels(ctx context.Context) ([]*types.Model, error) {
 	return models, nil
 }
 
+func (s *modelService) ListSystemModels(ctx context.Context, modelType types.ModelType) ([]*types.Model, error) {
+	return s.repo.ListSystem(ctx, modelType)
+}
+
+func (s *modelService) CreateSystemModel(ctx context.Context, model *types.Model) error {
+	if model.TenantID == 0 {
+		model.TenantID = types.DefaultBuiltinModelTenantID
+	}
+	model.Scope = types.ModelScopeSystem
+	model.IsBuiltin = true
+	model.OwnerUserID = ""
+	return s.CreateModel(ctx, model)
+}
+
+func (s *modelService) UpdateSystemModel(ctx context.Context, model *types.Model) error {
+	existing, err := s.repo.GetSystemByID(ctx, model.ID)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return ErrModelNotFound
+	}
+	model.TenantID = existing.TenantID
+	model.Scope = types.ModelScopeSystem
+	model.IsBuiltin = true
+	model.OwnerUserID = ""
+	model.IsDefault = existing.IsDefault
+	model.UserSelectable = existing.UserSelectable
+	model.Status = existing.Status
+	prepareScopedModelUpdate(model, existing)
+	if err := s.repo.Update(ctx, model); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *modelService) DeleteSystemModel(ctx context.Context, id string) error {
+	existing, err := s.repo.GetSystemByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return ErrModelNotFound
+	}
+	tenantID, ok := types.TenantIDFromContext(ctx)
+	if !ok || tenantID == 0 {
+		tenantID = existing.TenantID
+	}
+	if err := s.ensureModelNotReferenced(ctx, tenantID, id); err != nil {
+		return err
+	}
+	return s.repo.Delete(ctx, existing.TenantID, id)
+}
+
+func (s *modelService) SetSystemModelSelectable(
+	ctx context.Context, id string, selectable bool,
+) (*types.Model, error) {
+	existing, err := s.repo.GetSystemByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, ErrModelNotFound
+	}
+	if existing.IsDefault && !selectable {
+		return nil, errors.New("default system model must remain selectable")
+	}
+	existing.Scope = types.ModelScopeSystem
+	existing.IsBuiltin = true
+	existing.UserSelectable = selectable
+	if err := s.repo.Update(ctx, existing); err != nil {
+		return nil, err
+	}
+	return existing, nil
+}
+
+func (s *modelService) SetSystemDefaultModel(ctx context.Context, id string) (*types.Model, error) {
+	existing, err := s.repo.GetSystemByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, ErrModelNotFound
+	}
+	if err := s.repo.ClearSystemDefaultByType(ctx, existing.Type, existing.ID); err != nil {
+		return nil, err
+	}
+	existing.Scope = types.ModelScopeSystem
+	existing.IsBuiltin = true
+	existing.IsDefault = true
+	existing.UserSelectable = true
+	if err := s.repo.Update(ctx, existing); err != nil {
+		return nil, err
+	}
+	return existing, nil
+}
+
+func (s *modelService) UnsetSystemDefaultModel(ctx context.Context, id string) (*types.Model, error) {
+	existing, err := s.repo.GetSystemByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, ErrModelNotFound
+	}
+	existing.IsDefault = false
+	if err := s.repo.Update(ctx, existing); err != nil {
+		return nil, err
+	}
+	return existing, nil
+}
+
+func (s *modelService) ListMyModels(
+	ctx context.Context, userID string, modelType types.ModelType,
+) ([]*types.Model, error) {
+	return s.repo.ListByOwner(ctx, userID, modelType)
+}
+
+func (s *modelService) CreateUserModel(ctx context.Context, userID string, model *types.Model) error {
+	tenantID := types.MustTenantIDFromContext(ctx)
+	model.TenantID = tenantID
+	model.Scope = types.ModelScopeUser
+	model.OwnerUserID = userID
+	model.IsBuiltin = false
+	model.IsDefault = false
+	model.UserSelectable = false
+	return s.CreateModel(ctx, model)
+}
+
+func (s *modelService) UpdateUserModel(ctx context.Context, userID string, model *types.Model) error {
+	existing, err := s.repo.GetByIDForUser(ctx, types.MustTenantIDFromContext(ctx), userID, model.ID)
+	if err != nil {
+		return err
+	}
+	if existing == nil || existing.EffectiveScope() != types.ModelScopeUser || existing.OwnerUserID != userID {
+		return ErrModelNotFound
+	}
+	model.TenantID = existing.TenantID
+	model.Scope = types.ModelScopeUser
+	model.OwnerUserID = userID
+	model.IsBuiltin = false
+	model.IsDefault = false
+	model.UserSelectable = false
+	model.Status = existing.Status
+	prepareScopedModelUpdate(model, existing)
+	return s.repo.Update(ctx, model)
+}
+
+func (s *modelService) DeleteUserModel(ctx context.Context, userID, id string) error {
+	tenantID := types.MustTenantIDFromContext(ctx)
+	existing, err := s.repo.GetByIDForUser(ctx, tenantID, userID, id)
+	if err != nil {
+		return err
+	}
+	if existing == nil || existing.EffectiveScope() != types.ModelScopeUser || existing.OwnerUserID != userID {
+		return ErrModelNotFound
+	}
+	if err := s.ensureModelNotReferenced(ctx, tenantID, id); err != nil {
+		return err
+	}
+	return s.repo.Delete(ctx, existing.TenantID, id)
+}
+
+func (s *modelService) ListSelectableModels(
+	ctx context.Context,
+	userID string,
+	tenantID uint64,
+	usageContext types.ModelUsageContext,
+	modelType types.ModelType,
+) ([]*types.Model, error) {
+	if usageContext == "" {
+		usageContext = types.ModelUsageContextPersonal
+	}
+	if usageContext != types.ModelUsageContextPersonal && usageContext != types.ModelUsageContextTeam {
+		return nil, errors.New("unknown model usage context")
+	}
+	return s.repo.ListSelectable(ctx, tenantID, userID, usageContext, modelType)
+}
+
 // UpdateModel updates an existing model in the repository
 func (s *modelService) UpdateModel(ctx context.Context, model *types.Model) error {
 	logger.Info(ctx, "Start updating model")
@@ -236,9 +503,9 @@ func (s *modelService) UpdateModel(ctx context.Context, model *types.Model) erro
 		})
 		return err
 	}
-	if existingModel != nil && existingModel.IsBuiltin {
-		logger.Warnf(ctx, "Attempted to update builtin model: %s", model.ID)
-		return errors.New("builtin models cannot be updated")
+	if existingModel != nil && existingModel.IsSystemModel() {
+		logger.Warnf(ctx, "Attempted to update system model through tenant API: %s", model.ID)
+		return errors.New("system models cannot be updated through tenant model API")
 	}
 
 	// Update model in repository
@@ -264,15 +531,15 @@ func (s *modelService) UpdateModelCredentials(
 	ctx context.Context, id string, apiKey, appSecret *string,
 ) (*types.Model, error) {
 	tenantID := types.MustTenantIDFromContext(ctx)
-	existing, err := s.repo.GetByID(ctx, tenantID, id)
+	existing, err := s.getModelForCaller(ctx, tenantID, id)
 	if err != nil {
 		return nil, err
 	}
 	if existing == nil {
 		return nil, ErrModelNotFound
 	}
-	if existing.IsBuiltin {
-		return nil, errors.New("builtin models cannot have credentials modified")
+	if existing.IsSystemModel() && !types.IsSystemAdminFromContext(ctx) {
+		return nil, errors.New("system models cannot have credentials modified through tenant model API")
 	}
 
 	changed := false
@@ -297,15 +564,15 @@ func (s *modelService) UpdateModelCredentials(
 // ClearModelCredential removes a single credential field. Idempotent.
 func (s *modelService) ClearModelCredential(ctx context.Context, id, field string) error {
 	tenantID := types.MustTenantIDFromContext(ctx)
-	existing, err := s.repo.GetByID(ctx, tenantID, id)
+	existing, err := s.getModelForCaller(ctx, tenantID, id)
 	if err != nil {
 		return err
 	}
 	if existing == nil {
 		return ErrModelNotFound
 	}
-	if existing.IsBuiltin {
-		return errors.New("builtin models cannot have credentials modified")
+	if existing.IsSystemModel() && !types.IsSystemAdminFromContext(ctx) {
+		return errors.New("system models cannot have credentials modified through tenant model API")
 	}
 
 	changed := false
@@ -352,28 +619,13 @@ func (s *modelService) DeleteModel(ctx context.Context, id string) error {
 	if existingModel == nil {
 		return ErrModelNotFound
 	}
-	if existingModel.IsBuiltin {
-		logger.Warnf(ctx, "Attempted to delete builtin model: %s", id)
-		return apperrors.NewBadRequestError("builtin models cannot be deleted")
+	if existingModel.IsSystemModel() {
+		logger.Warnf(ctx, "Attempted to delete system model through tenant API: %s", id)
+		return apperrors.NewBadRequestError("system models cannot be deleted through tenant model API")
 	}
 
-	kbCount, err := s.kbRepo.CountByModelID(ctx, tenantID, id)
-	if err != nil {
-		logger.ErrorWithFields(ctx, err, map[string]interface{}{
-			"model_id": id,
-		})
+	if err := s.ensureModelNotReferenced(ctx, tenantID, id); err != nil {
 		return err
-	}
-	agentCount, err := s.agentRepo.CountByModelID(ctx, tenantID, id)
-	if err != nil {
-		logger.ErrorWithFields(ctx, err, map[string]interface{}{
-			"model_id": id,
-		})
-		return err
-	}
-	if kbCount > 0 || agentCount > 0 {
-		logger.Warnf(ctx, "Model %s is in use: kb=%d agent=%d", id, kbCount, agentCount)
-		return apperrors.NewBadRequestError(formatModelInUseMessage(kbCount, agentCount))
 	}
 
 	// Delete model from repository
@@ -508,7 +760,7 @@ func (s *modelService) GetChatModel(ctx context.Context, modelId string) (chat.C
 	tenantID := types.MustTenantIDFromContext(ctx)
 
 	// Get the model directly from repository to avoid status checks
-	model, err := s.repo.GetByID(ctx, tenantID, modelId)
+	model, err := s.getModelForCaller(ctx, tenantID, modelId)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"model_id":  modelId,
@@ -546,7 +798,7 @@ func (s *modelService) GetVLMModel(ctx context.Context, modelId string) (vlm.VLM
 
 	tenantID := types.MustTenantIDFromContext(ctx)
 
-	model, err := s.repo.GetByID(ctx, tenantID, modelId)
+	model, err := s.getModelForCaller(ctx, tenantID, modelId)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"model_id":  modelId,
@@ -586,7 +838,7 @@ func (s *modelService) GetASRModel(ctx context.Context, modelId string) (asr.ASR
 
 	tenantID := types.MustTenantIDFromContext(ctx)
 
-	model, err := s.repo.GetByID(ctx, tenantID, modelId)
+	model, err := s.getModelForCaller(ctx, tenantID, modelId)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"model_id":  modelId,

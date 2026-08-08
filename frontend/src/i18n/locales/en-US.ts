@@ -3815,6 +3815,7 @@ export default {
     customModel: 'Custom Model',
     builtinModel: 'Built-in Model',
     defaultTag: 'Default',
+    myModelTag: 'Mine',
     addModelInSettings: 'Go to global settings to add models',
     loadFailed: 'Failed to load model list',
     selectModelPlaceholder: 'Select a model',
@@ -4428,7 +4429,10 @@ export default {
     actions: {
       addModel: 'Add Model',
       debugModel: 'Model Test',
-      setDefault: 'Set as Default'
+      setDefault: 'Set as Default',
+      unsetDefault: 'Unset Default',
+      openToUsers: 'Open to Users',
+      hideFromUsers: 'System Only',
     },
     source: {
       remote: 'Remote',
@@ -4488,6 +4492,7 @@ export default {
       viewGuide: 'View Built-in Models Guide',
     },
     builtinTag: 'Built-in',
+    systemOnlyTag: 'System Only',
     confirmDelete: 'Delete model "{name}"?',
     debug: {
       title: 'Model Test',

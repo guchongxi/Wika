@@ -31,6 +31,21 @@ const (
 	ModelStatusDownloadFailed ModelStatus = "download_failed" // Model download failed
 )
 
+type ModelScope string
+
+const (
+	ModelScopeSystem ModelScope = "system"
+	ModelScopeTenant ModelScope = "tenant"
+	ModelScopeUser   ModelScope = "user"
+)
+
+type ModelUsageContext string
+
+const (
+	ModelUsageContextPersonal ModelUsageContext = "personal"
+	ModelUsageContextTeam     ModelUsageContext = "team"
+)
+
 // ModelSource represents the source of the model
 type ModelSource string
 
@@ -125,7 +140,10 @@ type Model struct {
 	// Whether the model is the default model
 	IsDefault bool `yaml:"is_default"  json:"is_default"`
 	// Whether the model is a builtin model (visible to all tenants)
-	IsBuiltin bool `yaml:"is_builtin"  json:"is_builtin"  gorm:"default:false"`
+	IsBuiltin      bool       `yaml:"is_builtin"  json:"is_builtin"  gorm:"default:false"`
+	Scope          ModelScope `yaml:"scope"       json:"scope"       gorm:"type:varchar(16);default:'tenant'"`
+	OwnerUserID    string     `yaml:"owner_user_id" json:"owner_user_id" gorm:"type:varchar(64);default:''"`
+	UserSelectable bool       `yaml:"user_selectable" json:"user_selectable" gorm:"default:false"`
 	// ManagedBy identifies which subsystem owns this row's lifecycle.
 	// Empty / "" = manually created (UI / API / hand-written SQL); the YAML
 	// builtin-models loader leaves these untouched.
@@ -202,4 +220,21 @@ func (m *Model) BeforeCreate(tx *gorm.DB) (err error) {
 		m.ID = uuid.New().String()
 	}
 	return nil
+}
+
+func (m *Model) EffectiveScope() ModelScope {
+	if m == nil {
+		return ModelScopeTenant
+	}
+	if m.Scope != "" {
+		return m.Scope
+	}
+	if m.IsBuiltin {
+		return ModelScopeSystem
+	}
+	return ModelScopeTenant
+}
+
+func (m *Model) IsSystemModel() bool {
+	return m != nil && (m.EffectiveScope() == ModelScopeSystem || m.IsBuiltin)
 }

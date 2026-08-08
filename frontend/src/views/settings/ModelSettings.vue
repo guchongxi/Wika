@@ -7,7 +7,7 @@
           <p class="section-description">{{ $t('modelSettings.description') }}</p>
         </div>
         <t-button
-          v-if="authStore.hasRole('admin')"
+          v-if="canDebugModel"
           type="button"
           theme="primary"
           variant="text"
@@ -62,7 +62,16 @@
           <div class="model-card__body">
             <div class="model-card__header">
               <h3 class="model-card__title">{{ modelDisplayName(model) }}</h3>
-              <span v-if="model.isBuiltin" class="model-card__lock" :title="$t('modelSettings.builtinTag')"
+              <span v-if="model.isDefault" class="model-card__tag model-card__tag--default">
+                {{ $t('model.defaultTag') }}
+              </span>
+              <span v-if="model.isSystem && !model.userSelectable" class="model-card__tag">
+                {{ $t('modelSettings.systemOnlyTag') }}
+              </span>
+              <span v-if="model.scope === 'user'" class="model-card__tag">
+                {{ $t('model.myModelTag') }}
+              </span>
+              <span v-if="model.isBuiltin && !isSystemMode" class="model-card__lock" :title="$t('modelSettings.builtinTag')"
                 :aria-label="$t('modelSettings.builtinTag')">
                 <t-icon name="lock-on" />
               </span>
@@ -113,7 +122,7 @@
           </div>
         </div>
         <button
-          v-if="authStore.hasRole('admin')"
+          v-if="canCreateModel"
           type="button"
           class="model-card model-card--add"
           data-guide="settings-add-model"
@@ -142,7 +151,20 @@ import { AddIcon, PlayCircleIcon } from 'tdesign-icons-vue-next'
 import { useI18n } from 'vue-i18n'
 import ModelEditorDialog from '@/components/ModelEditorDialog.vue'
 import ModelDebugDrawer from '@/components/ModelDebugDrawer.vue'
-import { listModels, createModel, updateModel as updateModelAPI, deleteModel as deleteModelAPI, type ModelConfig } from '@/api/model'
+import {
+  createMyModel,
+  createSystemModel,
+  deleteMyModel,
+  deleteSystemModel,
+  listSelectableModels,
+  listSystemModels,
+  setSystemDefaultModel,
+  setSystemModelVisibility,
+  unsetSystemDefaultModel,
+  updateMyModel,
+  updateSystemModel,
+  type ModelConfig,
+} from '@/api/model'
 import { useAuthStore } from '@/stores/auth'
 
 const { t, te } = useI18n()
@@ -152,8 +174,10 @@ type FilterType = 'all' | ModelType
 
 const props = withDefaults(defineProps<{
   initialType?: FilterType
+  mode?: 'system' | 'personal'
 }>(), {
   initialType: 'all',
+  mode: 'personal',
 })
 
 const showDialog = ref(false)
@@ -162,6 +186,9 @@ const currentModelType = ref<ModelType>('chat')
 const editingModel = ref<any>(null)
 const loading = ref(true)
 const activeTypeFilter = ref<FilterType>('all')
+const isSystemMode = computed(() => props.mode === 'system')
+const canCreateModel = computed(() => isSystemMode.value ? authStore.isSystemAdmin : true)
+const canDebugModel = computed(() => isSystemMode.value ? authStore.isSystemAdmin : authStore.hasRole('admin'))
 
 watch(
   () => props.initialType,
@@ -201,6 +228,11 @@ function convertToLegacyFormat(model: ModelConfig) {
     dimension: model.parameters.embedding_parameters?.dimension,
     supportsDimensionOverride: model.parameters.embedding_parameters?.supports_dimension_override || false,
     isBuiltin: model.is_builtin || false,
+    isSystem: model.is_system || model.scope === 'system' || model.is_builtin || false,
+    scope: model.scope || (model.is_builtin ? 'system' : 'tenant'),
+    ownerUserId: model.owner_user_id || '',
+    userSelectable: model.user_selectable ?? false,
+    isDefault: model.is_default ?? false,
     supportsVision: model.parameters.supports_vision || false,
     customHeaders: model.parameters.custom_headers
       ? Object.entries(model.parameters.custom_headers).map(([key, value]) => ({ key, value: String(value) }))
@@ -306,7 +338,9 @@ const emptyHint = computed(() => {
 const loadModels = async () => {
   loading.value = true
   try {
-    const models = await listModels()
+    const models = isSystemMode.value
+      ? await listSystemModels()
+      : await listSelectableModels(undefined, 'personal')
     allModels.value = models
   } catch (error: any) {
     console.error('加载模型列表失败:', error)
@@ -324,11 +358,13 @@ const openAddDialog = () => {
 }
 
 // 可点击打开编辑抽屉：管理员 + 非内置模型
-const isModelCardClickable = (model: any) =>
-  authStore.hasRole('admin') && !model.isBuiltin
+const isModelCardClickable = (model: any) => {
+  if (isSystemMode.value && authStore.isSystemAdmin) return true
+  return model.scope === 'user' && model.ownerUserId === authStore.currentUserId
+}
 
 const canManageModel = (model: any) =>
-  authStore.hasRole('admin') && !model.isBuiltin
+  isModelCardClickable(model)
 
 const onModelCardClick = (event: Event, type: ModelType, model: any) => {
   if (!isModelCardClickable(model)) return
@@ -344,11 +380,11 @@ const onModelCardClick = (event: Event, type: ModelType, model: any) => {
 
 // 编辑模型
 const editModel = (type: ModelType, model: any) => {
-  if (model.isBuiltin) {
+  if (!isSystemMode.value && model.isSystem) {
     MessagePlugin.warning(t('modelSettings.toasts.builtinCannotEdit'))
     return
   }
-  if (!authStore.hasRole('admin')) {
+  if (!isModelCardClickable(model)) {
     return
   }
   currentModelType.value = type
@@ -462,10 +498,18 @@ const handleModelSave = async (modelData: any) => {
     }
 
     if (editingModel.value && editingModel.value.id) {
-      await updateModelAPI(editingModel.value.id, apiModelData)
+      if (isSystemMode.value) {
+        await updateSystemModel(editingModel.value.id, apiModelData)
+      } else {
+        await updateMyModel(editingModel.value.id, apiModelData)
+      }
       MessagePlugin.success(t('modelSettings.toasts.updated'))
     } else {
-      await createModel(apiModelData)
+      if (isSystemMode.value) {
+        await createSystemModel(apiModelData)
+      } else {
+        await createMyModel(apiModelData)
+      }
       MessagePlugin.success(t('modelSettings.toasts.added'))
     }
 
@@ -480,13 +524,17 @@ const handleModelSave = async (modelData: any) => {
 // 删除模型
 const deleteModel = async (_type: ModelType, modelId: string) => {
   const model = allModels.value.find(m => m.id === modelId)
-  if (model?.is_builtin) {
+  if (!isSystemMode.value && (model?.is_system || model?.is_builtin || model?.scope !== 'user')) {
     MessagePlugin.warning(t('modelSettings.toasts.builtinCannotDelete'))
     return
   }
 
   try {
-    await deleteModelAPI(modelId)
+    if (isSystemMode.value) {
+      await deleteSystemModel(modelId)
+    } else {
+      await deleteMyModel(modelId)
+    }
     MessagePlugin.success(t('modelSettings.toasts.deleted'))
     await loadModels()
   } catch (error: any) {
@@ -499,15 +547,11 @@ const deleteModel = async (_type: ModelType, modelId: string) => {
 const getModelOptions = (type: ModelType, model: any) => {
   const options: any[] = []
 
-  if (model.isBuiltin) {
+  if (!isSystemMode.value && model.isSystem) {
     return options
   }
 
-  // Models are tenant-wide infrastructure (LLM credentials); the
-  // backend gates every mutation behind Admin+ (see RegisterModelRoutes).
-  // Non-Admins get an empty action menu — viewing is fine, but editing,
-  // copying (also goes through createModel), and deleting are not.
-  if (!authStore.hasRole('admin')) {
+  if (!isModelCardClickable(model)) {
     return options
   }
 
@@ -521,6 +565,17 @@ const getModelOptions = (type: ModelType, model: any) => {
     value: `copy-${type}-${model.id}`
   })
 
+  if (isSystemMode.value) {
+    options.push({
+      content: model.userSelectable ? t('modelSettings.actions.hideFromUsers') : t('modelSettings.actions.openToUsers'),
+      value: `toggle-visibility-${type}-${model.id}`
+    })
+    options.push({
+      content: model.isDefault ? t('modelSettings.actions.unsetDefault') : t('modelSettings.actions.setDefault'),
+      value: model.isDefault ? `unset-default-${type}-${model.id}` : `set-default-${type}-${model.id}`
+    })
+  }
+
   return options
 }
 
@@ -532,7 +587,28 @@ const handleMenuAction = (data: { value: string }, type: ModelType, model: any) 
     editModel(type, model)
   } else if (value.indexOf('copy-') === 0) {
     copyModel(type, model.id)
+  } else if (value.indexOf('toggle-visibility-') === 0) {
+    toggleSystemVisibility(model)
+  } else if (value.indexOf('set-default-') === 0) {
+    setDefaultSystemModel(model)
+  } else if (value.indexOf('unset-default-') === 0) {
+    unsetDefaultSystemModel(model)
   }
+}
+
+const toggleSystemVisibility = async (model: any) => {
+  await setSystemModelVisibility(model.id, !model.userSelectable)
+  await loadModels()
+}
+
+const setDefaultSystemModel = async (model: any) => {
+  await setSystemDefaultModel(model.id)
+  await loadModels()
+}
+
+const unsetDefaultSystemModel = async (model: any) => {
+  await unsetSystemDefaultModel(model.id)
+  await loadModels()
 }
 
 // 生成不重复的复制名称
@@ -554,7 +630,7 @@ const copyModel = async (_type: ModelType, modelId: string) => {
   if (!source) {
     return
   }
-  if (source.is_builtin) {
+  if (!isSystemMode.value && source.is_system) {
     MessagePlugin.warning(t('modelSettings.toasts.builtinCannotCopy'))
     return
   }
@@ -569,7 +645,11 @@ const copyModel = async (_type: ModelType, modelId: string) => {
       parameters: JSON.parse(JSON.stringify(source.parameters || {}))
     }
 
-    await createModel(newModel)
+    if (isSystemMode.value) {
+      await createSystemModel(newModel)
+    } else {
+      await createMyModel(newModel)
+    }
     MessagePlugin.success(t('modelSettings.toasts.copied'))
     await loadModels()
   } catch (error: any) {
@@ -861,7 +941,7 @@ onMounted(() => {
 }
 
 .model-card__title {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
   margin: 0;
   font-size: 14px;
@@ -871,6 +951,23 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.model-card__tag {
+  flex: 0 0 auto;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--td-bg-color-secondarycontainer);
+  color: var(--td-text-color-secondary);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.model-card__tag--default {
+  background: var(--td-success-color-light);
+  color: var(--td-success-color);
 }
 
 /*

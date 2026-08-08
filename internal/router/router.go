@@ -230,7 +230,14 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterEvaluationRoutes(v1, params.EvaluationHandler, rbacGuards)
 		RegisterInitializationRoutes(v1, params.InitializationHandler, rbacGuards)
 		RegisterSystemRoutes(v1, params.SystemHandler, rbacGuards)
-		RegisterSystemAdminRoutes(v1, params.SystemHandler, params.AuditLogHandler, rbacGuards)
+		RegisterSystemAdminRoutes(
+			v1,
+			params.SystemHandler,
+			params.AuditLogHandler,
+			params.ModelHandler,
+			params.ModelCredentialsHandler,
+			rbacGuards,
+		)
 		RegisterMCPServiceRoutes(v1, params.MCPServiceHandler, params.MCPCredentialsHandler, params.MCPOAuthHandler, rbacGuards)
 		RegisterWebSearchRoutes(v1, params.WebSearchHandler, rbacGuards)
 		RegisterWebSearchProviderRoutes(v1, params.WebSearchProviderHandler, params.WebSearchCredentialsHandler, rbacGuards)
@@ -772,6 +779,7 @@ func RegisterModelRoutes(
 	{
 		// 获取模型厂商列表 — Viewer+
 		models.GET("/providers", g.Viewer(), handler.ListModelProviders)
+		models.GET("/selectable", g.Viewer(), handler.ListSelectableModels)
 		// 创建模型 — Admin+
 		models.POST("", g.Admin(), handler.CreateModel)
 		// 获取模型列表 — Viewer+
@@ -787,6 +795,17 @@ func RegisterModelRoutes(
 		// Per-field credential subresource (see internal/handler/model_credentials.go) — Admin+
 		models.PUT("/:id/credentials", g.Admin(), credHandler.Put)
 		models.DELETE("/:id/credentials/:field", g.Admin(), credHandler.DeleteField)
+	}
+	myModels := r.Group("/me/models", g.Viewer())
+	{
+		myModels.GET("", handler.ListMyModels)
+		myModels.POST("", handler.CreateMyModel)
+		myModels.GET("/:id", handler.GetMyModel)
+		myModels.PUT("/:id", handler.UpdateMyModel)
+		myModels.DELETE("/:id", handler.DeleteMyModel)
+		myModels.PUT("/:id/credentials", handler.PutMyModelCredentials)
+		myModels.DELETE("/:id/credentials/:field", handler.DeleteMyModelCredential)
+		myModels.POST("/:id/debug", handler.DebugModel)
 	}
 }
 
@@ -932,6 +951,8 @@ func RegisterSystemAdminRoutes(
 	r *gin.RouterGroup,
 	handler *handler.SystemHandler,
 	auditLogHandler *handler.AuditLogHandler,
+	modelHandler *handler.ModelHandler,
+	modelCredHandler *handler.ModelCredentialsHandler,
 	g *rbacGuards,
 ) {
 	// Apply SystemAdmin() at the group level — every route below inherits
@@ -953,6 +974,25 @@ func RegisterSystemAdminRoutes(
 		adminRoutes.DELETE("/settings/:key", handler.ResetSystemSetting)
 		adminRoutes.GET("/kb-defaults", handler.GetKnowledgeBaseDefaults)
 		adminRoutes.PUT("/kb-defaults", handler.UpdateKnowledgeBaseDefaults)
+
+		if modelHandler != nil {
+			models := adminRoutes.Group("/models")
+			{
+				models.GET("", modelHandler.ListSystemModels)
+				models.POST("", modelHandler.CreateSystemModel)
+				models.GET("/:id", modelHandler.GetSystemModel)
+				models.PUT("/:id", modelHandler.UpdateSystemModel)
+				models.DELETE("/:id", modelHandler.DeleteSystemModel)
+				models.PATCH("/:id/visibility", modelHandler.SetSystemModelVisibility)
+				models.PUT("/:id/default", modelHandler.SetSystemDefaultModel)
+				models.DELETE("/:id/default", modelHandler.UnsetSystemDefaultModel)
+				models.POST("/:id/debug", modelHandler.DebugModel)
+				if modelCredHandler != nil {
+					models.PUT("/:id/credentials", modelCredHandler.Put)
+					models.DELETE("/:id/credentials/:field", modelCredHandler.DeleteField)
+				}
+			}
+		}
 
 		// Bulk action — write the current default-quota setting onto
 		// every existing tenant. Lives under /tenants instead of

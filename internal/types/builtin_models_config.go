@@ -287,16 +287,18 @@ func (e *BuiltinModelEntry) toModel() Model {
 		status = ModelStatusActive
 	}
 	return Model{
-		ID:          e.ID,
-		TenantID:    tenantID,
-		Name:        e.Name,
-		Type:        e.Type,
-		Source:      source,
-		Description: e.Description,
-		Parameters:  e.Parameters,
-		IsDefault:   e.IsDefault,
-		IsBuiltin:   true,
-		ManagedBy:   BuiltinModelManagedBy,
-		Status:      status,
+		ID:             e.ID,
+		TenantID:       tenantID,
+		Name:           e.Name,
+		Type:           e.Type,
+		Source:         source,
+		Description:    e.Description,
+		Parameters:     e.Parameters,
+		IsDefault:      e.IsDefault,
+		IsBuiltin:      true,
+		Scope:          ModelScopeSystem,
+		UserSelectable: true,
+		ManagedBy:      BuiltinModelManagedBy,
+		Status:         status,
 	}
 }

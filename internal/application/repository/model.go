@@ -27,9 +27,50 @@ func (r *modelRepository) Create(ctx context.Context, m *types.Model) error {
 // GetByID retrieves a model by ID
 func (r *modelRepository) GetByID(ctx context.Context, tenantID uint64, id string) (*types.Model, error) {
 	var m types.Model
-	if err := r.db.WithContext(ctx).Where("id = ?", id).Where(
-		"(tenant_id = ? OR is_builtin = true)", tenantID,
-	).First(&m).Error; err != nil {
+	if err := r.db.WithContext(ctx).
+		Where("id = ?", id).
+		Where(
+			"(is_builtin = ? OR scope = ? OR (tenant_id = ? AND (scope = ? OR scope = '' OR scope IS NULL)))",
+			true, types.ModelScopeSystem, tenantID, types.ModelScopeTenant,
+		).
+		First(&m).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &m, nil
+}
+
+func (r *modelRepository) GetByIDForUser(
+	ctx context.Context, tenantID uint64, userID, id string,
+) (*types.Model, error) {
+	var m types.Model
+	if err := r.db.WithContext(ctx).
+		Where("id = ?", id).
+		Where(
+			`(is_builtin = ? OR scope = ?
+				OR (tenant_id = ? AND (scope = ? OR scope = '' OR scope IS NULL))
+				OR (tenant_id = ? AND scope = ? AND owner_user_id = ?))`,
+			true, types.ModelScopeSystem,
+			tenantID, types.ModelScopeTenant,
+			tenantID, types.ModelScopeUser, userID,
+		).
+		First(&m).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &m, nil
+}
+
+func (r *modelRepository) GetSystemByID(ctx context.Context, id string) (*types.Model, error) {
+	var m types.Model
+	if err := r.db.WithContext(ctx).
+		Where("id = ?", id).
+		Where("(is_builtin = ? OR scope = ?)", true, types.ModelScopeSystem).
+		First(&m).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -44,7 +85,8 @@ func (r *modelRepository) List(
 ) ([]*types.Model, error) {
 	var models []*types.Model
 	query := r.db.WithContext(ctx).Where(
-		"(tenant_id = ? OR is_builtin = true)", tenantID,
+		"(is_builtin = ? OR scope = ? OR (tenant_id = ? AND (scope = ? OR scope = '' OR scope IS NULL)))",
+		true, types.ModelScopeSystem, tenantID, types.ModelScopeTenant,
 	)
 
 	if modelType != "" {
@@ -59,6 +101,63 @@ func (r *modelRepository) List(
 		return nil, err
 	}
 
+	return models, nil
+}
+
+func (r *modelRepository) ListSystem(ctx context.Context, modelType types.ModelType) ([]*types.Model, error) {
+	var models []*types.Model
+	query := r.db.WithContext(ctx).
+		Where("(is_builtin = ? OR scope = ?)", true, types.ModelScopeSystem)
+	if modelType != "" {
+		query = query.Where("type = ?", modelType)
+	}
+	if err := query.Order("type ASC, name ASC").Find(&models).Error; err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+func (r *modelRepository) ListByOwner(
+	ctx context.Context, userID string, modelType types.ModelType,
+) ([]*types.Model, error) {
+	var models []*types.Model
+	query := r.db.WithContext(ctx).
+		Where("scope = ? AND owner_user_id = ?", types.ModelScopeUser, userID)
+	if modelType != "" {
+		query = query.Where("type = ?", modelType)
+	}
+	if err := query.Order("type ASC, name ASC").Find(&models).Error; err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+func (r *modelRepository) ListSelectable(
+	ctx context.Context,
+	tenantID uint64,
+	userID string,
+	usageContext types.ModelUsageContext,
+	modelType types.ModelType,
+) ([]*types.Model, error) {
+	var models []*types.Model
+	query := r.db.WithContext(ctx).Where(
+		`((is_builtin = ? OR scope = ?) AND (user_selectable = ? OR is_default = ?))
+			OR (tenant_id = ? AND (scope = ? OR scope = '' OR scope IS NULL))`,
+		true, types.ModelScopeSystem, true, true,
+		tenantID, types.ModelScopeTenant,
+	)
+	if usageContext == types.ModelUsageContextPersonal && userID != "" {
+		query = query.Or(
+			"tenant_id = ? AND scope = ? AND owner_user_id = ?",
+			tenantID, types.ModelScopeUser, userID,
+		)
+	}
+	if modelType != "" {
+		query = query.Where("type = ?", modelType)
+	}
+	if err := query.Order("type ASC, name ASC").Find(&models).Error; err != nil {
+		return nil, err
+	}
 	return models, nil
 }
 
@@ -95,5 +194,21 @@ func (r *modelRepository) ClearDefaultByType(
 	}
 
 	// Batch update: set is_default to false for all matching records
+	return query.Update("is_default", false).Error
+}
+
+func (r *modelRepository) ClearSystemDefaultByType(
+	ctx context.Context,
+	modelType types.ModelType,
+	excludeID string,
+) error {
+	query := r.db.WithContext(ctx).Model(&types.Model{}).
+		Where("(is_builtin = ? OR scope = ?) AND type = ? AND is_default = ?",
+			true, types.ModelScopeSystem, modelType, true)
+
+	if excludeID != "" {
+		query = query.Where("id != ?", excludeID)
+	}
+
 	return query.Update("is_default", false).Error
 }

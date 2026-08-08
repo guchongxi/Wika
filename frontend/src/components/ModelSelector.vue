@@ -21,8 +21,9 @@
           <t-icon name="check-circle-filled" class="model-icon" />
           <span class="model-name">{{ modelDisplayName(model) }}</span>
           <span v-if="model.display_name" class="model-raw-name">{{ model.name }}</span>
-          <t-tag v-if="model.is_builtin" size="small" theme="primary">{{ $t('model.builtinTag') }}</t-tag>
+          <t-tag v-if="model.is_system" size="small" theme="primary">{{ $t('model.builtinTag') }}</t-tag>
           <t-tag v-if="model.is_default" size="small" theme="success">{{ $t('model.defaultTag') }}</t-tag>
+          <t-tag v-if="model.scope === 'user'" size="small" theme="warning">{{ $t('model.myModelTag') }}</t-tag>
         </div>
       </t-option>
       
@@ -43,7 +44,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
-import { listModels, type ModelConfig } from '@/api/model'
+import { listSelectableModels, type ModelConfig } from '@/api/model'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { useI18n } from 'vue-i18n'
 
@@ -53,6 +54,7 @@ interface Props {
   disabled?: boolean
   placeholder?: string
   status?: 'default' | 'success' | 'warning' | 'error'
+  usageContext?: 'personal' | 'team'
   // 可选：外部传入的所有模型列表，如果提供则不调用API
   allModels?: ModelConfig[]
 }
@@ -61,6 +63,7 @@ const props = withDefaults(defineProps<Props>(), {
   disabled: false,
   placeholder: '',
   status: 'default',
+  usageContext: 'personal',
 })
 
 const emit = defineEmits<{
@@ -102,7 +105,7 @@ const loadModels = async () => {
   
   loading.value = true
   try {
-    const result = await listModels()
+    const result = await listSelectableModels(props.modelType, props.usageContext)
     // 前端按类型筛选模型
     if (result && Array.isArray(result)) {
       models.value = result.filter(m => m.type === props.modelType)

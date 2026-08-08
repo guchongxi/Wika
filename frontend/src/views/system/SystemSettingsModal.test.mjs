@@ -79,6 +79,6 @@ test('默认模型管理入口跳转到系统设置的模型与服务 tab', () =
   assert.match(source, /relatedActionFor\(item\)/)
   assert.match(source, /openModelSettings\(key: string\)/)
   assert.match(source, /activeTab\.value\s*=\s*['"]models-services['"]/)
-  assert.match(source, /<ModelSettings :initial-type="activeModelSettingsType" \/>/)
+  assert.match(source, /<ModelSettings mode="system" :initial-type="activeModelSettingsType" \/>/)
   assert.doesNotMatch(source, /uiStore\.openSettings\(['"]models['"]/)
 })

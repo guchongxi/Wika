@@ -3,10 +3,10 @@ package interfaces
 import (
 	"context"
 
+	"github.com/Tencent/WeKnora/internal/models/asr"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/models/embedding"
 	"github.com/Tencent/WeKnora/internal/models/rerank"
-	"github.com/Tencent/WeKnora/internal/models/asr"
 	"github.com/Tencent/WeKnora/internal/models/vlm"
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -19,6 +19,24 @@ type ModelService interface {
 	GetModelByID(ctx context.Context, id string) (*types.Model, error)
 	// ListModels lists all models
 	ListModels(ctx context.Context) ([]*types.Model, error)
+	ListSystemModels(ctx context.Context, modelType types.ModelType) ([]*types.Model, error)
+	CreateSystemModel(ctx context.Context, model *types.Model) error
+	UpdateSystemModel(ctx context.Context, model *types.Model) error
+	DeleteSystemModel(ctx context.Context, id string) error
+	SetSystemModelSelectable(ctx context.Context, id string, selectable bool) (*types.Model, error)
+	SetSystemDefaultModel(ctx context.Context, id string) (*types.Model, error)
+	UnsetSystemDefaultModel(ctx context.Context, id string) (*types.Model, error)
+	ListMyModels(ctx context.Context, userID string, modelType types.ModelType) ([]*types.Model, error)
+	CreateUserModel(ctx context.Context, userID string, model *types.Model) error
+	UpdateUserModel(ctx context.Context, userID string, model *types.Model) error
+	DeleteUserModel(ctx context.Context, userID, id string) error
+	ListSelectableModels(
+		ctx context.Context,
+		userID string,
+		tenantID uint64,
+		usageContext types.ModelUsageContext,
+		modelType types.ModelType,
+	) ([]*types.Model, error)
 	// UpdateModel updates a model
 	UpdateModel(ctx context.Context, model *types.Model) error
 	// DeleteModel deletes a model
@@ -52,12 +70,23 @@ type ModelRepository interface {
 	Create(ctx context.Context, model *types.Model) error
 	// GetByID gets a model by ID
 	GetByID(ctx context.Context, tenantID uint64, id string) (*types.Model, error)
+	GetByIDForUser(ctx context.Context, tenantID uint64, userID, id string) (*types.Model, error)
+	GetSystemByID(ctx context.Context, id string) (*types.Model, error)
 	// List lists all models
 	List(
 		ctx context.Context,
 		tenantID uint64,
 		modelType types.ModelType,
 		source types.ModelSource,
+	) ([]*types.Model, error)
+	ListSystem(ctx context.Context, modelType types.ModelType) ([]*types.Model, error)
+	ListByOwner(ctx context.Context, userID string, modelType types.ModelType) ([]*types.Model, error)
+	ListSelectable(
+		ctx context.Context,
+		tenantID uint64,
+		userID string,
+		usageContext types.ModelUsageContext,
+		modelType types.ModelType,
 	) ([]*types.Model, error)
 	// Update updates a model
 	Update(ctx context.Context, model *types.Model) error
@@ -66,4 +95,5 @@ type ModelRepository interface {
 	// ClearDefaultByType clears the default flag for all models of a specific type
 	// optionally excluding a specific model ID.
 	ClearDefaultByType(ctx context.Context, tenantID uint, modelType types.ModelType, excludeID string) error
+	ClearSystemDefaultByType(ctx context.Context, modelType types.ModelType, excludeID string) error
 }

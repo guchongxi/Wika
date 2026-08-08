@@ -1,4 +1,4 @@
-import { get, post, postUpload, put, del } from '../../utils/request';
+import { get, post, postUpload, put, patch, del } from '../../utils/request';
 import i18n from '@/i18n'
 import { normalizeModelListResponse } from './modelResponse'
 
@@ -38,6 +38,10 @@ export interface ModelConfig {
   };
   is_default?: boolean;
   is_builtin?: boolean;
+  scope?: 'system' | 'tenant' | 'user';
+  owner_user_id?: string;
+  user_selectable?: boolean;
+  is_system?: boolean;
   status?: string;
   // Per-field configured? metadata from the main response. Absent for
   // builtin models.
@@ -45,6 +49,17 @@ export interface ModelConfig {
   created_at?: string;
   updated_at?: string;
   deleted_at?: string | null;
+}
+
+export type ModelUsageContext = 'personal' | 'team'
+
+function unwrapModel(response: any, fallbackMessage: string): ModelConfig {
+  if (response?.success && response?.data) return response.data
+  throw new Error(response?.message || fallbackMessage)
+}
+
+function unwrapModels(response: any, type?: string): ModelConfig[] {
+  return normalizeModelListResponse<ModelConfig>(response, type)
 }
 
 // 创建模型
@@ -63,6 +78,72 @@ export function createModel(data: ModelConfig): Promise<ModelConfig> {
         reject(error);
       });
   });
+}
+
+export function listSystemModels(type?: string): Promise<ModelConfig[]> {
+  return get('/api/v1/system/admin/models')
+    .then((response: any) => unwrapModels(response, type))
+}
+
+export function createSystemModel(data: ModelConfig): Promise<ModelConfig> {
+  return post('/api/v1/system/admin/models', data)
+    .then((response: any) => unwrapModel(response, t('error.model.createFailed')))
+}
+
+export function updateSystemModel(id: string, data: Partial<ModelConfig>): Promise<ModelConfig> {
+  return put(`/api/v1/system/admin/models/${id}`, data)
+    .then((response: any) => unwrapModel(response, t('error.model.updateFailed')))
+}
+
+export function deleteSystemModel(id: string): Promise<void> {
+  return del(`/api/v1/system/admin/models/${id}`).then(() => undefined)
+}
+
+export function setSystemModelVisibility(id: string, userSelectable: boolean): Promise<ModelConfig> {
+  return patch(`/api/v1/system/admin/models/${id}/visibility`, { user_selectable: userSelectable })
+    .then((response: any) => unwrapModel(response, t('error.model.updateFailed')))
+}
+
+export function setSystemDefaultModel(id: string): Promise<ModelConfig> {
+  return put(`/api/v1/system/admin/models/${id}/default`, {})
+    .then((response: any) => unwrapModel(response, t('error.model.updateFailed')))
+}
+
+export function unsetSystemDefaultModel(id: string): Promise<ModelConfig> {
+  return del(`/api/v1/system/admin/models/${id}/default`)
+    .then((response: any) => unwrapModel(response, t('error.model.updateFailed')))
+}
+
+export function listMyModels(type?: string): Promise<ModelConfig[]> {
+  return get('/api/v1/me/models')
+    .then((response: any) => unwrapModels(response, type))
+}
+
+export function createMyModel(data: ModelConfig): Promise<ModelConfig> {
+  return post('/api/v1/me/models', data)
+    .then((response: any) => unwrapModel(response, t('error.model.createFailed')))
+}
+
+export function updateMyModel(id: string, data: Partial<ModelConfig>): Promise<ModelConfig> {
+  return put(`/api/v1/me/models/${id}`, data)
+    .then((response: any) => unwrapModel(response, t('error.model.updateFailed')))
+}
+
+export function deleteMyModel(id: string): Promise<void> {
+  return del(`/api/v1/me/models/${id}`).then(() => undefined)
+}
+
+export function buildSelectableModelsPath(type?: string, usageContext: ModelUsageContext = 'personal'): string {
+  if (type) return `/api/v1/models/selectable?type=${type}&usage_context=${usageContext}`
+  return `/api/v1/models/selectable?usage_context=${usageContext}`
+}
+
+export function listSelectableModels(
+  type?: string,
+  usageContext: ModelUsageContext = 'personal',
+): Promise<ModelConfig[]> {
+  return get(buildSelectableModelsPath(type, usageContext))
+    .then((response: any) => unwrapModels(response))
 }
 
 // 获取模型列表

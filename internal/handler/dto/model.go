@@ -15,19 +15,23 @@ import (
 // stripped along with every other field that could leak how a particular
 // tenant configured the upstream provider.
 type ModelResponse struct {
-	ID          string             `json:"id"`
-	TenantID    uint64             `json:"tenant_id"`
-	Name        string             `json:"name"`
-	DisplayName string             `json:"display_name"`
-	Type        types.ModelType    `json:"type"`
-	Source      types.ModelSource  `json:"source"`
-	Description string             `json:"description"`
-	Parameters  ModelParametersDTO `json:"parameters"`
-	IsDefault   bool               `json:"is_default"`
-	IsBuiltin   bool               `json:"is_builtin"`
-	Status      types.ModelStatus  `json:"status"`
-	CreatedAt   time.Time          `json:"created_at"`
-	UpdatedAt   time.Time          `json:"updated_at"`
+	ID             string             `json:"id"`
+	TenantID       uint64             `json:"tenant_id"`
+	Name           string             `json:"name"`
+	DisplayName    string             `json:"display_name"`
+	Type           types.ModelType    `json:"type"`
+	Source         types.ModelSource  `json:"source"`
+	Description    string             `json:"description"`
+	Parameters     ModelParametersDTO `json:"parameters"`
+	IsDefault      bool               `json:"is_default"`
+	IsBuiltin      bool               `json:"is_builtin"`
+	Scope          types.ModelScope   `json:"scope"`
+	OwnerUserID    string             `json:"owner_user_id"`
+	UserSelectable bool               `json:"user_selectable"`
+	IsSystem       bool               `json:"is_system"`
+	Status         types.ModelStatus  `json:"status"`
+	CreatedAt      time.Time          `json:"created_at"`
+	UpdatedAt      time.Time          `json:"updated_at"`
 	// Per-field "configured?" map. Omitted for builtin models (no
 	// per-tenant credentials). See MCPServiceResponse.Credentials.
 	Credentials map[string]CredentialFieldMetadata `json:"credentials,omitempty"`
@@ -54,6 +58,14 @@ type ModelParametersDTO struct {
 // Builtin models are shared across tenants — strip BaseURL (which can leak
 // the tenant's private endpoint) and any non-shared parameters.
 func NewModelResponse(m *types.Model) *ModelResponse {
+	return newModelResponse(m, false)
+}
+
+func NewSystemModelResponse(m *types.Model) *ModelResponse {
+	return newModelResponse(m, true)
+}
+
+func newModelResponse(m *types.Model, revealSystemConfig bool) *ModelResponse {
 	if m == nil {
 		return nil
 	}
@@ -68,8 +80,9 @@ func NewModelResponse(m *types.Model) *ModelResponse {
 		SupportsVision:      m.Parameters.SupportsVision,
 		AppID:               m.Parameters.AppID,
 	}
-	if m.IsBuiltin {
-		// Builtin: strip everything that could reveal per-tenant config.
+	isSystem := m.IsSystemModel()
+	if isSystem && !revealSystemConfig {
+		// System models: strip everything that could reveal platform config.
 		// EmbeddingParameters and ParameterSize / Provider / InterfaceType /
 		// SupportsVision are intentionally preserved (they describe the
 		// capability surface, not the configured endpoint).
@@ -79,27 +92,31 @@ func NewModelResponse(m *types.Model) *ModelResponse {
 		params.AppID = ""
 	}
 	var creds map[string]CredentialFieldMetadata
-	if !m.IsBuiltin {
+	if !isSystem || revealSystemConfig {
 		creds = map[string]CredentialFieldMetadata{
 			"api_key":    {Configured: m.Parameters.APIKey != ""},
 			"app_secret": {Configured: m.Parameters.AppSecret != ""},
 		}
 	}
 	return &ModelResponse{
-		ID:          m.ID,
-		TenantID:    m.TenantID,
-		Name:        m.Name,
-		DisplayName: m.DisplayName,
-		Type:        m.Type,
-		Source:      m.Source,
-		Description: m.Description,
-		Parameters:  params,
-		IsDefault:   m.IsDefault,
-		IsBuiltin:   m.IsBuiltin,
-		Status:      m.Status,
-		CreatedAt:   m.CreatedAt,
-		UpdatedAt:   m.UpdatedAt,
-		Credentials: creds,
+		ID:             m.ID,
+		TenantID:       m.TenantID,
+		Name:           m.Name,
+		DisplayName:    m.DisplayName,
+		Type:           m.Type,
+		Source:         m.Source,
+		Description:    m.Description,
+		Parameters:     params,
+		IsDefault:      m.IsDefault,
+		IsBuiltin:      m.IsBuiltin,
+		Scope:          m.EffectiveScope(),
+		OwnerUserID:    m.OwnerUserID,
+		UserSelectable: m.UserSelectable,
+		IsSystem:       isSystem,
+		Status:         m.Status,
+		CreatedAt:      m.CreatedAt,
+		UpdatedAt:      m.UpdatedAt,
+		Credentials:    creds,
 	}
 }
 
@@ -108,6 +125,14 @@ func NewModelResponses(models []*types.Model) []*ModelResponse {
 	out := make([]*ModelResponse, 0, len(models))
 	for _, m := range models {
 		out = append(out, NewModelResponse(m))
+	}
+	return out
+}
+
+func NewSystemModelResponses(models []*types.Model) []*ModelResponse {
+	out := make([]*ModelResponse, 0, len(models))
+	for _, m := range models {
+		out = append(out, NewSystemModelResponse(m))
 	}
 	return out
 }

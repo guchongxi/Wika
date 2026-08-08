@@ -2834,6 +2834,7 @@ export default {
     customModel: "自定义模型",
     builtinModel: "内置模型",
     defaultTag: "默认",
+    myModelTag: "我的",
     addModelInSettings: "前往全局设置添加模型",
     loadFailed: "加载模型列表失败",
     selectModelPlaceholder: "请选择模型",
@@ -4429,6 +4430,9 @@ export default {
       addModel: "添加模型",
       debugModel: "模型测试",
       setDefault: "设为默认",
+      unsetDefault: "取消默认",
+      openToUsers: "开放给用户选择",
+      hideFromUsers: "设为仅系统使用",
     },
     source: {
       remote: "Remote",
@@ -4488,6 +4492,7 @@ export default {
       viewGuide: "查看内置模型管理指南",
     },
     builtinTag: "内置",
+    systemOnlyTag: "仅系统",
     confirmDelete: "确定删除模型「{name}」吗？",
     debug: {
       title: "模型测试",

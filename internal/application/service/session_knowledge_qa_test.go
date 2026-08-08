@@ -56,6 +56,10 @@ func (s *stubModelService) CreateModel(context.Context, *types.Model) error {
 	return nil
 }
 
+func (s *stubModelService) CreateSystemModel(context.Context, *types.Model) error {
+	return nil
+}
+
 func (s *stubModelService) GetModelByID(_ context.Context, id string) (*types.Model, error) {
 	return s.modelsByID[id], nil
 }
@@ -64,11 +68,55 @@ func (s *stubModelService) ListModels(context.Context) ([]*types.Model, error) {
 	return nil, nil
 }
 
+func (s *stubModelService) ListSystemModels(context.Context, types.ModelType) ([]*types.Model, error) {
+	return nil, nil
+}
+
+func (s *stubModelService) SetSystemModelSelectable(context.Context, string, bool) (*types.Model, error) {
+	return nil, nil
+}
+
+func (s *stubModelService) SetSystemDefaultModel(context.Context, string) (*types.Model, error) {
+	return nil, nil
+}
+
+func (s *stubModelService) UnsetSystemDefaultModel(context.Context, string) (*types.Model, error) {
+	return nil, nil
+}
+
+func (s *stubModelService) ListMyModels(context.Context, string, types.ModelType) ([]*types.Model, error) {
+	return nil, nil
+}
+
+func (s *stubModelService) CreateUserModel(context.Context, string, *types.Model) error {
+	return nil
+}
+
+func (s *stubModelService) UpdateUserModel(context.Context, string, *types.Model) error {
+	return nil
+}
+
+func (s *stubModelService) DeleteUserModel(context.Context, string, string) error {
+	return nil
+}
+
+func (s *stubModelService) ListSelectableModels(context.Context, string, uint64, types.ModelUsageContext, types.ModelType) ([]*types.Model, error) {
+	return nil, nil
+}
+
 func (s *stubModelService) UpdateModel(context.Context, *types.Model) error {
 	return nil
 }
 
+func (s *stubModelService) UpdateSystemModel(context.Context, *types.Model) error {
+	return nil
+}
+
 func (s *stubModelService) DeleteModel(context.Context, string) error {
+	return nil
+}
+
+func (s *stubModelService) DeleteSystemModel(context.Context, string) error {
 	return nil
 }
 
